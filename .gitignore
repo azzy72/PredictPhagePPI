@@ -1,5 +1,7 @@
 ignore/
 mike/
+KMC/
+doc/
 proj1128/
 proj3389/
 data_prod/
@@ -7,3 +9,4 @@ phagehost_KU/
 ncbi_dataset/
 ncbi_dataset.zip
 ncbi_phage_genomes/
+scripts_ext/mike/
