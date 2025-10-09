@@ -1,0 +1,26 @@
+---
+title: "PreditctPhage"
+---
+
+## Genome similarity and phylogeny
+
+### Importing and modifying data
+
+```{r}
+library(tidyverse)
+sim_bact_sorted <- read_csv("../data_prod/sim_bact_sorted_df.csv")
+```
+
+```{r}
+sim_bact_sorted <- rename_with(
+  sim_bact_sorted,
+  ~ "index",
+  starts_with(".")
+)
+```
+
+```{r}
+cols <- colnames(sim_bact_sorted)
+```
+
+### Plotting
