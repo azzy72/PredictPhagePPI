@@ -20,7 +20,7 @@ from sklearn.preprocessing import StandardScaler
 raw_data_path = "../raw_data/"
 data_prod_path = "../data_prod/"
 
-def perform_pca(data: pd.DataFrame, n_components=2) -> (PCA, np.array, np.array):
+def perform_pca(data: pd.DataFrame, n_components=2):
     """
     Perform PCA on the given DataFrame.
 
@@ -44,7 +44,7 @@ def perform_pca(data: pd.DataFrame, n_components=2) -> (PCA, np.array, np.array)
     return pca, score, coeff
 
 
-def pca_biplot(score, coeff, PCA = None, data = None, labels=None, n_features_to_plot=10, hide_labels=[False, False]) -> None:
+def pca_biplot(score = None, coeff = None, PCA = None, data : pd.DataFrame = None, vec_labels = None, point_labels = None, n_features_to_plot = 10, hide_labels = [False, False], color_on = None) -> None:
     """
     Generates a PCA biplot with dynamically scaled arrows for loadings and 
     uses adjust_text to prevent label overlap.
@@ -52,13 +52,30 @@ def pca_biplot(score, coeff, PCA = None, data = None, labels=None, n_features_to
     Args:
         score (np.array): PCA scores (data points/samples).
         coeff (np.array): PCA components (eigenvectors/feature directions).
-        labels (list): Feature labels (e.g., k-mers).
+        PCA (PCA): Fitted PCA object from sklearn. If provided, 'score' and 'coeff' must also be provided.
+        data (pd.DataFrame): Input data for PCA. If provided, PCA will be computed
+        vec_labels (list): Feature labels on eigenvectors (e.g., k-mers).
+        point_labels (list): Sample labels on points (e.g., sequence IDs).
         n_features_to_plot (int): Maximum number of features (arrows) to display.
         hide_labels (list of bool): [hide_score_labels, hide_loading_labels]. If True, hides the respective labels.
+        color_on (list): Optional list of labels for coloring the points. If None, coloring is based on unique labels.
     
     Returns:
         None (displays the plot)
     """
+    ### Input validation and setup
+    #generate generic vector labels
+    if vec_labels is None and coeff is not None:
+        vec_labels = [f'Feature_{i+1}' for l in range(coeff.shape[0])]
+    elif vec_labels is None and data is not None:
+        vec_labels = data.columns.tolist()
+    
+    #generate generic point labels
+    if point_labels is None and score is not None:
+        point_labels = [f'Sample_{i+1}' for i in range(score.shape[0])]
+    elif point_labels is None and data is not None:
+        point_labels = data.index.tolist()
+    
     if data is None and PCA is None:
         raise ValueError("Either 'data' or 'PCA' must be provided.")
     
@@ -69,6 +86,8 @@ def pca_biplot(score, coeff, PCA = None, data = None, labels=None, n_features_to
     elif data is None and PCA is not None: #use provided PCA
         pca = PCA
         components_df = pd.DataFrame(score, columns=[f'PC{i+1}' for i in range(score.shape[1])])
+        if score is None or coeff is None:
+            raise ValueError("When providing 'PCA', both 'score' and 'coeff' must also be provided.")
 
     xs = score[:, 0]
     ys = score[:, 1]
@@ -81,17 +100,29 @@ def pca_biplot(score, coeff, PCA = None, data = None, labels=None, n_features_to
     # Aim for the longest arrow to reach about 80% of the maximum score axis extent.
     scale_factor = (max_score_extent * 0.8) / max_coeff_length
 
-    plt.figure(figsize=(12, 10))
+    # 2. Create a color map for the labels
+    if color_on is not None:
+        unique_labels = list(set(color_on))
+        cmap = plt.cm.get_cmap('tab10', len(unique_labels))  # choose any colormap
+        label_to_color = {label: cmap(i) for i, label in enumerate(unique_labels)}
+        colors = [label_to_color[lbl] for lbl in color_on]
+    else:
+        unique_labels = list(set(point_labels))
+        cmap = plt.cm.get_cmap('tab10', len(unique_labels))  # choose any colormap
+        label_to_color = {label: cmap(i) for i, label in enumerate(unique_labels)}
+        colors = [label_to_color[lbl] for lbl in point_labels]
+
+    plt.figure(figsize=(10, 8))
     
-    # 2. Plot the scores (Phage samples)
-    plt.scatter(xs, ys, c=np.arange(len(xs)), s=50)
+    # 4. Plot the scores (Phage samples)
+    plt.scatter(xs, ys, c=colors, s=50)
     if not hide_labels[0]:
          # Annotate Points with Sequence IDs
         texts = [
             plt.text(
                 components_df.PC1[i] + 1.5,
                 components_df.PC2[i] + 2.5,
-                components_df.index[i].split("_")[-1],
+                point_labels[i],
                 fontsize=9
             )
             for i in range(components_df.shape[0])
@@ -101,7 +132,7 @@ def pca_biplot(score, coeff, PCA = None, data = None, labels=None, n_features_to
     # Prepare list for adjust_text
     texts = []
 
-    # 3. Plot the loadings (K-mers)
+    # 5. Plot the loadings (K-mers)
     for i in range(min(len(coeff), n_features_to_plot)):
         # Apply the scaling factor
         x_arrow = coeff[i, 0] * scale_factor
@@ -110,7 +141,7 @@ def pca_biplot(score, coeff, PCA = None, data = None, labels=None, n_features_to
         # Draw the arrow
         plt.arrow(0, 0, x_arrow, y_arrow, 
                   color='black', 
-                  alpha=0.3, 
+                  alpha=0.5, 
                   linewidth=1.25,
                   head_width=2,  # Adjust size of the arrow head
                   head_length=2.5,
@@ -119,14 +150,21 @@ def pca_biplot(score, coeff, PCA = None, data = None, labels=None, n_features_to
         if not hide_labels[1]:
             # Add the text label and collect it for adjust_text
             texts.append(plt.text(x_arrow * 1.05, y_arrow * 1.05, 
-                                labels[i], 
+                                vec_labels[i], 
                                 color='black', 
-                                fontsize=6))
+                                fontsize=9))
 
     # Use adjust_text to automatically position the labels without overlap
     if texts:
         adjust_text(texts, 
-                    arrowprops=dict(arrowstyle="-", color='k', lw=0.5, alpha=0.6))
+                    arrowprops=dict(arrowstyle="-", color='k', lw=0.5, alpha=0.8))
+        
+    # 6. Add legend for colors
+    if color_on is not None or point_labels is not None:
+        handles = [plt.Line2D([0], [0], marker='o', color='w', label=lbl,
+                              markerfacecolor=label_to_color[lbl], markersize=8) 
+                   for lbl in unique_labels]
+        plt.legend(title='Color Groups', handles=handles, bbox_to_anchor=(1.05, 1), loc='upper left')
 
     # Set axes and labels
     plt.xlabel(f'Principal Component 1 ({pca.explained_variance_ratio_[0]*100:.2f}% Variance)')
