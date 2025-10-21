@@ -51,6 +51,7 @@ def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.
     else:
         print("Error: fasta argument must be a file path or list of file paths.")
         return pd.DataFrame()
+    if not quiet: print(f"Total sequences to process: {len(records)}")
     
     kmer_list = []
     seq_id_list = []
