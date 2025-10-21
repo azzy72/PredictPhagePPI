@@ -34,10 +34,22 @@ def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.
     Returns:
         *pd.DataFrame*: DataFrame with k-mer frequencies for each sequence. sparse or non-sparse depending on sparse arg.
     """
-    try:
-        records = list(SeqIO.parse(fasta, "fasta"))
-    except FileNotFoundError as e:
-        print(f"Error: {e}. Please check the file path.")
+    if type(fasta) == str:  # If a file path is provided, read the fasta file
+        try:
+            records = list(SeqIO.parse(fasta, "fasta"))
+        except FileNotFoundError as e:
+            print(f"Error: {e}. Please check the file path.")
+            return pd.DataFrame()
+    elif type(fasta) == list:  # If a list of filenames
+        records = []
+        for file in fasta:
+            try:
+                records.extend(list(SeqIO.parse(file, "fasta")))
+            except FileNotFoundError as e:
+                print(f"Error: {e}. Please check the file path.")
+                continue
+    else:
+        print("Error: fasta argument must be a file path or list of file paths.")
         return pd.DataFrame()
     
     kmer_list = []
@@ -55,11 +67,12 @@ def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.
         kmer_list.append(kmer_counts)
         seq_id_list.append(seq_id)
     
+    if not quiet: print("Combining k-mer counts into DataFrame...")
     if sparse:
         kmer_df = pd.DataFrame.sparse.from_spmatrix(pd.DataFrame(kmer_list).sparse.to_coo()).fillna(0)
     else: 
         kmer_df = pd.DataFrame(kmer_list).fillna(0)
-    
+
     kmer_df.index = seq_id_list
     if not quiet: print(f"Generated k-mer DataFrame with shape: {kmer_df.shape}")
     return kmer_df

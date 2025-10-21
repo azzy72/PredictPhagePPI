@@ -33,6 +33,10 @@ def perform_pca(data: pd.DataFrame, n_components=2):
         score (np.array): PCA scores (data points/samples).
         coeff (np.array): PCA components (eigenvectors/feature directions).
     """
+    # data input control if empty
+    if data.empty:
+        raise ValueError("Input data DataFrame is empty.")
+    
     # Standardize the data
     scaler = StandardScaler()
     data_scaled = scaler.fit_transform(data)
