@@ -78,3 +78,59 @@ def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.
     if not quiet: print(f"Generated k-mer DataFrame with shape: {kmer_df.shape}")
     return kmer_df
 
+def binarize_host_range(host_range_dict):
+    """
+    Convert the values of a dictionary made of float, to binary values (0 or 1)
+    """
+    binary_dict = {}
+    for host, val in host_range_dict.items():
+        if pd.isna(val) or val == 0:
+            binary_dict[host] = 0
+        else:
+            binary_dict[host] = 1
+    return binary_dict
+
+def short_species_name(full_name):
+    """
+    Shorten species names like: *Pectobacterium brasiliense* --> *P. brasiliense*
+    """
+    if len(full_name.split(" ")) < 2:
+        return full_name
+    else:
+        return full_name.split(" ")[0][0] + "." + full_name.split(" ")[1]
+    
+def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=0.5, TS = False) -> dict:
+    """
+    Used to obtain the host range given bacteria. Can handle multiple bacteria IDs (as mulitple IDs can be from the same family).
+    As such, an approach for obtaining proper hostrange must be considered.
+    """
+    combined_host_range = {}
+    # Acceptive approach: if any seqID has a non-zero value for a host, set to 1
+    if approach == "acceptive":
+        for seqID in seqID_list:
+            curr_host_range = binarize_host_range(host_range_data[seqID])
+            for host, val in curr_host_range.items():
+                if host not in combined_host_range:
+                    combined_host_range[host] = val
+                else:
+                    if not pd.isna(val) and val != 0:
+                        combined_host_range[host] = 1
+        return combined_host_range
+    
+    # Count occurrences of non-zero values for each host, if higher than threshold, set to 1
+    elif approach == "consensus":
+        host_counts = {}
+        for seqID in seqID_list:
+            curr_host_range = binarize_host_range(host_range_data[seqID])
+            for host, val in curr_host_range.items():
+                if host not in host_counts:
+                    host_counts[host] = 0
+                if not pd.isna(val) and val != 0:
+                    host_counts[host] += 1
+        for host, count in host_counts.items():
+            if TS: print(f"Host: {host}, Count: {count}, Total SeqIDs: {len(seqID_list)}, Ratio: {count / len(seqID_list)}")
+            if count / len(seqID_list) >= threshold:
+                combined_host_range[host] = 1
+            else:
+                combined_host_range[host] = 0
+        return combined_host_range
