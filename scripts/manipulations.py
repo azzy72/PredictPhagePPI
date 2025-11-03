@@ -143,7 +143,7 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
     
     Args:
         *fasta* (str | list): List of sequences in fasta format.
-        *k* (int): Length of the k-mers. Default is 8.
+        *k* (int): Length of the k-mers. 
         *outdir* (str): directory for storing sketches (each signature in its own file)
         *quiet* (bool): If True, suppress progress output. Default is False.
         *sourmash_parameters* (list): specify sourmash.MinHash(n, scaled)
@@ -166,7 +166,7 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
         raise ValueError(f"outdir exists but is not a directory: {outdir}")
 
     # Ensuring sourmash parameters are appropriate
-    if sourmash_parameters[0] > 0 and sourmash_parameters > 0:
+    if sourmash_parameters[0] > 0 and sourmash_parameters[1] > 0:
         raise ValueError("One of the sourmash parameters should be 0")
 
     for p in sourmash_parameters:
