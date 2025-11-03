@@ -8,10 +8,12 @@
 
 
 ##### Imports -----------
+import os, sys
 import pandas as pd
 from Bio import SeqIO
 from tqdm import tqdm
 import numpy as np
+import sourmash
 
 
 ##### Paths -------------
@@ -134,3 +136,88 @@ def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=
             else:
                 combined_host_range[host] = 0
         return combined_host_range
+    
+def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, sourmash_parameters = [50000, 0]) -> int:
+    """
+    Construct sourmash sketches given a fasta input.
+    
+    Args:
+        *fasta* (str | list): List of sequences in fasta format.
+        *k* (int): Length of the k-mers. Default is 8.
+        *outdir* (str): directory for storing sketches (each signature in its own file)
+        *quiet* (bool): If True, suppress progress output. Default is False.
+        *sourmash_parameters* (list): specify sourmash.MinHash(n, scaled)
+    
+    Returns:
+        *exit_status* (binary): 0 for success, 1 for failure.
+    """
+    ### Input Control ###
+    if type(outdir) is not str:
+        raise ValueError("outdir must be a path")
+    
+    # Ensure outdir exists (create if missing)
+    if not os.path.exists(outdir):
+        try:
+            os.makedirs(outdir, exist_ok=True)
+            if not quiet: print(f"Created output directory: {outdir}")
+        except OSError as e:
+            raise ValueError(f"Could not create outdir {outdir}: {e}")
+    elif not os.path.isdir(outdir):
+        raise ValueError(f"outdir exists but is not a directory: {outdir}")
+
+    # Ensuring sourmash parameters are appropriate
+    if sourmash_parameters[0] > 0 and sourmash_parameters > 0:
+        raise ValueError("One of the sourmash parameters should be 0")
+
+    for p in sourmash_parameters:
+        if type(p) is not int:
+            raise ValueError("sourmash parameters must be both integers")
+
+    # Handling both cases of fasta input
+    if type(fasta) == str:  # If a file path is provided, read the fasta file
+        try:
+            records = list(SeqIO.parse(fasta, "fasta"))
+        except FileNotFoundError as e:
+            print(f"Error: {e}. Please check the file path.")
+            return 1
+    elif type(fasta) == list:  # If a list of filenames
+        records = []
+        for file in fasta:
+            try:
+                records.extend(list(SeqIO.parse(file, "fasta")))
+            except FileNotFoundError as e:
+                print(f"Error: {e}. Please check the file path.")
+                continue
+
+    ### Constructing minhashes for all records ###
+    if not quiet: print("------- Constructing MinHashes -------")
+    minhashes = []
+    for rec in tqdm(records, desc="Constructing minhashes for all records", unit="seq"):
+        #print("Record:", rec.id, len(rec.seq))
+        try:
+            mh = sourmash.MinHash(n=sourmash_parameters[0], ksize=k, scaled=sourmash_parameters[1]) #each record gets its own minhash | scaled=1000 to limit 
+            for i in range(0, len(rec.seq) - k + 1):
+                kmer = str(rec.seq[i:i+k])
+                mh.add_sequence(kmer, force=True)
+            minhashes.append(mh)
+        except:
+            raise SystemError("Error in constructing minhashes")
+    
+    ### Saving sketches ###
+    if not quiet: print("------- Saving Sketches -------")
+    if "bact" in fasta:
+        outfile_prefix = "bact"
+    elif "phage" in fasta:
+        outfile_prefix = "phage"
+    else:
+        outfile_prefix = "out"
+
+    for i in range(len(minhashes)):
+        try:
+            with open(outdir+f"{outfile_prefix}{i}_minhash_37.sig", "wt") as sigfile:
+                sig1 = sourmash.SourmashSignature(minhashes[i], name=records[i].id)
+                sourmash.save_signatures([sig1], sigfile)
+        except:
+            raise SystemError(f"Error in saving sourmash sketch for: {records[i].id}")
+
+
