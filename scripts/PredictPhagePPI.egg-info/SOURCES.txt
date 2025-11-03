@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+scripts/PredictPhagePPI.egg-info/PKG-INFO
+scripts/PredictPhagePPI.egg-info/SOURCES.txt
+scripts/PredictPhagePPI.egg-info/dependency_links.txt
+scripts/PredictPhagePPI.egg-info/top_level.txt
+scripts/algo_code/hobohm_1.py
+scripts/algo_code/test_ffnn.py
+scripts/algo_code/test_nnalign.py
+scripts/algo_code/train_ffnn.py
+scripts/algo_code/train_nnalign.py

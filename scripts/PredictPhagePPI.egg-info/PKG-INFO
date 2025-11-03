@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: PredictPhagePPI
+Version: 0.1.0
+Summary: Predicting bacteriophage interaction with bacteria, given their genomes and a hostrange interaction
+Author-email: Asbjorn Victor Hansen <s215045@student.dtu.dk>
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+
+# PredictPhagePPI
+DTU on predicting phage interactions given phage and target bacterias sequenced genomes as well as interaction
+
+### notes
+KU library preperation using Hackflex; https://github.com/GaioTransposon/Hackflex
+
+Identify key proteins in genomes:
+- Depolymerases; https://link.springer.com/article/10.1186/s12929-023-00928-0
+- Anti-defense (CRISPR?)
+- Modifying enzymes
+- Integrases
