@@ -7,76 +7,84 @@ import random
 from keras.utils import Sequence
 
 
+import numpy as np
+import random
+from keras.utils import Sequence
+
 class MinhashPairGenerator(Sequence):
     """
-    Generates batches of paired minhash vectors (X) and hostrange scores (y).
+    Generates batches of paired minhash vectors (X) and interaction scores (y).
+    Assumes interaction_scores structure: [bacteria_name][phage_name]
     """
-
-    def __init__(self, list_IDs, phage_minhashes, bacteria_minhashes, interaction_scores, batch_size=32, shuffle=True):
-        # 1. Store the list of keys (IDs) for this specific generator instance
+    def __init__(self, list_IDs, phage_minhashes, max_phage_dim, bacteria_minhashes, max_bact_dim, interaction_scores, batch_size=32, shuffle=True, cleanPhage=True):
         self.keys = list_IDs 
-        
         self.phage_mh = phage_minhashes
+        self.max_phage_dim = max_phage_dim
         self.bacteria_mh = bacteria_minhashes
+        self.max_bacteria_dim = max_bact_dim
         self.scores = interaction_scores
         self.batch_size = batch_size
         self.shuffle = shuffle
-        
-        # 2. Call on_epoch_end to perform initial shuffle
         self.on_epoch_end()
 
+        #In case phages are written like "Pectobacterium_phage_Crus"
+        if cleanPhage:
+            self.clean_phage_names()
+
     def __len__(self):
-        """Denotes the number of batches per epoch"""
         return int(np.floor(len(self.keys) / self.batch_size))
 
     def __getitem__(self, index):
-        """Generate one batch of data"""
-        
-        # Determine the key indices for this batch
         start_idx = index * self.batch_size
         end_idx = (index + 1) * self.batch_size
-        
-        # Get the list of (phage, bacteria) tuples for this batch
         batch_keys = self.keys[start_idx:end_idx]
-        
-        # Generate data
         X, y = self.__data_generation(batch_keys)
-        
         return X, y
 
     def on_epoch_end(self):
-        """Updates indices after each epoch"""
         if self.shuffle:
             random.shuffle(self.keys)
+    
+    def clean_phage_names(self):
+        """phage names in sketches are extended, return only phage name"""
+        self.phage_mh = {key.split("_")[-1]: value for key, value in self.phage_mh.items()}
+
+
 
     def __data_generation(self, batch_keys):
-        """
-        Generates data containing batch_size samples.
-        X is the concatenated minhash vector (phage_mh + bacteria_mh).
-        y is the hostrange score.
-        """
+        # Use the consistent global dimensions passed/calculated
+        phage_dim = self.max_phage_dim      # Example: 20000
+        bacteria_dim = self.max_bacteria_dim # Example: 29810
+        total_dim = phage_dim + bacteria_dim # Example: 49810
         
-        # Get the dimensions of the input vectors
-        phage_dim = next(iter(self.phage_mh.values())).shape[0]
-        bacteria_dim = next(iter(self.bacteria_mh.values())).shape[0]
-        total_dim = phage_dim + bacteria_dim
-        
-        # Initialize numpy arrays for the batch
-        # X: (batch_size, total_dim), y: (batch_size, 1)
         X = np.empty((len(batch_keys), total_dim))
         y = np.empty((len(batch_keys), 1))
 
-        # Iterate through the (phage, bacteria) pairs
-        for i, (p_name, b_name) in enumerate(batch_keys):
+        for i, (b_name, p_name) in enumerate(batch_keys):
+            phage_vec = np.array(self.phage_mh[p_name])
+            bacteria_vec = np.array(self.bacteria_mh[b_name])
             
-            # Fetch the two minhash vectors
-            phage_vec = self.phage_mh[p_name]
-            bacteria_vec = self.bacteria_mh[b_name]
+            # --- PADDING IMPLEMENTATION ---
             
-            # 1. Concatenate them to create the feature vector X
-            X[i,] = np.concatenate((phage_vec, bacteria_vec))
+            # Pad phage vector to max length
+            phage_vec_padded = np.pad(
+                phage_vec, 
+                (0, phage_dim - len(phage_vec)), # Pad at the end
+                mode='constant'
+            )
             
-            # 2. Fetch the label (hostrange score)
-            y[i] = self.scores[p_name][b_name]
+            # Pad bacteria vector to max length
+            bacteria_vec_padded = np.pad(
+                bacteria_vec, 
+                (0, bacteria_dim - len(bacteria_vec)), 
+                mode='constant'
+            )
+            # --- END PADDING ---
+
+            # Concatenate the padded vectors
+            X[i,] = np.concatenate((phage_vec_padded, bacteria_vec_padded))
+            y[i] = self.scores[b_name][p_name]
 
         return X, y
+    
+    

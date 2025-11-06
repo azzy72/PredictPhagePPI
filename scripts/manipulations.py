@@ -234,7 +234,6 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
         except:
             raise SystemError(f"Error in saving sourmash sketch for: {records[i].id}")
 
-
 def hostrange_df_to_dict(host_range_df : pd.DataFrame) -> dict:
     """
     Simple function to return host range dataframe into a dictionary, cleaning it meanwhile
@@ -254,3 +253,7 @@ def hostrange_df_to_dict(host_range_df : pd.DataFrame) -> dict:
         curr_bact_series.index = cleaned_index
         host_range_data[row['phage']] = curr_bact_series.to_dict()
     return host_range_data
+
+def get_max_dim(mh_dict):
+    # Use max() over the lengths of all values
+    return max(len(v) for v in mh_dict.values())

@@ -53,7 +53,19 @@ def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool 
     
     return [bact_lookup, host_range_df]
 
-def load_minhash_sketches(in_dir : str, TS : bool = False):
+def load_minhash_sketches(in_dir : str, TS : bool = False, output_as_np : bool = False):
+    """
+    Load Sourmash Minhash sketches from a directory and concatenate them in a dictionary.
+
+    Args:
+        **in_dir** (str): Path to signatures
+        **TS** (bool): Troubleshoot on or off
+        **output_as_np** (bool): Output minhash vector (values in dict) as np.array rather than the default python list
+    
+    Returns:
+        Dictionary of minhashes, with (extended) phage names as keys and it's minhash composition as a vector [list / np.array]
+    
+    """
     minhash_data = {}
     for filename in os.listdir(in_dir):
         if filename.endswith(('.sig', '.json')): # sourmash signature files
@@ -68,7 +80,10 @@ def load_minhash_sketches(in_dir : str, TS : bool = False):
                     continue
                 
                 name = str(sig)
-                hashes = sorted(sig.minhash.hashes.keys())
+                if output_as_np:
+                    hashes = np.array(sorted(sig.minhash.hashes.keys()))
+                else:
+                    hashes = sorted(sig.minhash.hashes.keys())
                 minhash_data[name] = hashes
 
             except Exception as e:
