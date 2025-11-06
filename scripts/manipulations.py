@@ -92,6 +92,11 @@ def binarize_host_range(host_range_dict):
             binary_dict[host] = 1
     return binary_dict
 
+def binarize_value(val):
+    if isinstance(val, str) or pd.isna(val):
+        return 0
+    return val
+
 def short_species_name(full_name):
     """
     Shorten species names like: *Pectobacterium brasiliense* --> *P. brasiliense*
@@ -155,15 +160,24 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
     if type(outdir) is not str:
         raise ValueError("outdir must be a path")
     
-    # Ensure outdir exists (create if missing)
-    if not os.path.exists(outdir):
+    if not os.path.exists(data_prod_path+"SM_sketches/"):
         try:
-            os.makedirs(outdir, exist_ok=True)
+            os.makedirs(data_prod_path+"SM_sketches/", exist_ok=True)
+            if not quiet: print(f"Created output directory: {data_prod_path}SM_sketches/")
+        except OSError as e:
+            raise ValueError(f"Could not create outdir {data_prod_path}SM_sketches/: {e}")
+    
+    # Ensure outdir exists (create if missing)
+    if not os.path.exists(data_prod_path+"SM_sketches/"+outdir):
+        try:
+            os.makedirs(data_prod_path+"SM_sketches/"+outdir, exist_ok=True)
             if not quiet: print(f"Created output directory: {outdir}")
         except OSError as e:
             raise ValueError(f"Could not create outdir {outdir}: {e}")
-    elif not os.path.isdir(outdir):
+    elif not os.path.isdir(data_prod_path+"SM_sketches/"+outdir):
         raise ValueError(f"outdir exists but is not a directory: {outdir}")
+
+    outpath = data_prod_path+"SM_sketches/"+outdir
 
     # Ensuring sourmash parameters are appropriate
     if sourmash_parameters[0] > 0 and sourmash_parameters[1] > 0:
@@ -214,10 +228,29 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
 
     for i in range(len(minhashes)):
         try:
-            with open(outdir+f"{outfile_prefix}{i}_minhash_37.sig", "wt") as sigfile:
+            with open(outpath+f"{outfile_prefix}{i}_minhash_37.sig", "wt") as sigfile:
                 sig1 = sourmash.SourmashSignature(minhashes[i], name=records[i].id)
                 sourmash.save_signatures([sig1], sigfile)
         except:
             raise SystemError(f"Error in saving sourmash sketch for: {records[i].id}")
 
 
+def hostrange_df_to_dict(host_range_df : pd.DataFrame) -> dict:
+    """
+    Simple function to return host range dataframe into a dictionary, cleaning it meanwhile
+
+    Args:
+        **host_range_df** (pd.DataFrame): input host range dataframe with strains and phage names (strains must not be index, but in col 1)
+    
+    Returns:
+        **host_range_data** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
+
+    """
+
+    host_range_data = {}
+    for index, row in host_range_df.iterrows():
+        cleaned_index = row[1:].index.str.replace(" ", "")
+        curr_bact_series = row[1:]
+        curr_bact_series.index = cleaned_index
+        host_range_data[row['phage']] = curr_bact_series.to_dict()
+    return host_range_data
