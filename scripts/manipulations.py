@@ -80,17 +80,89 @@ def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.
     if not quiet: print(f"Generated k-mer DataFrame with shape: {kmer_df.shape}")
     return kmer_df
 
-def binarize_host_range(host_range_dict):
+def binarize_host_range(host_range_dict, TS = False, continous = True):
     """
-    Convert the values of a dictionary made of float, to binary values (0 or 1)
+    Convert the values of a dictionary made of nan and float values, to numericalize and normalize.
+    Normalize by taking the log first, them min-max normalize. Log first saves computation.
+    If continous is false, return binary values (0 or 1) suitable for a Classification model
+
+    $$\text{Normalized}_x = \frac{\log(1 + x)}{\log(1 + \text{highest\_val})}$$
     """
-    binary_dict = {}
-    for host, val in host_range_dict.items():
-        if pd.isna(val) or val == 0:
-            binary_dict[host] = 0
-        else:
-            binary_dict[host] = 1
-    return binary_dict
+    ### Numericalize 
+    highest_val = 0
+    host_range_bin = {}
+
+    if continous:
+        if TS: print("\n--- Normalized Dictionary ---")
+        for bact, phage_d in host_range_dict.items():
+            binary_dict = {}
+            if TS: print(f"\nfor bact: {bact}")
+            for host, val in phage_d.items():
+                if TS: 
+                    print(f"for phage: {host}, {val}")
+                try: 
+                    val = float(val)
+                except: #val is non-numeric
+                    if TS: print("val to float failed")
+                    binary_dict[host] = 0
+                    continue
+
+                if val == 0 or pd.isna(val):
+                    binary_dict[host] = 0 
+                else:
+                    binary_dict[host] = val
+                    if val > highest_val:
+                        highest_val = val
+
+            host_range_bin[bact] = binary_dict
+        
+        ### Normalize
+        denominator = np.log(1 + highest_val)
+        host_range_norm = {}
+
+        # Iterate through the dictionary and normalize each list
+        for bact_strain, phage_dict in host_range_bin.items():
+            if TS: print(f"Handling bact: {bact_strain}")
+            normalized_dict = {}
+            for list_name, values in phage_dict.items():
+                np_values = np.array(values)
+                log_transformed_data = np.log(1 + np_values) # Apply the log transformation and normalize
+                normalized_values = log_transformed_data / denominator
+                normalized_dict[list_name] = normalized_values
+            host_range_norm[bact_strain] = normalized_dict
+
+        if TS:
+            print("\n--- Normalized Dictionary ---")
+            for bact_strain, norm_dict in host_range_norm.items():
+                print(f"bact_strain: {bact_strain}")
+                for list_name, normalized_values in norm_dict.items():
+                    print(f"**{list_name}**:")
+                    print(np.round(normalized_values, 4)) # Print the array rounded for better readability
+        
+        return host_range_norm   
+    
+    else: #for binary data
+        if TS: print("\n--- Normalized Dictionary ---")
+        for bact, phage_d in host_range_dict.items():
+            binary_dict = {}
+            if TS: print(f"\nfor bact: {bact}")
+            for host, val in phage_d.items():
+                if TS: 
+                    print(f"for phage: {host}, {val}")
+                try: 
+                    val = float(val)
+                except: #val is non-numeric
+                    if TS: print("val to float failed")
+                    binary_dict[host] = 0
+                    continue
+
+                if val == 0 or pd.isna(val):
+                    binary_dict[host] = 0 
+                else:
+                    binary_dict[host] = 1
+
+            host_range_bin[bact] = binary_dict
+        return host_range_bin
 
 def binarize_value(val):
     if isinstance(val, str) or pd.isna(val):
@@ -257,3 +329,21 @@ def hostrange_df_to_dict(host_range_df : pd.DataFrame) -> dict:
 def get_max_dim(mh_dict):
     # Use max() over the lengths of all values
     return max(len(v) for v in mh_dict.values())
+
+def clean_dict_keys(in_dict : dict, sep : str = "_", take : str = "last") -> dict:
+    """
+    Clean the keys in a dictionary by splitting by sep and taking the last/first val.
+    If name can't be split, return name (do nothing)
+    """
+    out_dict = {}
+    for key, val in in_dict.items():
+        if sep in key:
+            if take == "first":
+                out_dict[key.split("_")[0]] = val
+            elif take == "last":
+                out_dict[key.split("_")[-1]] = val
+            else:
+                raise ValueError("Can only take the first or the last value")
+        else: 
+            out_dict[key] = val
+    return out_dict

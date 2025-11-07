@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import roc_curve, roc_auc_score
+
 
 ##### Paths -------------
 raw_data_path = "../raw_data/"
@@ -177,4 +179,51 @@ def pca_biplot(score = None, coeff = None, PCA = None, data : pd.DataFrame = Non
     plt.grid(True, linestyle='--')
     plt.axhline(0, color='gray', linewidth=0.5, linestyle='-')
     plt.axvline(0, color='gray', linewidth=0.5, linestyle='-')
+    plt.show()
+
+def plot_roc_curve_rf(rf, x_test, y_test, title=None, save=None):
+    y_pred_prob = rf.predict_proba(x_test)[:, 1]
+    fpr, tpr, thresholds = roc_curve(y_test, y_pred_prob, pos_label=1)
+    roc_auc = roc_auc_score(y_test, y_pred_prob)
+    #print(f"ROC AUC: {roc_auc}")
+
+    # Plot the ROC curve
+    plt.plot(fpr, tpr, label='ROC curve (area = %0.2f)' % roc_auc)
+    # roc curve for tpr = fpr 
+    plt.plot([0, 1], [0, 1], 'k--', label='Random classifier')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+
+    if title is None:
+        plt.title(f'ROC Curve with AUC: {round(roc_auc, 2)}')
+    else:
+        title = title + f". AUC: {round(roc_auc, 2)}"
+        plt.title(title)
+
+    plt.legend(loc="lower right")
+    
+    if save is None:
+        plt.show()
+    else:
+        try: 
+            plt.savefig(save)
+        except Exception as e:
+            print("Unable to save ROC fig!")
+
+def plot_residuals(x_vals, y_vals, tile=None):
+    
+    plt.figure(figsize=(10, 6))
+    # Scatter plot of Predicted Values (X-axis) vs. Residuals (Y-axis)
+    plt.scatter(x_vals, y_vals, alpha=0.6, color='darkgreen')
+
+    # Draw the horizontal zero line (the ideal residual)
+    plt.hlines(y=0, xmin=x_vals.min(), xmax=x_vals.max(), color='red', linestyle='--', lw=2)
+
+    # --- 3. Label and Title the Plot ---
+
+    plt.title('Residuals Plot for Random Forest Regressor')
+    plt.xlabel('Predicted Scores ($\hat{y}$)')
+    plt.ylabel('Residuals ($y - \hat{y}$)')
+    plt.grid(True, linestyle=':', alpha=0.6)
+
     plt.show()
