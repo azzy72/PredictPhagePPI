@@ -214,7 +214,7 @@ def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=
                 combined_host_range[host] = 0
         return combined_host_range
     
-def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, sourmash_parameters = [50000, 0]) -> int:
+def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, sourmash_parameters = [50000, 0], include_reverse : bool = False) -> int:
     """
     Construct sourmash sketches given a fasta input.
     
@@ -224,6 +224,7 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
         *outdir* (str): directory for storing sketches (each signature in its own file)
         *quiet* (bool): If True, suppress progress output. Default is False.
         *sourmash_parameters* (list): specify sourmash.MinHash(n, scaled)
+        *include_reverse* (bool): include the reverse strand to sketches
     
     Returns:
         *exit_status* (binary): 0 for success, 1 for failure.
@@ -285,6 +286,8 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
             for i in range(0, len(rec.seq) - k + 1):
                 kmer = str(rec.seq[i:i+k])
                 mh.add_sequence(kmer, force=True)
+                if include_reverse:
+                    mh.add_sequence(kmer[::-1], force=True)
             minhashes.append(mh)
         except:
             raise SystemError("Error in constructing minhashes")

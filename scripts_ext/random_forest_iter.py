@@ -11,7 +11,7 @@ log_path = "logs/"
 logfile = log_path + "random_forest_n_runs.txt"
 
 with open(logfile, "w") as log:
-    for n in [50, 500, 5000, 10000, 50000]:
+    for n in [50, 500, 5000]:
         phage_minhash_data = load_minhash_sketches(data_prod_path+f"SM_sketches/PhageMinhash_n{n}_k18/", 
                                                 TS=False, output_as_np=True)
 
@@ -163,9 +163,4 @@ with open(logfile, "w") as log:
             'Predicted_Interaction': y_pred
         })
 
-        print("\nTest Set Predictions:", file=log)
-        print(test_results_df, file=log)
-
-        # #### ROC-curve
-        from analysis import plot_roc_curve_rf
-        plot_roc_curve_rf(rf_classifier, X_test, y_test, title=f"RF Classifier minhash n={n}", save=f"fig/RF_ROC_n{n}.png")
+test_results_df.to_csv(data_prod_path+"RandomForest.csv")
