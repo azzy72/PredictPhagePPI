@@ -350,3 +350,31 @@ def clean_dict_keys(in_dict : dict, sep : str = "_", take : str = "last") -> dic
         else: 
             out_dict[key] = val
     return out_dict
+
+def construct_presence_matrix(phage_dict : dict, bact_dict : dict, TS : bool = False) -> [pd.DataFrame, pd.DataFrame]:
+    """
+    Construct a presence/absence matrix given a dictionary of phage & bacteria names with its minhashes.
+    The matrix will have rows as sequence IDs and columns as minhashes, with 1 indicating presence and 0 absence.
+    Both phage and bacteria are given to the function, to ensure that their presence matrices will have the same columns (hashes).
+
+    Args:
+        **phage_dict** (dict): dictionary with keys as phage names and values as sourmash.MinHash objects.
+        **bact_dict** (dict): dictionary with keys as bacteria strain IDs and values as sourmash.MinHash objects.
+        **TS** (bool): Troubleshooting flag for verbose output.
+    
+    Returns:
+        **list of presence_dfs** [pd.DataFrame, pd.DataFrame]: list with phage and bacteria DataFrames with presence/absence matrix. 
+    """
+    all_hashes = np.unique(np.concatenate(list(phage_dict.values()) + list(bact_dict.values())))
+    
+    phage_pres_df = pd.DataFrame(0, index=list(phage_dict.keys()), columns=all_hashes, dtype=np.uint8)
+    for name, hashes in phage_dict.items(): # Fill presence (set to 1 where the hash exists for that name)
+        phage_pres_df.loc[short_species_name(name), hashes] = 1 # assign 1 to the columns corresponding to the hashes for this name
+    if TS: print("Phage binary presence matrix shape (rows, cols):", phage_pres_df.shape)
+
+    bact_pres_df = pd.DataFrame(0, index=list(bact_dict.keys()), columns=all_hashes, dtype=np.uint8)
+    for name, hashes in bact_dict.items(): # Fill presence (set to 1 where the hash exists for that name)
+        bact_pres_df.loc[name, hashes] = 1 # assign 1 to the columns corresponding to the hashes for this name
+    if TS: print("Bact binary presence matrix shape (rows, cols):", bact_pres_df.shape)
+
+    return phage_pres_df, bact_pres_df
