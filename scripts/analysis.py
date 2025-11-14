@@ -49,7 +49,6 @@ def perform_pca(data: pd.DataFrame, n_components=2):
     coeff = pca.components_.T
     return pca, score, coeff
 
-
 def pca_biplot(score = None, coeff = None, PCA = None, data : pd.DataFrame = None, vec_labels = None, point_labels = None, n_features_to_plot = 10, hide_labels = [False, False], color_on = None) -> None:
     """
     Generates a PCA biplot with dynamically scaled arrows for loadings and 
@@ -227,3 +226,13 @@ def plot_residuals(x_vals, y_vals, tile=None):
     plt.grid(True, linestyle=':', alpha=0.6)
 
     plt.show()
+
+def plot_losses(train_losses, valid_losses, n_epochs, title=None):
+    # Plotting the losses 
+    fig,ax = plt.subplots(1,1, figsize=(9,5))
+    ax.plot(range(n_epochs), train_losses, label='Train loss', c='b')
+    ax.plot(range(n_epochs), valid_losses, label='Valid loss', c='m')
+    ax.legend()
+    if title is not None:
+        fig.suptitle(title)
+    fig.show()
