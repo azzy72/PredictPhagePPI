@@ -80,12 +80,20 @@ def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.
     if not quiet: print(f"Generated k-mer DataFrame with shape: {kmer_df.shape}")
     return kmer_df
 
-def binarize_host_range(host_range_dict, TS = False, continous = True):
+def binarize_host_range(host_range_dict, TS = False, continous = True, acceptive = False) -> dict:
     """
     Convert the values of a dictionary made of nan and float values, to numericalize and normalize.
     Normalize by taking the log first, them min-max normalize. Log first saves computation.
-    If continous is false, return binary values (0 or 1) suitable for a Classification model
 
+    Args:
+        **host_range_dict** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
+        **TS** (bool): Troubleshooting flag for verbose output.
+        **continous** (bool): If continous is true, return normalized values between 0 and 1 suitable for a Regression model. Else return binary values (0 or 1) suitable for a Classification model.
+        **acceptive** (bool): If true, any non-zero value is considered as 1 in binary mode.
+    Returns:
+        **host_range_norm** (dict): nested dictionary with strains as outer keys, phage as inner keys and normalized host range values as values.
+        
+    Normalization formula:
     $$\text{Normalized}_x = \frac{\log(1 + x)}{\log(1 + \text{highest\_val})}$$
     """
     ### Numericalize 
@@ -153,7 +161,10 @@ def binarize_host_range(host_range_dict, TS = False, continous = True):
                     val = float(val)
                 except: #val is non-numeric
                     if TS: print("val to float failed")
-                    binary_dict[host] = 0
+                    if acceptive:
+                        binary_dict[host] = 1
+                    else:
+                        binary_dict[host] = 0
                     continue
 
                 if val == 0 or pd.isna(val):

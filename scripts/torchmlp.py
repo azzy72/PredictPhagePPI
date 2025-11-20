@@ -17,12 +17,14 @@ from argparse import ArgumentParser
 parser = ArgumentParser(description="Torch MLP for predicting phage-bacteria interactions based on minhash presence matrix.")
 parser.add_argument("-n", action="store", dest="n_hashes", type=str, help="Search for signatures where the number of hashes in the minhash sketches used was equal to n.")
 parser.add_argument("-k", action="store", dest="k", type=str, help='Search for signatures where the number of hashes in the minhash sketches used was equal to k.')
+parser.add_argument("-acceptive", action="store", dest="acceptive", type=bool, default=False, help="If True, treat non-numeric hostrange values (eg. (+) ) as positive interactions (1). Default is False.")
 parser.add_argument("-outdir", action="store", dest="outdir", type=str, default=None, help="Output directory for results. If not provided, a new directory will be created.")
 parser.add_argument("-epochs", action="store", dest="n_epochs", type=int, default=50, help="Number of training epochs. Default is 50.")
 parser.add_argument("-lr", action="store", dest="learning_rate", type=float, default=1e-3, help="Learning rate for the optimizer. Default is 1e-3.")
 parser.add_argument("-batch_size", action="store", dest="batch_size", type=int, default=64, help="Batch size for training. Default is 64.")
 parser.add_argument("-test_split", action="store", dest="test_split_ratio", type=float, default=0.2, help="Test split ratio. Default is 0.2.")
 parser.add_argument("-val_split", action="store", dest="val_split_ratio", type=float, default=0.2, help="Validation split ratio. Default is 0.2.")
+parser.add_argument("-apply", action="store", dest="apply_model", type=bool, default=False, help="If set to True, applies the trained NN model to all phage-bacteria pairs.")
 args = parser.parse_args()
 
 time_start = time()
@@ -31,29 +33,29 @@ data_prod_path = "../data_prod/"
 
 n = args.n_hashes
 k = args.k
-path_to_fig = args.outdir
-if path_to_fig is None:
-    path_to_fig = "../fig/"
+path_to_nn_runs = args.outdir
+if path_to_nn_runs is None:
+    path_to_nn_runs = "../nn_runs/"
 
 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting Torch MLP for n={n}, k={k} sketches...')
 
 ### Load minhash presence matrix and associated data ------------------------
-binary_matrix, entity_to_index, minhash_to_index, phage_minhash_data, bact_minhash_data = presence_matrix(n=n, k=k, TS=True)
+binary_matrix, entity_to_index, minhash_to_index, phage_minhash_data, bact_minhash_data = presence_matrix(n=n, k=k)
 
 from io_operations import call_hostrange_df
 bact_lookup, host_range_df = call_hostrange_df(raw_data_path + "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx")
 from manipulations import hostrange_df_to_dict, binarize_host_range
 host_range_data = hostrange_df_to_dict(host_range_df)
-host_range_data = binarize_host_range(host_range_data, continous=False) #for classification model
+host_range_data = binarize_host_range(host_range_data, continous=False, acceptive=args.acceptive) #for classification model
 
 run = 1
-outdir = path_to_fig+f'torch_mlp_n{n}_k{k}_run{run}/'
+outdir = path_to_nn_runs+f'torch_mlp_n{n}_k{k}_run{run}/'
 while os.path.exists(outdir):
     run += 1
-    outdir = path_to_fig+f'torch_mlp_n{n}_k{k}_run{run}/'
+    outdir = path_to_nn_runs+f'torch_mlp_n{n}_k{k}_run{run}/'
 os.makedirs(outdir, exist_ok=True)
 logfile = open(outdir+f'torchMLP_log_run{run}.txt', 'w')
-logfile.write(f'Torch MLP log for n={n}, k={k}\n')
+logfile.write(f'Torch MLP log for n={n}, k={k}, acceptive; {args.acceptive}\n')
 logfile.write('-----------------------------------\n')
 
 X = []
@@ -392,9 +394,83 @@ axes[1].grid(True)
 plt.suptitle(f'F1 analysis (best t={best_t:.3f}, F1={best_f1:.4f})')
 outname = 'torchMLP_f1_analysis.png'
 plt.savefig(outdir + outname, bbox_inches='tight')
-plt.show()
 
 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} F1 analysis figure saved as: {outdir+outname}', file=logfile)
+
+### Apply each phage & bacteria pair to the trained model and save predictions ----------------------------------------
+if args.apply_model:
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} \nApplying model to trained data to color hostrange by predictions...: {outdir+outname}', file=logfile)
+    model.eval()
+    results = []
+    thresh = globals().get('best_t', 0.5)  # use best_t if computed, otherwise fallback to 0.5
+
+    with torch.no_grad():
+        for bact_name in tqdm(bacteria_names, desc="Bacteria names iterated"):
+            for phage_name in phage_names:
+                # skip pairs that don't exist in entity_to_index
+                try:
+                    bact_index = entity_to_index[bact_name]
+                    phage_index = entity_to_index[phage_name]
+                except KeyError:
+                    continue
+
+                # build combined feature vector like in training
+                bact_features = binary_matrix[bact_index, :]
+                phage_features = binary_matrix[phage_index, :]
+                combined = np.concatenate((bact_features, phage_features)).astype(np.float32).reshape(1, -1)
+
+                # scale and convert to tensor
+                scaled = scaler.transform(combined)
+                x_t = torch.from_numpy(scaled).float().to(device)
+
+                # inference
+                logits = model(x_t)
+                prob = torch.sigmoid(logits).item()
+                pred = int(prob >= thresh)
+
+                results.append({
+                    "bacterium": bact_name,
+                    "phage": phage_name,
+                    "probability": prob,
+                    "prediction": pred
+                })
+
+    # Save results to DataFrame + CSV
+    pred_df = pd.DataFrame(results)
+    outpath = outdir + "torchMLP_all_pairs_predictions.csv"
+    pred_df.to_csv(outpath, index=False)
+
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved {len(pred_df)} predictions to {outpath}', file=logfile)
+
+    # create prediction matrix: rows=bacterium, cols=phage, values=prediction
+    pred_matrix = pred_df.pivot_table(index='bacterium', columns='phage', values='prediction', aggfunc='max')
+
+    # normalize column names (strip whitespace) then reorder columns to the requested phage order
+    pred_matrix = pred_matrix.rename(columns=lambda x: x.strip())
+
+    phage_order = [
+        "Ymer","Taid","Poppous","Koroua","Abuela","Amona","Sabo","Mimer","Crus",
+        "Gander","Guf","Hoejben","Magnum","Vims","Echoes","Galvinrad","Uther",
+        "Rip","Rup","Slaad","Pantea","Rap","Zann"
+    ]
+
+    # keep only those desired that actually exist, then append any extra columns that were not listed
+    cols_in_order = [c for c in phage_order if c in pred_matrix.columns]
+    #rows_in_order = [c for c in pred_matrix.columns if c not in cols_in_order]
+    final_cols = cols_in_order
+
+    # ensure consistent ordering and include any missing rows/cols (fill missing pairs with 0)
+    pred_matrix = pred_matrix.reindex(index=list(bacteria_names), columns=final_cols, fill_value=0)
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed ordered prediction matrix', file=logfile)
+
+    ### Create prediction colored hostrange ----------------------------------------
+    from io_operations import color_sheet_from_matrix
+    color_sheet_from_matrix(
+        input_excel=raw_data_path + "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx",
+        sheet1_name="sum_hostrange",
+        prediction_matrix_df=pred_matrix,
+        output_excel=outdir + "hostrange_colored.xlsx"
+    )
 
 ### End of run ----------------------------------------
 print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} End of run.\nExecuted in {time()-time_start}s', file=logfile)

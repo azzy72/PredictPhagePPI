@@ -7,6 +7,8 @@
 ##### Imports -----------
 import os, sys
 import pandas as pd
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import PatternFill
 from Bio import SeqIO
 from tqdm import tqdm
 import numpy as np
@@ -208,3 +210,89 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
         print("Sample columns (minhashes):", sorted_minhashes[:5])
     
     return binary_matrix, entity_to_index, minhash_to_index, phage_minhash_data, bact_minhash_data
+
+def color_sheet_from_matrix(
+        input_excel: str,
+        sheet1_name: str,
+        prediction_matrix_df: pd.DataFrame,
+        output_excel: str = "colored_output.xlsx",
+        TS: bool = False
+    ):
+    """
+    Reads an Excel file, colors Sheet1 based on the corresponding values
+    in torchMLP_prediction_matrix, and writes a new Excel file.
+    Assumptions:
+    - Colors Sheet1 (F3:AB112) based on values in prediction matrix.
+    - Sheet1 column names come from F2:AB2.
+    - Sheet1 row names are in column B (rows 3+).
+    """
+
+    # ---- Load the Excel file ----
+    df_sheet1 = pd.read_excel(input_excel, sheet_name=sheet1_name, header=None)
+
+    # Extract row/column names
+    row_names_sheet1 = df_sheet1.iloc[2:, 1]  # starting row 3
+    col_start = 5      # F
+    col_end = 27       # AB
+    col_names_sheet1 = df_sheet1.iloc[1, col_start:col_end+1]
+    if TS:
+        print("Row names (Sheet1):", row_names_sheet1.tolist()[:5])
+        print("Column names (Sheet1):", col_names_sheet1.tolist()[:5])
+
+    #row_names_matrix = prediction_matrix_df.iloc[:, 0]       
+    row_names_matrix = prediction_matrix_df.index     
+    col_names_matrix = prediction_matrix_df.columns 
+    if TS:
+        print("Row names (Pred Matrix):", row_names_matrix.tolist()[:5])
+        print("Column names (Pred Matrix):", col_names_matrix.tolist()[:5])
+
+    # Convert matrix sheet into a lookup dict
+    # dict[row_name][col_name] = 0 or 1
+    matrix_dict = {
+        row: prediction_matrix_df.loc[row].to_dict()
+        for row in prediction_matrix_df.index
+    }
+    if TS:
+        sample_row = row_names_matrix[0]
+        print(f"\nSample row in matrix_dict: {sample_row} ->", matrix_dict[sample_row])
+
+    # ---- Create new workbook for output ----
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet1_name
+
+    # ---- Write Sheet1 values first ----
+    for r in range(df_sheet1.shape[0]):
+        for c in range(df_sheet1.shape[1]):
+            ws.cell(r+1, c+1, df_sheet1.iat[r, c])
+
+    # ---- Colors ----
+    fill_1 = PatternFill(start_color="FFCCFFCC", end_color="FFCCFFCC", fill_type="solid")  # light green
+    fill_0 = PatternFill(start_color="FFFFCCCC", end_color="FFFFCCCC", fill_type="solid")  # light red
+
+    # ---- Apply coloring in F3:AB112 or dynamically based on DataFrame ----
+    for r_idx, row_name in enumerate(row_names_sheet1, start=3):
+
+        # pandas index 5 == column F, but openpyxl column F == 6
+        for c_index, col_name in enumerate(col_names_sheet1):
+
+            excel_col = col_start + c_index + 1    # +1 for openpyxl 1-based indexing
+
+            if col_name not in col_names_matrix:
+                continue
+
+            try:
+                val = matrix_dict[row_name][col_name]
+            except KeyError:
+                continue
+
+            cell = ws.cell(row=r_idx, column=excel_col)
+
+            if val == 1:
+                cell.fill = fill_1
+            elif val == 0:
+                cell.fill = fill_0
+
+    # ---- Save result ----
+    wb.save(output_excel)
+    print(f"\nSaved colored Excel as: {output_excel}")
