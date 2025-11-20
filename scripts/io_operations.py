@@ -92,7 +92,7 @@ def load_minhash_sketches(in_dir : str, TS : bool = False, output_as_np : bool =
 
     return minhash_data
 
-def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = None, n : int = 0, k : int = 0, reversecomp_data : bool = True, TS : bool = False):
+def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = None, n : int = 0, k : int = 0, reversecomp_data : bool = True, subset_features : list = None, TS : bool = False):
     """
     Create a binary presence matrix from minhash sketches.
     Combines the workflows of loading minhash sketches (load_minhash_sketches()) and generating a binary presence matrix (manipulations.construct_presence_matrix()).
@@ -106,6 +106,7 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
         **n** (int): Number of minhashes used in the sketches
         **k** (int): Kmer size used in the sketches
         **reversecomp_data** (bool): Whether reverse complements were used in the minhash sketches
+        **subset_features** (list): List of minhashes to subset the presence matrix to (default: None, uses all minhashes)
         **TS** (bool): Troubleshoot on or off
     
     Returns:
@@ -162,7 +163,16 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
 
     # Get an ordered list of unique minhashes (will be the column labels)
     # Sorting is crucial to ensure consistency in the matrix columns
-    sorted_minhashes = sorted(list(unique_minhashes))
+    if subset_features is not None:
+        # Use only the provided subset_features, preserving their order and dropping missing ones
+        # Ensure we only keep features that are in the extracted unique_minhashes
+        filtered = [f for f in subset_features if f in unique_minhashes]
+        missing = [f for f in subset_features if f not in unique_minhashes]
+        if TS and missing:
+            print(f"Warning: {len(missing)} subset_features not found and will be ignored.")
+        sorted_minhashes = filtered
+    else:
+        sorted_minhashes = sorted(list(unique_minhashes))
 
     # Determine dimensions
     N = len(entity_names)  # Number of rows (entities)
@@ -182,6 +192,9 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
 
         # Iterate through the minhashes present in the entity
         for minhash in minhashes_present:
+            # Skip minhashes not in the selected/available columns
+            if minhash not in minhash_to_index:
+                continue
             # Get the column index for this minhash
             j = minhash_to_index[minhash]
 
