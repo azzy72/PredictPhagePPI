@@ -16,6 +16,10 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_curve, roc_auc_score
+from sklearn.metrics import precision_score, recall_score, f1_score, classification_report, precision_recall_curve, average_precision_score, confusion_matrix
+from time import time
+from datetime import datetime
+
 
 
 ##### Paths -------------
@@ -236,3 +240,77 @@ def plot_losses(train_losses, valid_losses, n_epochs, title=None):
     if title is not None:
         fig.suptitle(title)
     fig.show()
+
+def f1_analysis(y_true, y_probs, outdir, logfile):
+    # Baseline at 0.5
+    pred_05 = (y_probs >= 0.5).astype(int)
+    prec_05 = precision_score(y_true, pred_05, zero_division=0)
+    rec_05 = recall_score(y_true, pred_05, zero_division=0)
+    f1_05 = f1_score(y_true, pred_05, zero_division=0)
+
+    print(f"Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}")
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}', file=logfile)
+
+    # Sweep thresholds to find best F1
+    thresholds = np.linspace(0.0, 1.0, 201)
+    f1s = []
+    prcs = []
+    recs = []
+    for t in thresholds:
+        preds = (y_probs >= t).astype(int)
+        f1s.append(f1_score(y_true, preds, zero_division=0))
+        prcs.append(precision_score(y_true, preds, zero_division=0))
+        recs.append(recall_score(y_true, preds, zero_division=0))
+    f1s = np.array(f1s)
+    prcs = np.array(prcs)
+    recs = np.array(recs)
+
+    best_idx = np.argmax(f1s)
+    best_t = thresholds[best_idx]
+    best_f1 = f1s[best_idx]
+    best_prec = prcs[best_idx]
+    best_rec = recs[best_idx]
+
+    print(f"Best threshold by F1 -> threshold={best_t:.3f}, Precision={best_prec:.4f}, Recall={best_rec:.4f}, F1={best_f1:.4f}")
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Best threshold by F1 -> threshold={best_t:.3f}, Precision={best_prec:.4f}, Recall={best_rec:.4f}, F1={best_f1:.4f}', file=logfile)
+
+    # Classification report at best threshold
+    best_preds = (y_probs >= best_t).astype(int)
+    report = classification_report(y_true, best_preds, zero_division=0)
+    print("\nClassification report at best threshold:\n", report)
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Classification report at best threshold:\n{report}', file=logfile)
+
+    # Average precision (area under PR curve)
+    precision_curve, recall_curve, pr_thresholds = precision_recall_curve(y_true, y_probs)
+    avg_prec = average_precision_score(y_true, y_probs)
+    print(f"Average precision (AP): {avg_prec:.4f}")
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Average precision (AP): {avg_prec:.4f}', file=logfile)
+
+    # Confusion matrix at best threshold
+    cm = confusion_matrix(y_true, best_preds)
+    print("Confusion matrix (rows=true, cols=pred):\n", cm)
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Confusion matrix:\n{cm}', file=logfile)
+
+    # Plots: F1 vs threshold and Precision-Recall curve
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    axes[0].plot(thresholds, f1s, label='F1', color='C0')
+    axes[0].plot(thresholds, prcs, label='Precision', color='C1', linestyle='--')
+    axes[0].plot(thresholds, recs, label='Recall', color='C2', linestyle=':')
+    axes[0].axvline(best_t, color='k', linestyle='--', label=f'best t={best_t:.3f}')
+    axes[0].set_xlabel('Threshold')
+    axes[0].set_ylabel('Score')
+    axes[0].set_title('F1 / Precision / Recall vs Threshold')
+    axes[0].legend()
+
+    axes[1].plot(recall_curve, precision_curve, color='darkorange', lw=2)
+    axes[1].set_xlabel('Recall')
+    axes[1].set_ylabel('Precision')
+    axes[1].set_title(f'Precision-Recall curve (AP={avg_prec:.4f})')
+    axes[1].grid(True)
+
+    plt.suptitle(f'F1 analysis (best t={best_t:.3f}, F1={best_f1:.4f})')
+    outname = 'torchMLP_f1_analysis.png'
+    plt.savefig(outdir + outname, bbox_inches='tight')
+    plt.show()
+
+    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} F1 analysis figure saved as: {outdir+outname}', file=logfile)
