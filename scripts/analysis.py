@@ -241,12 +241,14 @@ def plot_losses(train_losses, valid_losses, n_epochs, title=None):
         fig.suptitle(title)
     fig.show()
 
-def f1_analysis(y_true, y_probs, outdir, logfile):
+def f1_analysis(y_true, y_probs, outdir, logfile, filename = None, silent = False):
     # Baseline at 0.5
     pred_05 = (y_probs >= 0.5).astype(int)
     prec_05 = precision_score(y_true, pred_05, zero_division=0)
     rec_05 = recall_score(y_true, pred_05, zero_division=0)
     f1_05 = f1_score(y_true, pred_05, zero_division=0)
+    if logfile is None:
+        logfile = open(outdir + 'f1_analysis_log.txt', 'a')
 
     print(f"Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}")
     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}', file=logfile)
@@ -309,8 +311,13 @@ def f1_analysis(y_true, y_probs, outdir, logfile):
     axes[1].grid(True)
 
     plt.suptitle(f'F1 analysis (best t={best_t:.3f}, F1={best_f1:.4f})')
-    outname = 'torchMLP_f1_analysis.png'
+    if filename is None: 
+        outname = 'torchMLP_f1_analysis.png'
+    else:
+        outname = filename
     plt.savefig(outdir + outname, bbox_inches='tight')
-    plt.show()
+
+    if silent is False:
+        plt.show()
 
     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} F1 analysis figure saved as: {outdir+outname}', file=logfile)
