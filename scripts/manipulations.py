@@ -319,6 +319,7 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
                 sourmash.save_signatures([sig1], sigfile)
         except:
             raise SystemError(f"Error in saving sourmash sketch for: {records[i].id}")
+    print("------- Process Completed -------")
 
 def hostrange_df_to_dict(host_range_df : pd.DataFrame) -> dict:
     """
