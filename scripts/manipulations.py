@@ -15,7 +15,6 @@ from tqdm import tqdm
 import numpy as np
 import sourmash
 
-
 ##### Paths -------------
 raw_data_path = "../raw_data/"
 data_prod_path = "../data_prod/"
