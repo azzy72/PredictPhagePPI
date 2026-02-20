@@ -9,18 +9,18 @@ raw_data_path = "../raw_data/"
 
 class KmerCodec:
     def __init__(self):
-        # Map bases to 2-bit values
+        # Map bases to 4-bit values
         self.base_to_bits = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
-        # Map 2-bit values back to bases
+        # Map 4-bit values back to bases
         self.bits_to_base = {0: 'A', 1: 'C', 2: 'G', 3: 'T'}
 
     def encode(self, kmer):
         """Converts a k-mer string into a unique integer."""
         encoded_int = 0
         for base in kmer:
-            # Shift the existing bits 2 places left to make room for the new base
-            # Then use OR (|) to add the 2 bits for the current base
-            encoded_int = (encoded_int << 2) | self.base_to_bits[base]
+            # Shift the existing bits 4 places left to make room for the new base
+            # Then use OR (|) to add the 4 bits for the current base
+            encoded_int = (encoded_int << 4) | self.base_to_bits[base]
         return encoded_int
     
     def encode_with_revcomp(self, kmer):
@@ -36,18 +36,18 @@ class KmerCodec:
         """Backtracks an integer into the original k-mer string of length k."""
         bases = []
         for _ in range(k):
-            # Use a bitmask (3 is 11 in binary) to extract the last 2 bits
-            bits = encoded_int & 3
+            # Use a bitmask (15 is 1111 in binary) to extract the last 4 bits
+            bits = encoded_int & 15
             bases.append(self.bits_to_base[bits])
-            # Shift the integer 2 places right to move to the next base
-            encoded_int >>= 2
+            # Shift the integer 4 places right to move to the next base
+            encoded_int >>= 4
         
         # Since we extracted from right-to-left, we must reverse the list
         return "".join(reversed(bases))
 
 
 class Decompose:
-    def __init__(self, k, n, codec, output_dir, entity_type, sourmash_like=True):
+    def __init__(self, k, n, codec, output_dir, entity_type, sourmash_like=True, custom_dir_name : str = None):
         allowed_entity_types = {"phage": "phage", "bacteriophage": "phage", "bacteria": "bact", "bact": "bact"}
         if entity_type.lower() not in allowed_entity_types.keys():
             raise ValueError(f"Invalid entity_type '{entity_type}'. Allowed values are: {', '.join(allowed_entity_types.keys())}")
@@ -59,6 +59,12 @@ class Decompose:
         self.entity_type = allowed_entity_types[entity_type.lower()]
         self.temp_dir = "../data_prod/tmp"
         self.sourmash_like = sourmash_like
+        if custom_dir_name:
+            self.inner_dir = os.path.join(self.output_dir, f"{self.entity_type}_{custom_dir_name}")
+            print(f"Using custom directory name: {self.inner_dir}")
+        else: 
+            self.inner_dir = self.output_dir+f"{self.entity_type}_sig_n{self.n}_k{self.k}/"
+            print(f"Using standard directory name: {self.inner_dir}")
 
     def __enter__(self):
         """Sets up the environment when entering the 'with' block."""
@@ -76,17 +82,16 @@ class Decompose:
 
         #Saving like sourmash
         if self.sourmash_like:
-            curr_dir = self.output_dir+f"{self.entity_type}_sig_n{self.n}_k{self.k}/"
             try:
-                os.makedirs(curr_dir)
+                os.makedirs(self.inner_dir)
             except FileExistsError:
-                shutil.rmtree(curr_dir)
-                os.makedirs(curr_dir)
+                shutil.rmtree(self.inner_dir)
+                os.makedirs(self.inner_dir)
             for i, record in tqdm(enumerate(SeqIO.parse(fasta_path, "fasta")), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
                 record_name = record.id
                 sig = self.decompose_genome(str(record.seq).upper())
                 sig = self.prepare_sourmash_structure(sig, record_name)
-                self.save_sketches_to_one_file(sig, os.path.join(curr_dir, f"{self.entity_type}{i}_{record_name.lower()}.sig"))
+                self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}{i}_{record_name.lower()}.sig"))
 
         #Saving customly in one file
         if not self.sourmash_like:
