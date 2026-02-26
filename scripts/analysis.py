@@ -6,6 +6,8 @@
 ##### Imports -----------
 import pandas as pd
 from Bio import SeqIO
+from torch import embedding
+import torch
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
@@ -14,11 +16,19 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+from collections import Counter
+from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.metrics import precision_score, recall_score, f1_score, classification_report, precision_recall_curve, average_precision_score, confusion_matrix
 from time import time
 from datetime import datetime
+import networkx as nx
+from matplotlib.colors import Normalize
+from matplotlib.lines import Line2D
+from captum import attr 
+from captum.attr import IntegratedGradients
+from decompositions import KmerCodec
 
 
 
@@ -241,17 +251,21 @@ def plot_losses(train_losses, valid_losses, n_epochs, title=None):
         fig.suptitle(title)
     fig.show()
 
-def f1_analysis(y_true, y_probs, outdir, logfile, filename = None, silent = False):
+def f1_analysis(y_true, y_probs, logging : bool, outdir = None, logfile = None, filename = None, silent = False):
     # Baseline at 0.5
     pred_05 = (y_probs >= 0.5).astype(int)
     prec_05 = precision_score(y_true, pred_05, zero_division=0)
     rec_05 = recall_score(y_true, pred_05, zero_division=0)
     f1_05 = f1_score(y_true, pred_05, zero_division=0)
-    if logfile is None:
-        logfile = open(outdir + 'f1_analysis_log.txt', 'a')
+    if outdir is not None and logging:
+        if logfile is None:
+            logfile = open(outdir + 'f1_analysis_log.txt', 'a')
+            print("New logfile create at F1 analysis!")
+    elif outdir is None and logging:
+        raise ValueError("Please specify an outdir when logging is on")
 
     print(f"Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}")
-    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}', file=logfile)
+    if logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}', file=logfile)
 
     # Sweep thresholds to find best F1
     thresholds = np.linspace(0.0, 1.0, 201)
@@ -274,24 +288,30 @@ def f1_analysis(y_true, y_probs, outdir, logfile, filename = None, silent = Fals
     best_rec = recs[best_idx]
 
     print(f"Best threshold by F1 -> threshold={best_t:.3f}, Precision={best_prec:.4f}, Recall={best_rec:.4f}, F1={best_f1:.4f}")
-    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Best threshold by F1 -> threshold={best_t:.3f}, Precision={best_prec:.4f}, Recall={best_rec:.4f}, F1={best_f1:.4f}', file=logfile)
+    if logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Best threshold by F1 -> threshold={best_t:.3f}, Precision={best_prec:.4f}, Recall={best_rec:.4f}, F1={best_f1:.4f}', file=logfile)
 
     # Classification report at best threshold
     best_preds = (y_probs >= best_t).astype(int)
     report = classification_report(y_true, best_preds, zero_division=0)
     print("\nClassification report at best threshold:\n", report)
-    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Classification report at best threshold:\n{report}', file=logfile)
+    if logging: 
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Classification report at best threshold:', file=logfile)
+        for line in report.splitlines():
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
 
     # Average precision (area under PR curve)
     precision_curve, recall_curve, pr_thresholds = precision_recall_curve(y_true, y_probs)
     avg_prec = average_precision_score(y_true, y_probs)
     print(f"Average precision (AP): {avg_prec:.4f}")
-    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Average precision (AP): {avg_prec:.4f}', file=logfile)
+    if logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Average precision (AP): {avg_prec:.4f}', file=logfile)
 
     # Confusion matrix at best threshold
     cm = confusion_matrix(y_true, best_preds)
     print("Confusion matrix (rows=true, cols=pred):\n", cm)
-    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Confusion matrix:\n{cm}', file=logfile)
+    if logging: 
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Confusion matrix:', file=logfile)
+        for i in range(cm.shape[0]):
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {cm[i]}', file=logfile)
 
     # Plots: F1 vs threshold and Precision-Recall curve
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -311,13 +331,518 @@ def f1_analysis(y_true, y_probs, outdir, logfile, filename = None, silent = Fals
     axes[1].grid(True)
 
     plt.suptitle(f'F1 analysis (best t={best_t:.3f}, F1={best_f1:.4f})')
-    if filename is None: 
-        outname = 'torchMLP_f1_analysis.png'
-    else:
-        outname = filename
-    plt.savefig(outdir + outname, bbox_inches='tight')
+    if logging: 
+        if filename is None: 
+            outname = 'torchMLP_f1_analysis.png'
+        else:
+            outname = filename
+        plt.savefig(outdir + outname, bbox_inches='tight')
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} F1 analysis figure saved as: {outdir+outname}', file=logfile)
 
     if silent is False:
         plt.show()
 
-    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} F1 analysis figure saved as: {outdir+outname}', file=logfile)
+def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging : bool, outdir: str = None,):
+    """
+    Counts the occurrences of an entity column in the DataFrame and plots 
+    the result as a sorted horizontal bar graph.
+
+    Args:
+        outdir: path to out directory for saving
+        df: The DataFrame containing the True Positive results.
+        entity_column: The name of the column to count (e.g., 'Phage_Name').
+        logging: Whether to save logs and plots
+    
+    Returns: 
+        None (displays and saves the plot)
+    """
+    if outdir is None and logging:
+        raise ValueError("Please specify an outdir when logging is on")
+
+    # 1. Count the occurrences of each unique entity
+    entity_counts = df[entity_column].value_counts()
+
+    # Print the counts
+    entity_type = entity_column.replace('_Name', '').replace('_', ' ')
+    print(f"--- {entity_type} True Positive Counts ---")
+    print(entity_counts)
+    print("-" * 40)
+
+    # 2. Prepare the data for plotting
+    entity_names = entity_counts.index
+    counts = entity_counts.values
+
+    # 3. Plot the counts as a horizontal bar graph
+    plt.figure(figsize=(10, max(6, len(entity_names) * 0.4))) # Adjust height dynamically
+
+    # Create horizontal bars
+    bars = plt.barh(entity_names, counts, color='#3498db' if 'Phage' in entity_column else '#2ecc71')
+
+    # Add labels and title
+    plt.xlabel("Count of True Positive Interactions")
+    plt.ylabel(entity_column.replace('_', ' '))
+    plt.title(f"Frequency of {entity_type} in True Positive Set (N={len(df)})")
+    plt.gca().invert_yaxis() # Display the highest count at the top
+
+    # Add the count labels to the bars
+    for bar in bars:
+        plt.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height()/2, 
+                 f'{int(bar.get_width())}', 
+                 va='center', ha='left')
+
+    plt.tight_layout()
+    
+    # Optional: Save the figure
+    if logging:
+        if 'Phage' in entity_column:
+            plt.savefig(outdir + 'phage_tp_counts.png')
+        else:
+            plt.savefig(outdir + 'bacterium_tp_counts.png')
+    
+    plt.show()
+
+def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, logging : bool, outdir: str = None, limit: int = 50, conf_threshold=0.5):
+    """
+    Creates and plots a bipartite network graph of Phage-Bacterium True Positive 
+    interactions, weighted by predicted probability, with bacterial nodes 
+    colored by species.
+
+    Args:
+        df: DataFrame containing 'Bacterium_Name', 'Phage_Name', and 'Predicted_Probability' (sorted by confidence).
+        id_lookup_bact: DataFrame with Bacterium metadata ('Bacterium_Name', 'Species').
+        logging: Whether to save logs and plots
+        limit: The maximum number of interactions to include in the plot.
+        conf_threshold: Minimum predicted probability to include an interaction in the plot.
+    
+    Returns: 
+        None (displays and saves the plot)
+    """
+    if outdir is None and logging:
+        raise ValueError("Please specify an outdir when logging is on")
+
+    # 1. Prepare Data and Subsample
+    df_plot = df.head(limit).copy()
+    
+    if len(df) > limit:
+        print(f"Plotting the top {limit} most confident interactions out of {len(df)}.")
+    
+    # Filter to only include predicted probabilities greater than conf_threshold
+    initial_filtered_size = len(df_plot)
+    df_plot = df_plot[df_plot['Predicted_Probability'] > conf_threshold].copy()
+    
+    if initial_filtered_size > len(df_plot):
+        print(f"Removed {initial_filtered_size - len(df_plot)} interactions because Predicted_Probability <= conf_threshold.")
+
+    if len(df_plot) == 0:
+        print("No interactions remain after filtering by probability > conf_threshold. Plotting aborted.")
+        return
+
+    bacteria = df_plot['Bacterium_Name'].unique()
+    phages = df_plot['Phage_Name'].unique()
+
+    # 2. Add Species information to the plot data
+    # Ensure id_lookup_bact has 'Bacterium_Name' and 'Species'
+    df_merged = df_plot.merge(id_lookup_bact[['Bacterium_Name', 'Species']].drop_duplicates(), 
+                              on='Bacterium_Name', how='left')
+    
+    # Get unique species for coloring
+    unique_species = df_merged['Species'].dropna().unique()
+    # Use a distinct colormap (Tab10 is good for categorical data)
+    species_cmap = plt.cm.get_cmap('tab10', len(unique_species))
+    species_to_color = {species: species_cmap(i) for i, species in enumerate(unique_species)}
+    
+    # Assign colors to bacterium nodes based on species
+    bact_colors = []
+    for node in bacteria:
+        # Safely access species name, handling potential missing species
+        species_info = df_merged[df_merged['Bacterium_Name'] == node]['Species']
+        species_name = species_info.iloc[0] if not species_info.empty else None
+        bact_colors.append(species_to_color.get(species_name, 'gray')) # Default to gray if species is missing
+
+    # 3. Create the Graph
+    G = nx.Graph()
+    G.add_nodes_from(bacteria, bipartite=0, label='Bacterium')
+    G.add_nodes_from(phages, bipartite=1, label='Phage')
+    
+    # Add edges, weighting them by the Predicted_Probability
+    for _, row in df_plot.iterrows():
+        bact_name = row['Bacterium_Name']
+        phage_name = row['Phage_Name']
+        prob = row['Predicted_Probability']
+        G.add_edge(bact_name, phage_name, weight=prob, score=prob)
+
+    # 4. Define Layout and Styling
+    
+    pos = nx.bipartite_layout(G, bacteria)
+
+    edge_scores = np.array([G[u][v]['score'] for u, v in G.edges()])
+    # Scale width for visual emphasis (e.g., width from 1 to 5)
+    edge_widths = (edge_scores - edge_scores.min() + 0.1) * 4 / (edge_scores.max() - edge_scores.min() + 0.1)
+
+    # Use a color map for edge confidence
+    cmap = plt.cm.plasma
+    # FIX: Normalize based on fixed scale (0 to 1) instead of data range
+    norm = Normalize(vmin=0, vmax=1) 
+    edge_colors = cmap(norm(edge_scores))
+    
+    PHAGE_COLOR = '#008000' # User change: Dark Green
+
+    # 5. Draw the Graph
+    plt.figure(figsize=(14, 14)) 
+    # Updated title to reflect the filtering
+    plt.title(f'Bipartite Network of Top {len(df_plot)} True Positive Interactions (P > {conf_threshold})', 
+              fontsize=16, fontweight='bold')
+    
+    NODE_SIZE = 2500 
+    
+    # Draw Bacterium nodes (colored by species)
+    nx.draw_networkx_nodes(G, pos, nodelist=bacteria, node_color=bact_colors, 
+                           node_size=NODE_SIZE) 
+    # Draw Phage nodes (single color)
+    nx.draw_networkx_nodes(G, pos, nodelist=phages, node_color=PHAGE_COLOR, 
+                           node_size=NODE_SIZE)
+    
+    # Draw edges with calculated width and color
+    nx.draw_networkx_edges(G, pos, width=edge_widths, edge_color=edge_colors, alpha=0.8) 
+    
+    # Clean up Bacterium labels for visualization
+    labels = {}
+    for node in G.nodes():
+        name = node
+        # Check if the node is a Bacterium
+        if name in bacteria:
+            # Remove the '_reoriented' suffix if present
+            if '_reoriented' in name:
+                name = name.replace('_reoriented', '')
+        labels[node] = name
+    
+    # Draw labels using the cleaned names
+    nx.draw_networkx_labels(G, pos, labels=labels, font_size=8, font_color='white', font_weight='bold') 
+    
+    # 6. Add Color Bar Legend (for edge scores)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([]) 
+    cbar = plt.colorbar(sm, orientation='horizontal', pad=0.05, aspect=50, ax=plt.gca())
+    # The label now correctly refers to the 0-1 range
+    cbar.set_label('Predicted Probability (Model Confidence)', rotation=0, labelpad=15)
+    
+    # 7. Add Custom Legend (for node colors/species)
+    species_patches = []
+    # Add species patches
+    for species, color in species_to_color.items():
+        species_patches.append(Line2D([0], [0], marker='o', color='black', label=species, 
+                                          markerfacecolor=color, markersize=15))
+    # Add phage patch
+    phage_patch = Line2D([0], [0], marker='o', color='black', label='Phage', 
+                             markerfacecolor=PHAGE_COLOR, markersize=15)
+    species_patches.append(phage_patch)
+
+    plt.legend(handles=species_patches, loc='lower center', title="Entity Species/Type",
+               frameon=True, fontsize=10)
+
+
+    plt.axis('off')
+    plt.tight_layout()
+    if logging: plt.savefig(outdir + f'bipartisan_conf_interactions_p{conf_threshold}.png') 
+    plt.show()
+
+class FeatureImportance():
+    def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logging : bool, TS : bool = False):
+        self.raw_data_path = raw_data_path
+        self.data_prod_path = data_prod_path
+        self.ig = IntegratedGradients(model)
+        self.attributions = None
+        self.delta = None
+        self.metadata_test = metadata_test
+        self.id_lookup_bact = id_lookup_bact
+        self.host_range_data = host_range_data
+        self.TS = TS
+        self.pca_prepped = False
+        self.logging = logging
+
+        if outdir is None and logging:
+            self.logging = False
+            if self.TS: print("Logging turned off as no outdir was given!")
+        
+        else:
+            self.outdir = outdir
+    def compute_importance(self, input_tensor, target, delta : bool = False):
+        """
+        Computes feature importance attributions using Integrated Gradients for a given input tensor and target class. If delta is True, also computes the convergence delta to assess attribution completeness.
+        Args:
+            input_tensor (torch.Tensor): The input tensor for which to compute feature importances.
+            target (int): The target class index for which to compute attributions.
+            delta (bool): Whether to compute and return the convergence delta. Default is False.
+        Returns:
+            None (stores attributions and optionally delta in the class instance)
+        """
+        if hasattr(self.ig, 'attribute'):
+            if delta:
+                self.attributions, self.delta = self.ig.attribute(input_tensor, target=target, return_convergence_delta=delta)
+            else:
+                self.attributions = self.ig.attribute(input_tensor, target=target)
+        else:
+            raise ValueError("IntegratedGradients object does not support attribute method.")
+
+    def plot_top_importance(self, top_n=20):
+        """
+        Plots the top N feature importances as a horizontal bar graph, with feature names on the y-axis and importance values on the x-axis. The plot is saved to the output directory specified in the class initialization.
+        Args:
+            top_n (int): The number of top features to display in the plot. Default is
+        Returns:
+            None (displays and saves the plot)
+        """
+        outname = 'top_feature_importance.png'
+        if self.attributions is None:
+            raise ValueError("Feature importances have not been computed yet.")
+        
+        # Get indices of top N features
+        indices = np.argsort(self.attributions)[::-1][:top_n]
+        
+        # Plotting
+        plt.figure(figsize=(10, 6))
+        plt.title("Top Feature Importances")
+        plt.bar(range(top_n), self.attributions[indices], color='b', align='center')
+        plt.xticks(range(top_n), [self.feature_names[i] for i in indices], rotation=90)
+        plt.xlim([-1, top_n])
+        plt.tight_layout()
+        if self.logging: plt.savefig(self.outdir + outname)
+        plt.show()
+    
+    def plot_attributions(self):
+        """
+        Plots the average feature attributions across all test samples. The x-axis represents the MinHash feature index, and the y-axis represents the average attribution value. The plot is saved to the output directory specified in the class initialization.
+        Args:
+            None (relies on initialized attributions)
+        Returns:
+            None (displays and saves the plot)
+        """
+        outname = 'average_feature_attr.png'
+        avg_attributions = self.attributions.mean(dim=0)
+
+        fig, ax = plt.subplots(figsize=(8,5))
+        plt.plot(avg_attributions, label='Average Attribution values')
+        plt.xlabel('MinHash Feature Index')
+        plt.ylabel('Attribution Value')
+        plt.title('Average Feature Attributions for Test Samples')
+        plt.legend()
+        if self.logging: plt.savefig(self.outdir+outname)
+        plt.show()
+
+    def _prep_PCA(self):
+        """Prepares the feature importance attributions for PCA analysis by converting them to a numpy array, extracting labels for coloring, and performing PCA to compute the scores and loadings."""
+        self.attr_np = self.attributions.detach().cpu().numpy() #Convert torch tensor to numpy array
+
+        # labels for bact genus groupings
+        self.blabels = []
+        for bact_sample in self.metadata_test[:,0]:
+            self.blabels.append(self.id_lookup_bact[self.id_lookup_bact['Bacterium_Name'] == bact_sample]['Species'].values[0])
+
+        # labels for phage genus groupings
+        self.plabels = [phage_sample for phage_sample in self.metadata_test[:,1]]
+
+        # labels for bact samples that has at least one phage interaction
+        self.leastonelabels = []
+        for bact_sample in self.metadata_test[:,0]: #Iterate through the bacterium samples in the test metadata
+            if bact_sample in self.host_range_data.keys() and any(self.host_range_data[bact_sample].values()):
+                self.leastonelabels.append(True)
+            else:
+                self.leastonelabels.append(False)
+
+        if self.TS:
+            print(Counter(self.leastonelabels))
+
+        self.pca = PCA(n_components=2)
+        self.embedding = self.pca.fit_transform(self.attr_np)
+        self.loadings = self.pca.components_.T
+
+        # We'll take top 10 features by magnitude (sqrt(pc1^2 + pc2^2))
+        magnitude = np.sqrt(self.loadings[:, 0]**2 + self.loadings[:, 1]**2)
+        self.top_indices = np.argsort(magnitude)[-10:] 
+
+        # We scale the loadings so they are visible on the same scale as the scores
+        self.scale_factor = np.max(np.abs(self.embedding)) / np.max(np.abs(self.loadings)) * 0.8
+        self.pca_prepped = True
+
+    def plot_PCA(self, color_samples_by : str = 'bacteria', biplot : bool = True):
+        """
+        Plots a PCA biplot of the feature importances, coloring the samples by either bacteria species, phage species, or whether the bacterium has at least one known phage interaction.
+        Args:
+            color_samples_by (str):['bacteria', 'phage', 'interaction'] Determines how to color the samples in the PCA plot.
+        Returns:
+            None (displays and saves the PCA biplot)
+        """
+        if color_samples_by not in ['bacteria', 'phage', 'interaction']:
+            raise ValueError("color_samples_by must be one of: 'bacteria', 'phage', 'interaction'")
+
+        outname = 'feature_importance_PCA.png'
+        if not self.pca_prepped:
+            self._prep_PCA()
+
+        if color_samples_by == 'bacteria':
+            label = self.blabels
+            title_appendix = "Bacteria Strains"    
+            pal = "tab20"
+
+        elif color_samples_by == 'phage':
+            label = self.plabels
+            title_appendix = "Phage Species"
+            pal = "tab20"
+
+        elif color_samples_by == 'interaction':
+            label = self.leastonelabels
+            title_appendix = "Bacteria Interacting"
+            pal = "Set2"
+        
+        if len(set(label)) > 10:
+            pal = "tab20"
+        else:
+            pal = "tab10"
+        
+        plt.figure(figsize=(10, 7))
+
+        # Scores
+        sns.scatterplot(x=self.embedding[:,0], y=self.embedding[:,1], hue=label,
+                        palette=pal, s=40, alpha=0.6, edgecolor='w')
+
+        # Loadings (feature vectors)
+        if biplot:
+            for i in self.top_indices:
+                plt.arrow(0, 0, self.loadings[i, 0]*self.scale_factor, self.loadings[i, 1]*self.scale_factor, 
+                        color='black', alpha=0.7, head_width=0.05)
+                plt.text(self.loadings[i, 0]*self.scale_factor*1.05, self.loadings[i, 1]*self.scale_factor*1.05, 
+                        f'F{i}', color='black', fontsize=9)
+
+        plt.title(f'Biplot of Sample Attributions - Colored by {title_appendix}')
+        plt.xlabel(f'PC1 ({self.pca.explained_variance_ratio_[0]:.1%} variance)')
+        plt.ylabel(f'PC2 ({self.pca.explained_variance_ratio_[1]:.1%} variance)')
+        plt.grid(True, linestyle='--', alpha=0.5)
+
+        # Decrease legend box: smaller font, smaller markers, tighter spacing
+        leg = plt.legend(title=title_appendix.split(" ")[1], loc='best',
+                        fontsize='small', title_fontsize='small',
+                        markerscale=0.6, borderpad=0.3, labelspacing=0.5,
+                        handletextpad=0.4)
+        if self.logging: plt.savefig(self.outdir + outname)
+    
+    def plot_attributions_PCA_clusters(self, n_clusters : int = 4, color_samples_by : str = 'bacteria'):
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42).fit(self.embedding)
+        labels = kmeans.labels_
+
+        if color_samples_by == 'bacteria':
+            label = self.blabels    
+        elif color_samples_by == 'phage':
+            label = self.plabels
+        elif color_samples_by == 'interaction':
+            label = self.leastonelabels
+
+        # Relate majority blabels (bacterium species) to each cluster
+        cluster_majority = {}
+        for i in range(n_clusters):
+            idx = np.where(labels == i)[0]
+            if idx.size == 0:
+                print(f"Cluster {i}: EMPTY")
+                continue
+            species_in_cluster = [label[j] for j in idx]
+            cnt = Counter(species_in_cluster)
+            top3 = cnt.most_common(3)
+            top_label, top_count = top3[0]
+            pct = top_count / idx.size * 100
+            cluster_majority[i] = top_label
+            print(f"Cluster {i}: size={idx.size} | majority={top_label} ({top_count} samples, {pct:.1f}%) | top3={top3}")
+
+        # 2. Calculate mean attribution per cluster
+        fig, axes = plt.subplots(2, 2, figsize=(10, 6), sharey=True)
+        axes = axes.flatten()
+        fig.suptitle("Mean Feature Attribution by PCA Cluster")
+        colors = plt.cm.tab10(np.arange(n_clusters) % 10)
+
+        # Gather cluster means first to compute global y-limits
+        cluster_means = {}
+        for i in range(n_clusters):
+            cluster_mask = (labels == i)
+            if not cluster_mask.any():
+                continue
+            cluster_means[i] = self.attr_np[cluster_mask].mean(axis=0)
+
+        if cluster_means:
+            all_vals = np.concatenate(list(cluster_means.values()))
+            y_min, y_max = all_vals.min(), all_vals.max()
+        else:
+            y_min, y_max = 0, 1
+
+        for i in range(n_clusters):
+            ax = axes[i]
+            if i in cluster_means:
+                color = colors[i % len(colors)]
+                ax.plot(cluster_means[i], label=f'{cluster_majority.get(i,"N/A")}', color=color, alpha=0.8)
+            ax.set_title(f"Cluster {i+1} Mean Feature Attribution")
+            ax.set_ylim(y_min, y_max)
+            ax.legend()
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+        if self.logging: 
+            outname = 'cluster_span_attr_bcolor.png'
+            plt.savefig(self.outdir+outname)
+        plt.show()
+
+    def regain_kmers(self, k : int, sourmash : bool, top_n : int = 20):
+        """
+        Regains the original k-mer features corresponding to the top N feature importance indices by mapping them back to the original feature names. The top N features are determined based on the magnitude of their loadings in the PCA analysis.
+        Args:
+            k (int): The k-mer size.
+            top_n (int): The number of top features to retrieve. Default is 20.
+        Returns:
+            top_kmers (list): A list of the original k-mer feature names corresponding to the top N feature importance indices.
+        """
+        if not sourmash:
+            self.k = k
+            # top N feature indexes by mean absolute attribution
+            avg_attr = self.attributions.mean(dim=0)
+            abs_avg = avg_attr.abs()
+            k = min(top_n, abs_avg.numel())
+            topk = torch.topk(abs_avg, k)
+            self.top_idx = topk.indices.cpu().numpy()
+            self.top_vals = avg_attr[self.top_idx].cpu().numpy()
+
+            if self.TS: 
+                print(f"Top {top_n} indices (by |mean attribution|):", self.top_idx)
+                print("Corresponding mean attributions:", self.top_vals)
+            
+            self.top10_decoded = []
+            codec = KmerCodec()
+            for idx in self.top_idx:
+                self.top10_decoded.append(codec.decode(idx, k=self.k)) # decode minhash index to kmer string
+            
+            if self.TS: print("Top 10 decoded kmers:", self.top10_decoded)
+            return self.top10_decoded
+        
+        else:
+            print("Sourmash-based model does not support k-mer decoding or plotting.")
+            return []
+
+    def plot_top_kmers(self, sourmash : bool, top_n : int = 20):
+        """
+        Plots the top N k-mer features based on their importance scores, with bars colored by the sign of the attribution (positive or negative). The plot is saved to the output directory specified in the class initialization.
+        Args:
+            top_n (int): The number of top k-mer features to display in the plot. Default is 20.
+        Returns:
+            None (displays and saves the plot)
+        """
+        if not sourmash:
+            # Plot top10_decoded with thier attribution values
+            fig, ax = plt.subplots(figsize=(10, 5))
+            bars = ax.bar(range(len(self.top_idx)), self.top_vals, color='#1f77b4')
+            ax.set_xticks(range(len(self.top_idx)))
+            ax.set_xticklabels(self.top10_decoded, rotation=45, ha='right')
+            ax.set_ylabel('Mean Attribution Value')
+            ax.set_title('Top 10 Kmers by Mean Attribution Value')
+            
+            if self.logging: 
+                outname = f'top10_{self.k}mer_attr.png'
+                plt.savefig(self.outdir+outname)
+            plt.show()
+        
+        else:
+            print("Sourmash-based model does not support k-mer decoding or plotting.")
