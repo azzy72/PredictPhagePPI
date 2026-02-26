@@ -39,5 +39,5 @@ raw_data/
 logs/
 EOF
 
-echo "✅ Directories 'data_prod/' and 'tmp/' are ready."
+echo "✅ Directories are ready."
 echo "----------------------------------------------"
