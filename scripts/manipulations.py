@@ -13,7 +13,6 @@ import pandas as pd
 from Bio import SeqIO
 from tqdm import tqdm
 import numpy as np
-import sourmash
 
 ##### Paths -------------
 raw_data_path = "../raw_data/"
@@ -239,6 +238,8 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
     Returns:
         *exit_status* (binary): 0 for success, 1 for failure.
     """
+    import sourmash
+
     ### Input Control ###
     if type(outdir) is not str:
         raise ValueError("outdir must be a path")

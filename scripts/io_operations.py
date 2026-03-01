@@ -15,7 +15,6 @@ import numpy as np
 import shutil
 from manipulations import construct_presence_matrix, short_species_name, clean_dict_keys
 from manipulations import binarize_host_range, hostrange_df_to_dict, hostrange_bact
-from sourmash import load_one_signature
 import re
 
 ##### Paths -------------
@@ -69,6 +68,7 @@ def load_minhash_sketches(in_dir : str, TS : bool = False, output_as_np : bool =
         Dictionary of minhashes, with (extended) phage names / bacteria names as keys and it's minhash composition as a vector [list / np.array]
     
     """
+    from sourmash import load_one_signature
     minhash_data = {}
     for filename in os.listdir(in_dir):
         if filename.endswith(('.sig', '.json')): # sourmash signature files
