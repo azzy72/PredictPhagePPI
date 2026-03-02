@@ -50,7 +50,7 @@ echo "🔄 Converting $NOTEBOOK_PATH to Python..."
 
 # 4. Python-based Conversion
 python3 -c "
-import json, sys
+import json, sys, re
 try:
     with open('$NOTEBOOK_PATH', 'r') as f:
         data = json.load(f)
@@ -58,10 +58,14 @@ try:
         for cell in data['cells']:
             if cell['cell_type'] == 'code':
                 for line in cell['source']:
+                    # 1. Comment out Jupyter magics (%)
                     if line.strip().startswith('%'):
                         f.write(f'# {line}')
                     else:
-                        f.write(line)
+                        # 2. Replace display(...) with print(...)
+                        # This regex looks for 'display(' and replaces it with 'print('
+                        clean_line = re.sub(r'\bdisplay\(', 'print(', line)
+                        f.write(clean_line)
                 f.write('\n\n')
 except Exception as e:
     print(f'Conversion failed: {e}')
