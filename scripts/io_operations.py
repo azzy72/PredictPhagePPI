@@ -94,7 +94,7 @@ def load_minhash_sketches(in_dir : str, TS : bool = False, output_as_np : bool =
 
     return minhash_data
 
-def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = None, n : int = 0, k : int = 0, reversecomp_data : bool = True, subset_features : list = None, TS : bool = False):
+def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = None, n = 0, k = 0, reversecomp_data : bool = True, subset_features : list = None, TS : bool = False):
     """
     Create a binary presence matrix from minhash sketches.
     Combines the workflows of loading minhash sketches (load_minhash_sketches()) and generating a binary presence matrix (manipulations.construct_presence_matrix()).
@@ -105,8 +105,8 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
     Args:
         **phage_minhash_dir** (str): Directory containing phage minhash sketches for a specific run (n & kmer size)
         **bact_minhash_dir** (str): Directory containing bacteria minhash sketches for a specific run (n & kmer size)
-        **n** (int): Number of minhashes used in the sketches
-        **k** (int): Kmer size used in the sketches
+        **n** (int | list): Number of minhashes used in the sketches
+        **k** (int | list): Kmer size used in the sketches
         **reversecomp_data** (bool): Whether reverse complements were used in the minhash sketches
         **subset_features** (list): List of minhashes to subset the presence matrix to (default: None, uses all minhashes)
         **TS** (bool): Troubleshoot on or off
@@ -118,11 +118,29 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
         **phage_minhash_data** (dict): Dictionary of phage minhash sketches\n
         **bact_minhash_data** (dict): Dictionary of bacteria minhash sketches
     """
+    # Handle differential n & k
+    differential_nk = False
+    try:
+        bn, pn = n
+        bk, pk = k
+        if TS: print(bn, bk, pn, pk)
+        differential_nk = True
+    except:
+        if type(n) != int or type(k) != int:
+            raise ValueError("Please provide n and k arguments as either lists of size 2, or")
+
     ### Load minhash sketches
     if phage_minhash_dir is None:
-        phage_minhash_dir = data_prod_path+f"SM_sketches/PhageMinhash_n{n}_k{k}/"
+        if differential_nk:
+            phage_minhash_dir = data_prod_path+f"SM_sketches/PhageMinhash_n{pn}_k{pk}/"
+        else:
+            phage_minhash_dir = data_prod_path+f"SM_sketches/PhageMinhash_n{n}_k{k}/"
+    
     if bact_minhash_dir is None:
-        bact_minhash_dir = data_prod_path+f"SM_sketches/BactMinhash_n{n}_k{k}/"
+        if differential_nk:
+            bact_minhash_dir = data_prod_path+f"SM_sketches/BactMinhash_n{bn}_k{bk}/"
+        else:
+            bact_minhash_dir = data_prod_path+f"SM_sketches/BactMinhash_n{n}_k{k}/"
     
     if reversecomp_data:
         phage_minhash_dir = phage_minhash_dir[:-1]+"_rev/"

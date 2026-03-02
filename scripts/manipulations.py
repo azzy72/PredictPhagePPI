@@ -314,7 +314,7 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
 
     for i in range(len(minhashes)):
         try:
-            with open(outpath+f"{outfile_prefix}{i}_minhash_37.sig", "wt") as sigfile:
+            with open(outpath+f"{outfile_prefix}{i}_minhash.sig", "wt") as sigfile:
                 sig1 = sourmash.SourmashSignature(minhashes[i], name=records[i].id)
                 sourmash.save_signatures([sig1], sigfile)
         except:
