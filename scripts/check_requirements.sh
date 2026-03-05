@@ -8,4 +8,4 @@ while read line; do
   else
     echo "❌ $pkg is MISSING"
   fi
-done < requirements.txt
+done < ../requirements.txt
