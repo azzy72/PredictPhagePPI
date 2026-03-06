@@ -1,8 +1,6 @@
 #!/bin/bash
-# Check if dependencies in requirements.txt are available and install them if missing.
-
-# Path to your requirements file relative to this script's location in ./scripts/
-REQ_FILE="../requirements.txt"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+REQ_FILE="$SCRIPT_DIR/../requirements.txt"
 
 if [ ! -f "$REQ_FILE" ]; then
     echo "❌ Error: $REQ_FILE not found!"
