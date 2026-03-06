@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 import os
 import sys
 import argparse
@@ -20,7 +22,6 @@ from sklearn.model_selection import KFold, train_test_split, GroupShuffleSplit
 from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score
 from scipy.special import expit
 from imblearn.over_sampling import SMOTE
-from collections import Counter
 
 # Custom imports
 from io_operations import presence_matrix, call_hostrange_df, color_sheet_from_matrix
@@ -34,9 +35,9 @@ def parse_arguments():
 
     # Parameters: Mutual exclusivity for n/k vs specific bn/bk/pn/pk
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("-nk", nargs=2, type=int, metavar=('N', 'K'),
+    group.add_argument("--nk", nargs=2, type=int, metavar=('N', 'K'),
                         help="Unified n and k values (e.g., -nk 500 12)")
-    group.add_argument("-split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'),
+    group.add_argument("--split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'),
                         help="Split values for Bact (n, k) and Phage (n, k)")
 
     # Data Source
@@ -58,8 +59,8 @@ def parse_arguments():
     parser.add_argument("--exclude_phages", nargs='+', default=["Abuela"], help="List of phages to exclude")
 
     # Hyperparameters
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--n_epochs", type=int, default=50)
+    parser.add_argument("--learning_rate", type=float, default=1e-3)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--test_split", type=float, default=0.2)
     parser.add_argument("--val_split", type=float, default=0.2)
@@ -197,6 +198,9 @@ def main():
 
     X_train_f, X_test, y_train_f, y_test = X[train_idx], X[test_idx], y[train_idx], y[test_idx]
     
+    metadata_np = np.array(rows_meta, dtype=object)
+    metadata_train_full, metadata_test = metadata_np[train_idx], metadata_np[test_idx]
+
     if args.logging: 
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Train size: {X_train_f.shape[0]} samples, Test size: {X_test.shape[0]} samples', file=logfile)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in train: {round(sum(y_train_f)/len(y_train_f)*100,2)}%', file=logfile)
@@ -416,10 +420,6 @@ def main():
         plt.savefig(outdir+outname)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ROC curve figure saved as: {outdir+outname}', file=logfile)
 
-    ### X. Closing & Terminating ###
-    print(f"Process completed in {time() - time_start:.2f} seconds.")
-    if logfile: logfile.close()
-
     # Biparte --------------------
     J = tpr - fpr # Calculate Youden's J statistic
 
@@ -489,6 +489,114 @@ def main():
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Error during Biparte analysis: {e}\n{traceback.print_exc()}', file=logfile)
 
     # F1 Analysis -----------------
+    probs = test_probs.flatten().cpu().numpy() if hasattr(test_probs, "cpu") else test_probs.flatten()
+    y_true = y_test.flatten()  # already numpy
+    if args.logging:
+        f1_analysis(y_true, probs, logging=args.logging, outdir = outdir, logfile=logfile)
+
+    ### Apply phage & bact to hostrange ###
+    # Apply each phage & bacteria pair to the trained model and save predictions
+    model.eval()
+    results = []
+    thresh = globals().get('best_t', 0.5)  # use best_t if computed, otherwise fallback to 0.5
+
+    with torch.no_grad():
+        for bact_name in tqdm(bacteria_names, desc="Bacteria names iterated"):
+            for phage_name in phage_names:
+                # skip pairs that don't exist in entity_to_index
+                try:
+                    bact_index = entity_to_index[bact_name]
+                    phage_index = entity_to_index[phage_name]
+                except KeyError:
+                    continue
+
+                # build combined feature vector like in training
+                bact_features = binary_matrix[bact_index, :]
+                phage_features = binary_matrix[phage_index, :]
+                combined = np.concatenate((bact_features, phage_features)).astype(np.float32).reshape(1, -1)
+
+                # scale and convert to tensor
+                scaled = scaler.transform(combined)
+                x_t = torch.from_numpy(scaled).float().to(device)
+
+                # inference
+                logits = model(x_t)
+                prob = torch.sigmoid(logits).item()
+                pred = int(prob >= thresh)
+
+                results.append({
+                    "bacterium": bact_name,
+                    "phage": phage_name,
+                    "probability": prob,
+                    "prediction": pred
+                })
+
+    # Save results to DataFrame + CSV
+    pred_df = pd.DataFrame(results)
+    if args.logging:
+        outpath = outdir + "torchMLP_all_pairs_predictions.csv"
+        pred_df.to_csv(outpath, index=False)
+
+        print(f"Saved {len(pred_df)} predictions to {outpath}")
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved {len(pred_df)} predictions to {outpath}', file=logfile)
+
+    # Simply pred output matrix ---
+    # create prediction matrix: rows=bacterium, cols=phage, values=prediction
+    pred_matrix = pred_df.pivot_table(index='bacterium', columns='phage', values='prediction', aggfunc='max')
+
+    # normalize column names (strip whitespace) then reorder columns to the requested phage order
+    pred_matrix = pred_matrix.rename(columns=lambda x: x.strip())
+
+    phage_order = [
+        "Ymer","Taid","Poppous","Koroua","Abuela","Amona","Sabo","Mimer","Crus",
+        "Gander","Guf","Hoejben","Magnum","Vims","Echoes","Galvinrad","Uther",
+        "Rip","Rup","Slaad","Pantea","Rap","Zann"
+    ]
+
+    # keep only those desired that actually exist, then append any extra columns that were not listed
+    cols_in_order = [c for c in phage_order if c in pred_matrix.columns]
+    #rows_in_order = [c for c in pred_matrix.columns if c not in cols_in_order]
+    final_cols = cols_in_order
+
+    # ensure consistent ordering and include any missing rows/cols (fill missing pairs with 0)
+    pred_matrix = pred_matrix.reindex(index=list(bacteria_names), columns=final_cols, fill_value=0)
+
+    # save and show a quick preview
+    if args.logging:
+        print(pred_matrix.head())
+        outname = 'torchMLP_prediction_matrix_ordered.csv'
+        pred_matrix.to_csv(outdir + outname)
+        print(f"Saved ordered prediction matrix to {outdir + outname}")
+        color_sheet_from_matrix(
+            input_excel=raw_data_path + "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx",
+            sheet1_name="sum_hostrange",
+            prediction_matrix_df=pred_matrix,
+            output_excel=outdir + "hostrange_colored.xlsx", 
+            TS=True
+        )
+
+    ### Feature Importance ###
+    fi = FeatureImportance(model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, TS = True, logging = args.logging)
+    fi.compute_importance(X_test_t, target=0, delta=True)
+    fi.plot_attributions()
+    fi.plot_PCA(color_samples_by="bacteria")
+    fi.plot_PCA(color_samples_by="phage")
+    fi.plot_PCA(color_samples_by="interaction")
+
+    # Do the attributions concur across samples?
+    fi.plot_attributions_PCA_clusters() 
+
+    # Regain kmer as string, given encoding
+    try:
+        fi.regain_kmers(k=k, sourmash=sourmash_used, top_n=10)
+        fi.plot_top_kmers(sourmash=sourmash_used, top_n=10)
+    except Exception as e:
+        print(f"Error during k-mer regaining: {e}")
+        traceback.print_exc()
+
+    ### X. Closing & Terminating ###
+    print(f"Process completed in {time() - time_start:.2f} seconds.")
+    if logfile: logfile.close()
 
 if __name__ == "__main__":
     main()
