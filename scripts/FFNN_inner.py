@@ -294,10 +294,10 @@ def main():
     fold -= 1 # Adjust fold count after loop to reflect actual number of folds completed
 
     # Appropriating test and excluded sets
-    X_test_t = torch.from_numpy(X_test).float()
-    y_test_t = torch.from_numpy(y_test.reshape(-1, 1)).float()
-    X_excluded_t = torch.from_numpy(X_excl).float() if len(X_excl) > 0 else X_excl
-    y_excluded_t = torch.from_numpy(y_excl.reshape(-1, 1)).float() if len(y_excl) > 0 else y_excl
+    X_test_t = torch.from_numpy(X_test).float().to(device)
+    y_test_t = torch.from_numpy(y_test.reshape(-1, 1)).float().to(device)
+    X_excluded_t = torch.from_numpy(X_excl).float().to(device) if len(X_excl) > 0 else X_excl
+    y_excluded_t = torch.from_numpy(y_excl.reshape(-1, 1)).float().to(device) if len(y_excl) > 0 else y_excl
 
     test_ds = TensorDataset(X_test_t, y_test_t)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
