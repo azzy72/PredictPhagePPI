@@ -43,6 +43,7 @@ def parse_arguments():
     # Data Source
     parser.add_argument("--use_encoded", action="store_true", 
                         help="Use encoded_sketches instead of SM_sketches")
+    parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
 
     # Flags
     parser.add_argument("--logging", action="store_true", help="Enable logging and saving")
@@ -141,11 +142,17 @@ def main():
     if args.logging:
         run = 1
         tag = "smote" if args.smote else "standard"
-        outdirname = f'torch_mlp_n{n}_k{k}_{tag}'
-        outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
-        while os.path.exists(outdir):
-            run += 1
+        if not args.out:
+            outdirname = f'torch_mlp_n{n}_k{k}_{tag}'
             outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
+            while os.path.exists(outdir):
+                run += 1
+                outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
+        else:
+            outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}/")
+            while os.path.exists(outdir):
+                run += 1
+                outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}/")
         os.makedirs(outdir, exist_ok=True)
         logfile = open(os.path.join(outdir, f'log_run{run}.txt'), 'w')
         logfile.write(f'Run started: {datetime.now()}\nParams: {vars(args)}\n')
