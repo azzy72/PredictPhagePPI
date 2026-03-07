@@ -618,7 +618,7 @@ class FeatureImportance():
             None (displays and saves the plot)
         """
         outname = 'average_feature_attr.png'
-        avg_attributions = self.attributions.mean(dim=0)
+        avg_attributions = self.attributions.mean(0).cpu().detach().numpy()
 
         fig, ax = plt.subplots(figsize=(8,5))
         plt.plot(avg_attributions, label='Average Attribution values')
@@ -675,7 +675,7 @@ class FeatureImportance():
         if color_samples_by not in ['bacteria', 'phage', 'interaction']:
             raise ValueError("color_samples_by must be one of: 'bacteria', 'phage', 'interaction'")
 
-        outname = 'feature_importance_PCA.png'
+        outname = 'feature_importance_PCA.png' + color_samples_by
         if not self.pca_prepped:
             self._prep_PCA()
 
