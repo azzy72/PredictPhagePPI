@@ -314,7 +314,7 @@ def main():
         test_loss = criterion(test_logits, y_test_t.to(device)).item()
         test_probs = torch.sigmoid(test_logits)
         test_preds = (test_probs >= 0.5).float()
-        test_acc = (test_preds.cpu() == y_test_t).float().mean().item()
+        test_acc = (test_preds.to(device) == y_test_t).float().mean().item()
 
     #print(f"\nFinal test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}")
     if args.logging: print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}', file=logfile)
