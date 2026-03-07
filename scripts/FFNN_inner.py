@@ -314,7 +314,7 @@ def main():
         test_loss = criterion(test_logits, y_test_t.to(device)).item()
         test_probs = torch.sigmoid(test_logits)
         test_preds = (test_probs >= 0.5).float()
-        test_acc = (test_preds == y_test_t).float().mean().item()
+        test_acc = (test_preds.cpu() == y_test_t).float().mean().item()
 
     #print(f"\nFinal test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}")
     if args.logging: print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}', file=logfile)
@@ -348,7 +348,7 @@ def main():
             excluded_probs = torch.sigmoid(excluded_logits)
             excluded_preds = (excluded_probs >= 0.5).float().item()
             print(excluded_preds)
-            #excluded_acc = (excluded_preds == y_excluded_t).float().mean().item()
+            #excluded_acc = (excluded_preds.cpu() == y_excluded_t).float().mean().item()
 
         line = f"\nExcluded pair {args.exclude_bacts, args.exclude_phages} - prediction: {excluded_preds:.4f}, actual val: {y_excluded_t[0]:.4f}"
         #print(line)
@@ -366,8 +366,8 @@ def main():
             # 1. Forward pass to get logits
             logits = model(inputs)
 
-            all_logits.append(logits.numpy())
-            all_labels.append(labels.numpy())
+            all_logits.append(logits.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
 
     # Concatenate all results
     logits = np.concatenate(all_logits)
@@ -442,7 +442,7 @@ def main():
         with torch.no_grad():
             # Ensure X_test_t is your torch tensor for the test set
             test_logits = model(X_test_t.to(device))
-            test_probs = torch.sigmoid(test_logits).numpy().flatten()
+            test_probs = torch.sigmoid(test_logits).cpu().numpy().flatten()
 
         # 2. Identify True Positives within the Test Set
         predicted_positive = (test_probs >= optimal_threshold)
@@ -489,7 +489,7 @@ def main():
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Error during Biparte analysis: {e}\n{traceback.print_exc()}', file=logfile)
 
     # F1 Analysis -----------------
-    probs = test_probs.flatten().numpy() if hasattr(test_probs, "cpu") else test_probs.flatten()
+    probs = test_probs.flatten().cpu().numpy() if hasattr(test_probs, "cpu") else test_probs.flatten()
     y_true = y_test.flatten()  # already numpy
     if args.logging:
         f1_analysis(y_true, probs, logging=args.logging, outdir = outdir, logfile=logfile)
