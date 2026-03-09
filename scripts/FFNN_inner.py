@@ -115,6 +115,7 @@ def main():
     input_phage_path = f"{prefix}/PhageMinhash_n{pn}_k{pk}/"
     input_bact_path = f"{prefix}/BactMinhash_n{bn}_k{bk}/"
     presmat_path = f"{prefix}/PresMat_{presmat_suffix}/"
+    print(f"Recognized data paths\ninput_phage_path:\t{input_phage_path}\ninput_bact_path:\t{input_bact_path}\npresmat_path:\t{presmat_path}")
 
     ### 3. Load Data ###
     bact_clusters = pd.read_csv(os.path.join(data_prod_path, "bact_clusters.csv"), index_col=0)
@@ -350,7 +351,7 @@ def main():
     if args.exclude_noninteractions:
         model.eval()
         with torch.no_grad():
-            excluded_logits = model(X_excluded_t.to(device))
+            excluded_logits = model(X_excluded_t)
             #excluded_loss = criterion(excluded_logits, y_excluded_t.to(device)).item()
             excluded_probs = torch.sigmoid(excluded_logits)
             excluded_preds = (excluded_probs >= 0.5).float().item()

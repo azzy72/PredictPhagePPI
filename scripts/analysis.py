@@ -675,7 +675,7 @@ class FeatureImportance():
         if color_samples_by not in ['bacteria', 'phage', 'interaction']:
             raise ValueError("color_samples_by must be one of: 'bacteria', 'phage', 'interaction'")
 
-        outname = 'feature_importance_PCA.png' + color_samples_by
+        outname = f'feature_importance_PCA_{color_samples_by}.png'
         if not self.pca_prepped:
             self._prep_PCA()
 
