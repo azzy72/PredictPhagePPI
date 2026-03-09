@@ -181,19 +181,22 @@ def main():
             
         for phage in phage_names:
             if phage not in host_range_data.get(bact, {}): continue
-            if args.exclude_noninteractions and (bact in args.exclude_bacts or phage in args.exclude_phages):
-                continue
-            
+
             score = host_range_data[bact][phage]
-            # Concatenate sketches
             features = np.concatenate((binary_matrix[entity_to_index[bact]], 
                                        binary_matrix[entity_to_index[phage]]))
-            
+
+            if args.exclude_noninteractions and (bact in args.exclude_bacts or phage in args.exclude_phages):
+                X_excl.append(features)
+                y_excl.append(score)    
+                continue
+
             X.append(features)
             y.append(score)
             rows_meta.append((bact, phage))
             
     X, y = np.array(X), np.array(y)
+    X_excl, y_excl = np.array(X_excl), np.array(y_excl)
     
     ### 7. Splitting & Scaling ###
     if args.train_by_cluster:
@@ -304,8 +307,8 @@ def main():
     # Appropriating test and excluded sets
     X_test_t = torch.from_numpy(X_test).float().to(device)
     y_test_t = torch.from_numpy(y_test.reshape(-1, 1)).float().to(device)
-    X_excluded_t = torch.from_numpy(X_excl).float().to(device) if len(X_excl) > 0 else X_excl
-    y_excluded_t = torch.from_numpy(y_excl.reshape(-1, 1)).float().to(device) if len(y_excl) > 0 else y_excl
+    X_excluded_t = torch.from_numpy(X_excl).float().to(device) if X_excl.size > 0 else None 
+    y_excluded_t = torch.from_numpy(y_excl.reshape(-1, 1)).float().to(device) if y_excl.size > 0 else None
 
     test_ds = TensorDataset(X_test_t, y_test_t)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
@@ -347,20 +350,21 @@ def main():
     if args.logging: plt.savefig(outdir+outname)
     if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Accuracy and train figure saved as: {outdir+outname}', file=logfile)
 
-    # Eval on excluded set (if toggled)
-    if args.exclude_noninteractions:
+    # Eval on excluded set (if toggled and data exists)
+    if args.exclude_noninteractions and X_excluded_t is not None:
         model.eval()
         with torch.no_grad():
             excluded_logits = model(X_excluded_t)
-            #excluded_loss = criterion(excluded_logits, y_excluded_t.to(device)).item()
-            excluded_probs = torch.sigmoid(excluded_logits)
-            excluded_preds = (excluded_probs >= 0.5).float().item()
-            print(excluded_preds)
-            #excluded_acc = (excluded_preds.cpu() == y_excluded_t).float().mean().item()
+            excluded_probs = torch.sigmoid(excluded_logits).cpu().numpy().flatten()
+            excluded_preds = (excluded_probs >= 0.5).astype(int)
 
-        line = f"\nExcluded pair {args.exclude_bacts, args.exclude_phages} - prediction: {excluded_preds:.4f}, actual val: {y_excluded_t[0]:.4f}"
-        #print(line)
-        if args.logging: print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
+        print(f"\n--- Excluded Pairs Results ---")
+        for i in range(len(excluded_preds)):
+            # Note: You'll need to track the names of excluded pairs if you want to print them specifically here
+            line = f"Excluded pair {i} - prediction: {excluded_preds[i]} (prob: {excluded_probs[i]:.4f}), actual: {y_excl[i]}"
+            print(line)
+            if args.logging: 
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
 
     ### 10. Model Evaluations ###
     model.eval() # Set the model to evaluation mode
