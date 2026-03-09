@@ -807,7 +807,7 @@ class FeatureImportance():
             self.top_vals = avg_attr[self.top_idx].cpu().numpy()
 
             if self.TS: 
-                print(f"Top {top_n} indices (by |mean attribution|):", self.top_idx)
+                print(f"Top {top_n} indices (by mean attribution):", self.top_idx)
                 print("Corresponding mean attributions:", self.top_vals)
             
             self.top10_decoded = []

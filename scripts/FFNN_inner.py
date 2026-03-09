@@ -43,6 +43,8 @@ def parse_arguments():
     # Data Source
     parser.add_argument("--use_encoded", action="store_true", 
                         help="Use encoded_sketches instead of SM_sketches")
+    parser.add_argument("--bits_encoded", type=str, default="4", 
+                        help="(Optional) specify which type of bit encoding using in encoded_sketches (e.g. 4 for phage_encode4bit_n400_k12)")
     parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
 
     # Flags
@@ -109,11 +111,15 @@ def main():
         presmat_suffix = f"bn{bn}_bk{bk}_pn{pn}_pk{pk}"
 
     ### 2. Path Logic ###
-    prefix = "encoded_sketches" if args.use_encoded else "SM_sketches"
     sourmash_used = not args.use_encoded
-    
-    input_phage_path = f"{prefix}/PhageMinhash_n{pn}_k{pk}/"
-    input_bact_path = f"{prefix}/BactMinhash_n{bn}_k{bk}/"
+    prefix = "encoded_sketches" if args.use_encoded else "SM_sketches"
+
+    if args.use_encoded:
+        input_phage_path = f"{prefix}/phage_encode{args.bits_encoded}bit_n{pn}_k{pk}/"
+        input_bact_path = f"{prefix}/bact_encode{args.bits_encoded}bit_n{bn}_k{bk}/"
+    else:
+        input_phage_path = f"{prefix}/PhageMinhash_n{pn}_k{pk}/"
+        input_bact_path = f"{prefix}/BactMinhash_n{bn}_k{bk}/"
     presmat_path = f"{prefix}/PresMat_{presmat_suffix}/"
     print(f"Recognized data paths\ninput_phage_path:\t{input_phage_path}\ninput_bact_path:\t{input_bact_path}\npresmat_path:\t{presmat_path}")
 
