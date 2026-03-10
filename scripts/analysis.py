@@ -6,6 +6,7 @@
 ##### Imports -----------
 import pandas as pd
 from Bio import SeqIO
+import shap
 from torch import embedding
 import torch
 from tqdm import tqdm
@@ -550,6 +551,7 @@ class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
         self.raw_data_path = raw_data_path
         self.data_prod_path = data_prod_path
+        self.model = model
         self.ig = IntegratedGradients(model)
         self.attributions = None
         self.delta = None
@@ -856,3 +858,39 @@ class FeatureImportance():
         
         else:
             print("Sourmash-based model does not support k-mer decoding or plotting.")
+
+    def run_shap_analysis(self, X_test_tensor, background_size=100, test_size=50):
+        """
+        Performs SHAP analysis. 
+        X_test_tensor: The tensor used for evaluation.
+        background_size: Number of samples from training to use as the 'reference' distribution.
+        test_size: Number of samples to explain.
+        """
+        print(f"Starting SHAP analysis on {test_size} samples...")
+        
+        # class ShapModelWrapper(nn.Module):
+        #     def __init__(self, model):
+        #         super().__init__()
+        #         self.model = model
+        #     def forward(self, x):
+        #         return torch.sigmoid(self.model(x))
+
+        # wrapped_model = ShapModelWrapper(self.model)
+        explainer = shap.GradientExplainer(self.model, X_test_tensor)
+        
+        # 3. Calculate SHAP values for the test set
+        # This will result in a list of arrays (one per output neuron)
+        test_samples = X_test_tensor[:test_size]
+        self.shap_values = explainer.shap_values(test_samples)
+        
+        # 4. Visualization: Summary Plot
+        plt.figure(figsize=(10, 8))
+        # Note: Since your output is (Batch, 1), self.shap_values is a single array or list
+        shap.summary_plot(self.shap_values, test_samples.cpu().numpy(), 
+                          show=False)
+        
+        if self.logging:
+            plt.savefig(self.outdir + "shap_summary_plot.png", bbox_inches='tight')
+            print(f"SHAP summary plot saved to {self.outdir}")
+        
+        plt.show()
