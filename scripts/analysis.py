@@ -547,7 +547,7 @@ def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, loggi
     plt.show()
 
 class FeatureImportance():
-    def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logging : bool, TS : bool = False):
+    def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
         self.raw_data_path = raw_data_path
         self.data_prod_path = data_prod_path
         self.ig = IntegratedGradients(model)
@@ -559,6 +559,7 @@ class FeatureImportance():
         self.TS = TS
         self.pca_prepped = False
         self.logging = logging
+        self.logfile = logfile
 
         if outdir is None and logging:
             self.logging = False
@@ -787,7 +788,7 @@ class FeatureImportance():
             plt.savefig(self.outdir+outname)
         plt.show()
 
-    def regain_kmers(self, k : int, sourmash : bool, top_n : int = 20):
+    def regain_kmers(self, k : int, sourmash : bool, top_n : int = 20, mapping_func=None, mapping_args=None):
         """
         Regains the original k-mer features corresponding to the top N feature importance indices by mapping them back to the original feature names. The top N features are determined based on the magnitude of their loadings in the PCA analysis.
         Args:
@@ -809,13 +810,21 @@ class FeatureImportance():
             if self.TS: 
                 print(f"Top {top_n} indices (by mean attribution):", self.top_idx)
                 print("Corresponding mean attributions:", self.top_vals)
-            
+            if self.logging: 
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top {top_n} indices (by mean attribution):', file=self.logfile)
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Corresponding mean attributions: {self.top_vals}', file=self.logfile)
+
             self.top10_decoded = []
             codec = KmerCodec()
             for idx in self.top_idx:
-                self.top10_decoded.append(codec.decode(idx, k=self.k)) # decode minhash index to kmer string
+                if mapping_func:
+                    kmer_val = mapping_func(idx, *mapping_args)
+                else:
+                    kmer_val = idx # Fallback (will likely cause the KeyError if not mapped)
+                self.top10_decoded.append(codec.decode(kmer_val, k=self.k)) # decode minhash index to kmer string
             
             if self.TS: print("Top 10 decoded kmers:", self.top10_decoded)
+            if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top 10 decoded kmers: {self.top10_decoded}', file=self.logfile)
             return self.top10_decoded
         
         else:
@@ -832,13 +841,14 @@ class FeatureImportance():
         """
         if not sourmash:
             # Plot top10_decoded with thier attribution values
-            fig, ax = plt.subplots(figsize=(10, 5))
+            fig, ax = plt.subplots(figsize=(10, 8))
             bars = ax.bar(range(len(self.top_idx)), self.top_vals, color='#1f77b4')
             ax.set_xticks(range(len(self.top_idx)))
             ax.set_xticklabels(self.top10_decoded, rotation=45, ha='right')
             ax.set_ylabel('Mean Attribution Value')
             ax.set_title('Top 10 Kmers by Mean Attribution Value')
-            
+            plt.tight_layout()
+
             if self.logging: 
                 outname = f'top10_{self.k}mer_attr.png'
                 plt.savefig(self.outdir+outname)

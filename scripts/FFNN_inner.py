@@ -81,6 +81,12 @@ def parse_arguments():
 
     return args
 
+# This function maps model feature index 'idx' back to the encoded k-mer
+def model_idx_to_kmer(idx, num_features_per_entity, feature_indices, idx_to_minhash):
+    # Determine if it's a Bact feature (idx < N) or Phage feature (idx >= N)
+    original_col_idx = feature_indices[idx % num_features_per_entity]
+    return idx_to_minhash[original_col_idx]
+
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden1=256, hidden2=128):
         super().__init__()
@@ -139,6 +145,7 @@ def main():
         with open(os.path.join(full_presmat_path, "entity_to_index.pkl"), "rb") as f: entity_to_index = pickle.load(f)
         with open(os.path.join(full_presmat_path, "phage_minhash_data.pkl"), "rb") as f: phage_minhash_data = pickle.load(f)
         with open(os.path.join(full_presmat_path, "bact_minhash_data.pkl"), "rb") as f: bact_minhash_data = pickle.load(f)
+        with open(os.path.join(full_presmat_path, "minhash_to_index.pkl"), "rb") as f: minhash_to_index = pickle.load(f) 
 
     ### 4. Host Range Setup ###
     bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"))
@@ -179,6 +186,11 @@ def main():
         random.seed(42)
         random.shuffle(feature_indices)
         binary_matrix = binary_matrix[:, feature_indices]
+    else:
+        feature_indices = list(range(binary_matrix.shape[1]))
+    
+    # Create inverse mapping: column_index -> kmer_encoded_int
+    idx_to_minhash = {v: k for k, v in minhash_to_index.items()}
 
     for bact in tqdm(bacteria_names, desc="Building dataset"):
         # Exclusion logic
@@ -594,7 +606,8 @@ def main():
         )
 
     ### Feature Importance ###
-    fi = FeatureImportance(model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, TS = True, logging = args.logging)
+    fi = FeatureImportance(model, outdir, metadata_test, id_lookup_bact, host_range_data, 
+                            raw_data_path, data_prod_path, TS = True, logging = args.logging, logfile=logfile)
     fi.compute_importance(X_test_t, target=0, delta=True)
     fi.plot_attributions()
     fi.plot_PCA(color_samples_by="bacteria")
@@ -606,7 +619,9 @@ def main():
 
     # Regain kmer as string, given encoding
     try:
-        fi.regain_kmers(k=k, sourmash=sourmash_used, top_n=10)
+        fi.regain_kmers(k=k, sourmash=sourmash_used, top_n=10, mapping_func=model_idx_to_kmer,
+                            mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash),
+                            logging=args.logging, outdir = outdir, logfile=logfile)
         fi.plot_top_kmers(sourmash=sourmash_used, top_n=10)
     except Exception as e:
         print(f"Error during k-mer regaining: {e}")

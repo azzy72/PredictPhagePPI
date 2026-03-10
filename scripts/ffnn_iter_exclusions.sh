@@ -1,14 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=PredictPhage
 #SBATCH --partition=gpu
-#SBATCH --nodes=1
-#SBATCH --mem=20G
+#SBATCH --nodes=6
+#SBATCH --mem=50G
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu
-#!SBATCH --time=00:00:30
+#!SBATCH --time=00:00:00
+#SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=ALL
 #SBATCH --mail-user=s215045@student.dtu.dk
 
 # Configuration
@@ -20,15 +21,17 @@ PHAGE_FILE="$RAW_DIR/phage_cleaned.fasta"
 NK_VALS="500 12"
 
 # 1. Collect names
-bact_names=$(grep ">" "$BACTA_FILE" | awk '{print $2}')
-phage_names=$(grep ">" "$PHAGE_FILE" | awk -F'_' '{print $NF}')
+bact_names=$(grep ">" "$BACTA_FILE" | awk '{print $2}' | sort -u)
+echo "Recognized these bact names: $bact_names"
+phage_names=$(grep ">" "$PHAGE_FILE" | grep -v "training" | awk -F'_' '{print $NF}' | sort -u)
+echo "Recognized these phage names: $phage_names"
 
 # Calculate totals for the progress bar
 bact_count=$(echo "$bact_names" | wc -w)
 phage_count=$(echo "$phage_names" | wc -w)
 total_tasks=$((bact_count * phage_count))
 current_task=0
-
+ht
 echo "Starting training for $total_tasks pairs..."
 
 # 2. Training Loop
