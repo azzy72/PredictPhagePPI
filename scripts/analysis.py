@@ -5,7 +5,10 @@
 
 ##### Imports -----------
 import pandas as pd
-from Bio import SeqIO
+from pathlib import Path
+import os
+from Bio.Blast import NCBIWWW, NCBIXML
+from Bio import Entrez, SeqIO
 import shap
 from torch import embedding
 import torch
@@ -859,38 +862,210 @@ class FeatureImportance():
         else:
             print("Sourmash-based model does not support k-mer decoding or plotting.")
 
-    def run_shap_analysis(self, X_test_tensor, background_size=100, test_size=50):
+    def run_shap_analysis(self, X_test, X_test_tensor):
         """
-        Performs SHAP analysis. 
-        X_test_tensor: The tensor used for evaluation.
-        background_size: Number of samples from training to use as the 'reference' distribution.
-        test_size: Number of samples to explain.
+        Performs SHAP analysis. One for first sample attributions, waterfall plot, then one plot for global attributions 
+        Args:
+            X_test (numpy.ndarray): the test array used for evaluation
+            X_test_tensor (torch.Tensor): the tensor used for evaluation.
+        Returns:
+            None (displays and saves the SHAP plots)
         """
-        print(f"Starting SHAP analysis on {test_size} samples...")
+        print(f"Starting SHAP analysis on given samples...")
         
-        # class ShapModelWrapper(nn.Module):
-        #     def __init__(self, model):
-        #         super().__init__()
-        #         self.model = model
-        #     def forward(self, x):
-        #         return torch.sigmoid(self.model(x))
-
-        # wrapped_model = ShapModelWrapper(self.model)
         explainer = shap.GradientExplainer(self.model, X_test_tensor)
+        raw_shap_values = explainer.shap_values(X_test_tensor)
+        shap_vals_array = raw_shap_values[0] if isinstance(raw_shap_values, list) else raw_shap_values
+
+        # Manually calculate the 1D Expected Value - GradientExplainer doesn't have explain_value attribution
+        self.model.eval()
+        with torch.no_grad():
+            bg_preds = self.model(X_test_tensor)
+            # Ensure this is a single scalar number
+            expected_value_scalar = bg_preds.mean().item()
         
-        # 3. Calculate SHAP values for the test set
-        # This will result in a list of arrays (one per output neuron)
-        test_samples = X_test_tensor[:test_size]
-        self.shap_values = explainer.shap_values(test_samples)
-        
-        # 4. Visualization: Summary Plot
+        ###### 1. Visualization: First sample space #######
+        # Manually create shap explanation with metadata, for plotting
+        exp = shap.Explanation(
+            values=shap_vals_array[0].flatten(),  # Select first sample and flatten to 1D
+            base_values=expected_value_scalar,    # The scalar starting point
+            data=X_test[0].flatten(),            # The raw feature values for sample 0
+            feature_names=[f"Feat_{i}" for i in range(X_test.shape[1])])
+
         plt.figure(figsize=(10, 8))
-        # Note: Since your output is (Batch, 1), self.shap_values is a single array or list
-        shap.summary_plot(self.shap_values, test_samples.cpu().numpy(), 
-                          show=False)
+        shap.plots.waterfall(exp, max_display=30)
         
         if self.logging:
-            plt.savefig(self.outdir + "shap_summary_plot.png", bbox_inches='tight')
-            print(f"SHAP summary plot saved to {self.outdir}")
+            plt.savefig(self.outdir + "shap_first_wf.png", bbox_inches='tight')
+            print(f"SHAP first sample waterfall saved to {self.outdir}")
         
         plt.show()
+
+        ###### 2. Visualization: Global importance ######
+        # Manually create shap explanation with metadata, for plotting
+        shap_values_batch = raw_shap_values[0] if isinstance(raw_shap_values, list) else raw_shap_values
+
+        global_exp = shap.Explanation(
+            values=shap_values_batch.squeeze(), # Shape should be (100, 42270)
+            data=X_test[:100],
+            feature_names=[f"Feat_{i}" for i in range(X_test.shape[1])])
+
+        plt.figure(figsize=(10, 8))
+        shap.plots.bar(global_exp, max_display=20)
+        
+        if self.logging:
+            plt.savefig(self.outdir + "shap_glob_attr.png", bbox_inches='tight')
+            print(f"SHAP Global Attributions saved to {self.outdir}")
+        
+        plt.show()
+
+class GeneAnalysis():
+    def __init__(self, logfile, logging : bool):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/"
+        self.raw_data_path = os.path.join(self.root, "raw_data/")
+        self.data_prod_path = os.path.join(self.root, "data_prod/")
+        self.path_to_nn_runs = os.path.join(self.root, "nn_runs/")
+        self.logfile = logfile
+        self.logging = logging
+    
+    def _clean_kmer_line(self, kmer_line):
+        """Clean the line containing kmers, from a messy string with noise, to a list with only decoded kmers"""
+        kmers_string = kmer_line.split(":")[-1].strip()
+        return kmers_string.strip("[]").replace("'", "").split(", ")
+
+    def extract_kmer_list(self, file_path):
+        """
+        Extracts the list of top decoded kmers from a log file generated during a feature importance analysis. 
+        The function reads the log file, searches for the line containing the top decoded kmers, and returns a cleaned list of those kmers.
+        
+        Args:
+            file_path (str): The path to the log file containing the feature importance analysis results.
+        
+        Returns:
+            list: A list of the top decoded kmers extracted from the log file.
+        """
+        # Check if filepath exists
+        try:
+            os.path.exists(file_path)
+        except FileExistsError as e:
+            print("File path doesn't exist", e)
+        
+        with open(file_path, "r") as logfile:
+            for line in logfile:
+                if "Top 10 decoded kmers:" in line:
+                    return self._clean_kmer_line(line)
+
+    def search_and_annotate_kmers(self, kmer_list, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt"):
+        """
+        Blasts each of the kmers against NCBI, for related species (accessions), then searches its genes for the kmer along with possible functionalities.
+        
+        Args:            
+            kmer_list (list): A list of k-mer sequences to search for.
+            outfile (str): The path to the output file where results will be logged. If None, defaults to "logs/NCBI_gene_search.txt" in the root directory.
+            acc_num (int): The number of top BLAST hits to consider for gene annotation.
+            tax_origin (str): The Entrez query to restrict BLAST search to a specific taxonomic group (default is "txid38018[orgn]" for viruses).
+            ncbi_program (str): The BLAST program to use (default is "blastn" for nucleotide BLAST).
+            ncbi_db (str): The NCBI database to search against (default is "core_nt" for the core nucleotide database).
+        
+        Returns:
+            pd.DataFrame: A DataFrame containing the k-mers, the genes they were found in, and the annotated functions of those genes based on the BLAST hits.
+        """
+        if outfile is None:
+            outfile = self.root + "logs/NCBI_gene_search.txt"
+
+        with open(outfile, "w") as logfile:
+            print(f"Starting BLAST for {len(kmer_list)} kmers against Viral Database...", file=logfile)
+            
+            # We combine kmers into one FASTA-style string to save API calls
+            fasta_query = "\n".join([f">kmer_{i}\n{k}" for i, k in enumerate(kmer_list)])
+            
+            try:
+                # qblast parameters for short sequences:
+                # - program: blastn
+                # - database: nt (nucleotide)
+                # - entrez_query: Restrict to Viruses
+                # - word_size: 7 (minimum for blastn)
+                # - expect: 1000 (higher to catch short hits)
+                result_handle = NCBIWWW.qblast(
+                    program=ncbi_program, 
+                    database=ncbi_db, 
+                    sequence=fasta_query,
+                    entrez_query=tax_origin, #12333
+                    word_size=7,
+                    expect=1000,
+                    short_query=True
+                )
+                
+                blast_records = NCBIXML.parse(result_handle)
+                
+                for record in tqdm(blast_records, total=len(kmer_list), desc="Processing BLAST records"):
+                    kmer_seq = kmer_list[int(record.query.split('_')[1])]
+                    print(f"\n--- Results for Kmer: {kmer_seq} ---", file=logfile)
+                    
+                    if not record.alignments:
+                        print("No significant phage hits found.", file=logfile)
+                        continue
+
+                    # Check the top acc_num hits for functional relevance
+                    for alignment in record.alignments[:acc_num]:
+                        accession = alignment.accession
+                        hit_def = alignment.title
+                        
+                        # Fetch GenBank record to find the specific gene overlapping the hit
+                        print(f"Checking Gene in Hit: {accession} ({hit_def[:50]}...)", file=logfile)
+                        
+                        # We fetch the specific region of the hit to save bandwidth
+                        hsp = alignment.hsps[0]
+                        start, end = min(hsp.sbjct_start, hsp.sbjct_end), max(hsp.sbjct_start, hsp.sbjct_end)
+                        
+                        try:
+                            handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", retmode="text")
+                            genbank_rec = SeqIO.read(handle, "genbank")
+                            handle.close()
+                            
+                            found_gene = False
+                            for feature in genbank_rec.features:
+                                if feature.type == "CDS":
+                                    # Check if the kmer location overlaps with this gene
+                                    if start >= feature.location.start and end <= feature.location.end:
+                                        product = feature.qualifiers.get('product', ['Unknown'])[0]
+                                        gene = feature.qualifiers.get('gene', ['N/A'])[0]
+                                        print(f"  [MATCH] Found in Gene: {gene} | Function: {product}", file=logfile)
+                                        found_gene = True
+                                        break
+                            if not found_gene:
+                                print("  [INFO] Hit is in an intergenic/non-coding region.", file=logfile)
+                                
+                        except Exception as e:
+                            print(f"  [ERROR] Could not fetch details for {accession}: {e}", file=logfile)
+                        
+                        time.sleep(1) # Be nice to NCBI servers
+
+            except Exception as e:
+                print(f"BLAST search failed: {e}", file=logfile)
+
+        #Collect results as pandas dataframe and return
+        results = []
+        with open(outfile, "r") as logfile:
+            current_kmer = None
+            for line in logfile:
+                if line.startswith("--- Results for Kmer:"):
+                    current_kmer = line.split(":")[-1].strip().strip("---").strip()
+                elif line.startswith("  [MATCH]"):
+                    parts = line.split("|")
+                    gene_info = parts[0].split("Found in Gene:")[-1].strip()
+                    function_info = parts[1].split("Function:")[-1].strip()
+                    results.append({"Kmer": current_kmer, "Gene": gene_info, "Function": function_info})
+                elif line.startswith("  [INFO]"):
+                    results.append({"Kmer": current_kmer, "Gene": "Intergenic/Non-coding", "Function": "N/A"})
+                elif line.startswith("  [ERROR]"):
+                    results.append({"Kmer": current_kmer, "Gene": "Error Fetching", "Function": "N/A"})
+                elif line.startswith("No significant phage hits found."):
+                    results.append({"Kmer": current_kmer, "Gene": "No Hits", "Function": "N/A"})
+
+        return pd.DataFrame(results)
+
+    def assign_gene_clusters(self, rank_df):
+        """
+        Assign kmers to gene clusters based on functional annotations obtained from the BLAST search. 
+        """

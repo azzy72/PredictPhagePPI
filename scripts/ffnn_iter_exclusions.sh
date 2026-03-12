@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=PredictPhage
 #SBATCH --partition=gpu
-#SBATCH --nodes=6
+#SBATCH --nodes=4
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu
