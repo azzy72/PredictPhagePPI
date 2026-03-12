@@ -2,10 +2,9 @@
 #SBATCH --job-name=PredictPhage
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
-#SBATCH --mem=20G
+#SBATCH --mem=10G
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu
-#!SBATCH --time=00:00:30
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=END,FAIL

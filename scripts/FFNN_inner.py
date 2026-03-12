@@ -55,6 +55,7 @@ def parse_arguments():
     parser.add_argument("--train_by_cluster", action="store_true", help="Split data by bacterial clusters")
     parser.add_argument("--no_randomize", action="store_false", dest="randomize", help="Disable entity randomization")
     parser.add_argument("--no_shuffle", action="store_false", dest="shuffle", help="Disable feature shuffling")
+    parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
 
     # Exclusions
     parser.add_argument("--exclude_noninteractions", action="store_true", help="Exclude non-interacting pairs")
@@ -211,8 +212,13 @@ def main():
 
             X.append(features)
             y.append(score)
-            rows_meta.append((bact, phage))
-            
+            if args.entity_order == "bact_first":
+                rows_meta.append((bact, phage))
+            elif args.entity_order == "phage_first":
+                rows_meta.append((phage, bact))
+            else:
+                raise ValueError("Invalid entity_order argument. Must be 'bact_first' or 'phage_first'.")
+
     X, y = np.array(X), np.array(y)
     X_excl, y_excl = np.array(X_excl), np.array(y_excl)
     
