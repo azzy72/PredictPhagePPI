@@ -2,7 +2,10 @@
 DTU on predicting phage interactions given phage and target bacterias sequenced genomes as well as interaction
 
 ## Setup
-Run "make" followed by ./scripts/check_requirements.sh in a unix terminal
+Run 
+1) "make"
+2) chmod +rx *
+3) ./scripts/check_requirements.sh in a unix terminal
 
 ### notes
 KU library preperation using Hackflex; https://github.com/GaioTransposon/Hackflex
