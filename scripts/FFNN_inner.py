@@ -202,8 +202,12 @@ def main():
             if phage not in host_range_data.get(bact, {}): continue
 
             score = host_range_data[bact][phage]
-            features = np.concatenate((binary_matrix[entity_to_index[bact]], 
+            if args.entity_order == "bact_first":
+                features = np.concatenate((binary_matrix[entity_to_index[bact]], 
                                        binary_matrix[entity_to_index[phage]]))
+            elif args.entity_order == "phage_first":
+                features = np.concatenate((binary_matrix[entity_to_index[phage]], 
+                                       binary_matrix[entity_to_index[bact]]))
 
             if args.exclude_noninteractions and (bact in args.exclude_bacts or phage in args.exclude_phages):
                 X_excl.append(features)
