@@ -46,6 +46,7 @@ def parse_arguments():
     parser.add_argument("--bits_encoded", type=str, default="4", 
                         help="(Optional) specify which type of bit encoding using in encoded_sketches (e.g. 4 for phage_encode4bit_n400_k12)")
     parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
+    parser.add_argument("--sbatch_id", type=str, help="(Optional) sbatch job ID to include in output directory name for easier tracking")
 
     # Flags
     parser.add_argument("--logging", action="store_true", help="Enable logging and saving")
@@ -158,7 +159,9 @@ def main():
         run = 1
         tag = "smote" if args.smote else "standard"
         if not args.out:
-            outdirname = f'torch_mlp_n{n}_k{k}_{tag}'
+            if args.sbatch_id:
+                outdirname = f"{args.sbatch_id}_"
+            outdirname += f'torch_mlp_n{n}_k{k}_{tag}'
             outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
             while os.path.exists(outdir):
                 run += 1
