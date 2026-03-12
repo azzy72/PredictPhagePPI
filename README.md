@@ -4,7 +4,7 @@ DTU on predicting phage interactions given phage and target bacterias sequenced 
 ## Setup
 Run 
 1) "make"
-2) chmod +rx *
+2) chmod +rx ./scripts/*
 3) ./scripts/check_requirements.sh in a unix terminal
 
 ### notes
