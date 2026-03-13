@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 from Bio.Blast import NCBIWWW, NCBIXML
 from Bio import Entrez, SeqIO
+from io import StringIO
 import shap
 from torch import embedding
 import torch
@@ -33,8 +34,6 @@ from matplotlib.lines import Line2D
 from captum import attr 
 from captum.attr import IntegratedGradients
 from decompositions import KmerCodec
-
-
 
 ##### Paths -------------
 raw_data_path = "../raw_data/"
@@ -550,6 +549,70 @@ def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, loggi
     if logging: plt.savefig(outdir + f'bipartisan_conf_interactions_p{conf_threshold}.png') 
     plt.show()
 
+def model_idx_to_kmer(idx, num_features_per_entity, feature_indices, idx_to_minhash):
+    """
+    Maps a model feature index back to the encoded k-mer (minhash index).
+    """
+    original_col_idx = feature_indices[idx % num_features_per_entity]
+    return idx_to_minhash[original_col_idx]
+
+def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict = None, 
+                 mapping_func=None, mapping_args=None, attributions=None, 
+                 TS: bool = False, logging: bool = False, logfile=None):
+    """
+    Standalone function to regain original k-mer features corresponding to top feature indices.
+    
+    Returns:
+        tuple: (top_indices, top_values, decoded_kmers_list)
+    """
+    if sourmash:
+        print("Sourmash-based model does not support k-mer decoding.")
+        return [], [], []
+
+    # 1. Determine top indices and values
+    if idx_to_minhash is not None:
+        top_idx = list(idx_to_minhash.keys()) 
+        top_vals = "N/A"
+        if TS: print(f"Using provided idx_list for top indices: {top_idx}")
+    else:
+        if attributions is None:
+            raise ValueError("Attributions must be provided if idx_list is None.")
+        avg_attr = attributions.mean(dim=0)
+        abs_avg = avg_attr.abs()
+        k_count = min(top_n, abs_avg.numel())
+        topk = torch.topk(abs_avg, k_count)
+        top_idx = topk.indices.cpu().numpy()
+        top_vals = avg_attr[top_idx].cpu().numpy()
+
+    # 2. Setup mapping
+    if mapping_func is None:
+        if mapping_args is None:
+            raise ValueError("If no mapping_func is provided, mapping_args must be provided.")
+        mapping_func = model_idx_to_kmer
+
+    if TS: 
+        print(f"Top {top_n} indices:", top_idx)
+        print("Mean attributions:", top_vals)
+    if logging and logfile: 
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top {top_n} indices: {top_idx}', file=logfile)
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Mean attributions: {top_vals}', file=logfile)
+
+    # 3. Decode
+    decoded_kmers_dict = {}  # Changed from list to dict
+    codec = KmerCodec()
+    
+    for idx in top_idx:
+        kmer_hash_val = mapping_func(idx, *mapping_args)
+        decoded_kmers_dict[int(idx)] = codec.decode(kmer_hash_val, k=k)
+    
+    if TS: 
+        print("Decoded kmers mapping:", decoded_kmers_dict)
+    
+    if logging and logfile: 
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Decoded kmers: {decoded_kmers_dict}', file=logfile)
+    
+    return top_idx, top_vals, decoded_kmers_dict
+
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
         self.raw_data_path = raw_data_path
@@ -792,49 +855,26 @@ class FeatureImportance():
             outname = 'cluster_span_attr_bcolor.png'
             plt.savefig(self.outdir+outname)
         plt.show()
-
-    def regain_kmers(self, k : int, sourmash : bool, top_n : int = 20, mapping_func=None, mapping_args=None):
+    
+    def regain_kmers(self, k : int, sourmash : bool, top_n : int = 20, idx_list : list = None, mapping_func=None, mapping_args=None):
         """
-        Regains the original k-mer features corresponding to the top N feature importance indices by mapping them back to the original feature names. The top N features are determined based on the magnitude of their loadings in the PCA analysis.
-        Args:
-            k (int): The k-mer size.
-            top_n (int): The number of top features to retrieve. Default is 20.
-        Returns:
-            top_kmers (list): A list of the original k-mer feature names corresponding to the top N feature importance indices.
+        Wrapper inside the class that calls the standalone regain_kmers function.
         """
-        if not sourmash:
-            self.k = k
-            # top N feature indexes by mean absolute attribution
-            avg_attr = self.attributions.mean(dim=0)
-            abs_avg = avg_attr.abs()
-            k = min(top_n, abs_avg.numel())
-            topk = torch.topk(abs_avg, k)
-            self.top_idx = topk.indices.cpu().numpy()
-            self.top_vals = avg_attr[self.top_idx].cpu().numpy()
-
-            if self.TS: 
-                print(f"Top {top_n} indices (by mean attribution):", self.top_idx)
-                print("Corresponding mean attributions:", self.top_vals)
-            if self.logging: 
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top {top_n} indices (by mean attribution):', file=self.logfile)
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Corresponding mean attributions: {self.top_vals}', file=self.logfile)
-
-            self.top10_decoded = []
-            codec = KmerCodec()
-            for idx in self.top_idx:
-                if mapping_func:
-                    kmer_val = mapping_func(idx, *mapping_args)
-                else:
-                    kmer_val = idx # Fallback (will likely cause the KeyError if not mapped)
-                self.top10_decoded.append(codec.decode(kmer_val, k=self.k)) # decode minhash index to kmer string
-            
-            if self.TS: print("Top 10 decoded kmers:", self.top10_decoded)
-            if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top 10 decoded kmers: {self.top10_decoded}', file=self.logfile)
-            return self.top10_decoded
-        
-        else:
-            print("Sourmash-based model does not support k-mer decoding or plotting.")
-            return []
+        self.k = k
+        # Call standalone function and store results in instance state
+        self.top_idx, self.top_vals, self.top10_decoded = regain_kmers(
+            k=k, 
+            sourmash=sourmash, 
+            top_n=top_n, 
+            idx_list=idx_list, 
+            mapping_func=mapping_func, 
+            mapping_args=mapping_args, 
+            attributions=self.attributions, 
+            TS=self.TS, 
+            logging=self.logging, 
+            logfile=self.logfile
+        )
+        return self.top10_decoded
 
     def plot_top_kmers(self, sourmash : bool, top_n : int = 20):
         """
@@ -955,23 +995,29 @@ class GeneAnalysis():
                 if "Top 10 decoded kmers:" in line:
                     return self._clean_kmer_line(line)
 
-    def search_and_annotate_kmers(self, kmer_list, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt"):
+    def search_and_annotate_kmers(self, kmer_list, summarise_by: str = None, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt", expect:int = 100):
         """
         Blasts each of the kmers against NCBI, for related species (accessions), then searches its genes for the kmer along with possible functionalities.
         
         Args:            
-            kmer_list (list): A list of k-mer sequences to search for.
+            kmer_list (list | pd.DataFrame): A list or DataFrame of k-mer sequences to search for.
+            summarise_by (str): Whether to summarise the kmer results by gene or function.
             outfile (str): The path to the output file where results will be logged. If None, defaults to "logs/NCBI_gene_search.txt" in the root directory.
             acc_num (int): The number of top BLAST hits to consider for gene annotation.
-            tax_origin (str): The Entrez query to restrict BLAST search to a specific taxonomic group (default is "txid38018[orgn]" for viruses).
+            tax_origin (str): The Entrez query to restrict BLAST search to a specific taxonomic group (default is "txid38018[orgn]" for phages, "txid91347[orgn]" for Enterobacterales).
             ncbi_program (str): The BLAST program to use (default is "blastn" for nucleotide BLAST).
             ncbi_db (str): The NCBI database to search against (default is "core_nt" for the core nucleotide database).
         
         Returns:
             pd.DataFrame: A DataFrame containing the k-mers, the genes they were found in, and the annotated functions of those genes based on the BLAST hits.
         """
+        Entrez.email = "s215045@student.dtu.dk"
         if outfile is None:
             outfile = self.root + "logs/NCBI_gene_search.txt"
+
+        if type(kmer_list) == pd.DataFrame:
+            kmer_list_df = kmer_list.copy()
+            kmer_list = kmer_list['decoded_kmer'].tolist() # Assuming the DataFrame has a column named 'kmer'
 
         with open(outfile, "w") as logfile:
             print(f"Starting BLAST for {len(kmer_list)} kmers against Viral Database...", file=logfile)
@@ -990,56 +1036,94 @@ class GeneAnalysis():
                     program=ncbi_program, 
                     database=ncbi_db, 
                     sequence=fasta_query,
-                    entrez_query=tax_origin, #12333
+                    entrez_query=tax_origin,
                     word_size=7,
                     expect=1000,
-                    short_query=True
+                    short_query=True,
+                    hitlist_size=acc_num
                 )
                 
-                blast_records = NCBIXML.parse(result_handle)
+                #Read fully to check for completion
+                blast_results_raw = result_handle.read()
+                result_handle.close()
+
+                if "</BlastOutput>" not in blast_results_raw:
+                    print("ERROR: NCBI returned incomplete XML (truncated). Try a smaller kmer batch.", file=logfile)
+                    return pd.DataFrame() # Or handle as needed
+
+                from io import StringIO
+                blast_records = list(NCBIXML.parse(StringIO(blast_results_raw)))
                 
-                for record in tqdm(blast_records, total=len(kmer_list), desc="Processing BLAST records"):
-                    kmer_seq = kmer_list[int(record.query.split('_')[1])]
+                # Use enumerate to match records back to the original kmer_list
+                for i, record in enumerate(tqdm(blast_records, desc="Processing BLAST records")):
+                    # Safety check: ensure we match the right kmer
+                    # NCBI sometimes skips records if NO hits are found at all
+                    kmer_seq = kmer_list[i] 
                     print(f"\n--- Results for Kmer: {kmer_seq} ---", file=logfile)
                     
                     if not record.alignments:
-                        print("No significant phage hits found.", file=logfile)
+                        print("No significant hits found.", file=logfile)
                         continue
-
-                    # Check the top acc_num hits for functional relevance
-                    for alignment in record.alignments[:acc_num]:
+                    
+                    output = []
+                    gene_found = []
+                    function_found = []
+                    for alignment in record.alignments:
                         accession = alignment.accession
                         hit_def = alignment.title
+                        output.append(f"Checking Gene in Hit: {accession}")
                         
-                        # Fetch GenBank record to find the specific gene overlapping the hit
-                        print(f"Checking Gene in Hit: {accession} ({hit_def[:50]}...)", file=logfile)
-                        
-                        # We fetch the specific region of the hit to save bandwidth
-                        hsp = alignment.hsps[0]
-                        start, end = min(hsp.sbjct_start, hsp.sbjct_end), max(hsp.sbjct_start, hsp.sbjct_end)
-                        
+                        # We use a try-block for Entrez in case one specific ID fails
                         try:
+                            # 4. FETCH: Use small sleep to avoid 429 Too Many Requests
+                            #time.sleep(0.5) 
                             handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", retmode="text")
                             genbank_rec = SeqIO.read(handle, "genbank")
                             handle.close()
                             
+                            hsp = alignment.hsps[0]
+                            start, end = min(hsp.sbjct_start, hsp.sbjct_end), max(hsp.sbjct_start, hsp.sbjct_end)
+                            
                             found_gene = False
                             for feature in genbank_rec.features:
                                 if feature.type == "CDS":
-                                    # Check if the kmer location overlaps with this gene
                                     if start >= feature.location.start and end <= feature.location.end:
                                         product = feature.qualifiers.get('product', ['Unknown'])[0]
                                         gene = feature.qualifiers.get('gene', ['N/A'])[0]
-                                        print(f"  [MATCH] Found in Gene: {gene} | Function: {product}", file=logfile)
+                                        output.append(f"  [MATCH] Found in Gene: {gene} | Function: {product}")
+                                        gene_found.append(gene)
+                                        function_found.append(product)
+                                        #print(f"  [MATCH] Found in Gene: {gene} | Function: {product}", file=logfile)
                                         found_gene = True
                                         break
                             if not found_gene:
-                                print("  [INFO] Hit is in an intergenic/non-coding region.", file=logfile)
+                                output.append("  [INFO] Hit is in an intergenic/non-coding region.")
                                 
                         except Exception as e:
-                            print(f"  [ERROR] Could not fetch details for {accession}: {e}", file=logfile)
-                        
-                        time.sleep(1) # Be nice to NCBI servers
+                            output.append(f"  [ERROR] Could not fetch details for {accession}: {e}")
+                            #print(f"  [ERROR] Could not fetch details for {accession}: {e}", file=logfile)
+                    
+                    if summarise_by is None:
+                        for line in output:
+                            print(line, file=logfile)
+                    else:
+                        print(f"--- Summary for Kmer: {kmer_seq} ---", file=logfile)
+                        if summarise_by == "gene":
+                            if gene_found:
+                                #find majority gene if multiple found
+                                gene_counts = Counter(gene_found)
+                                most_common_gene, count = gene_counts.most_common(1)[0]
+                                print(f"Most common gene found: {most_common_gene} (found in {count} hits)", file=logfile)
+                            else:                                
+                                print("No genes found for this kmer.", file=logfile)
+                        elif summarise_by == "function":
+                            if function_found:
+                                #find majority function if multiple found
+                                function_counts = Counter(function_found)
+                                most_common_function, count = function_counts.most_common(1)[0]
+                                print(f"Most common function found: {most_common_function} (found in {count} hits)", file=logfile)
+                            else:
+                                print("No functions found for this kmer.", file=logfile)
 
             except Exception as e:
                 print(f"BLAST search failed: {e}", file=logfile)
@@ -1048,22 +1132,46 @@ class GeneAnalysis():
         results = []
         with open(outfile, "r") as logfile:
             current_kmer = None
-            for line in logfile:
-                if line.startswith("--- Results for Kmer:"):
-                    current_kmer = line.split(":")[-1].strip().strip("---").strip()
-                elif line.startswith("  [MATCH]"):
-                    parts = line.split("|")
-                    gene_info = parts[0].split("Found in Gene:")[-1].strip()
-                    function_info = parts[1].split("Function:")[-1].strip()
-                    results.append({"Kmer": current_kmer, "Gene": gene_info, "Function": function_info})
-                elif line.startswith("  [INFO]"):
-                    results.append({"Kmer": current_kmer, "Gene": "Intergenic/Non-coding", "Function": "N/A"})
-                elif line.startswith("  [ERROR]"):
-                    results.append({"Kmer": current_kmer, "Gene": "Error Fetching", "Function": "N/A"})
-                elif line.startswith("No significant phage hits found."):
-                    results.append({"Kmer": current_kmer, "Gene": "No Hits", "Function": "N/A"})
+            if summarise_by is None:
+                for line in logfile:
+                    if line.startswith("--- Results for Kmer:"):
+                        current_kmer = line.split(":")[-1].strip().strip("---").strip()
+                    elif line.startswith("  [MATCH]"):
+                        parts = line.split("|")
+                        gene_info = parts[0].split("Found in Gene:")[-1].strip()
+                        function_info = parts[1].split("Function:")[-1].strip()
+                        results.append({"Kmer": current_kmer, "Gene": gene_info, "Function": function_info})
+                    elif line.startswith("  [INFO]"):
+                        results.append({"Kmer": current_kmer, "Gene": "Intergenic/Non-coding", "Function": "N/A"})
+                    elif line.startswith("  [ERROR]"):
+                        results.append({"Kmer": current_kmer, "Gene": "Error Fetching", "Function": "N/A"})
+                    elif line.startswith("No significant phage hits found."):
+                        results.append({"Kmer": current_kmer, "Gene": "No Hits", "Function": "N/A"})
+            elif summarise_by == "gene":
+                for line in logfile:
+                    if line.startswith("--- Summary for Kmer:"):
+                        current_kmer = line.split(":")[-1].strip().strip("---").strip()
+                    elif line.startswith("Most common gene found:"):
+                        gene_info = line.split("Most common gene found:")[-1].split("(")[0].strip()
+                        results.append({"Kmer": current_kmer, "Gene": gene_info})
+                    elif line.startswith("No genes found for this kmer."):
+                        results.append({"Kmer": current_kmer, "Gene": "No Genes Found"})
+            elif summarise_by == "function":
+                for line in logfile:
+                    if line.startswith("--- Summary for Kmer:"):
+                        current_kmer = line.split(":")[-1].strip().strip("---").strip()
+                    elif line.startswith("Most common function found:"):
+                        function_info = line.split("Most common function found:")[-1].split("(")[0].strip()
+                        results.append({"Kmer": current_kmer, "Function": function_info})
+                    elif line.startswith("No functions found for this kmer."):
+                        results.append({"Kmer": current_kmer, "Function": "No Functions Found"})
 
-        return pd.DataFrame(results)
+        if type(kmer_list) == pd.DataFrame:
+            results_df = pd.DataFrame(results)
+            merged_df = pd.merge(kmer_list_df, results_df, left_on='decoded_kmer', right_on='Kmer', how='left')
+            return merged_df.drop(columns=['Kmer'])
+        else:
+            return pd.DataFrame(results)
 
     def assign_gene_clusters(self, rank_df):
         """
