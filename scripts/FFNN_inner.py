@@ -634,8 +634,7 @@ def main():
     # Regain kmer as string, given encoding
     try:
         fi.regain_kmers(k=k, sourmash=sourmash_used, top_n=10, mapping_func=model_idx_to_kmer,
-                            mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash),
-                            logging=args.logging, outdir = outdir, logfile=logfile)
+                            mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash))
         fi.plot_top_kmers(sourmash=sourmash_used, top_n=10)
     except Exception as e:
         print(f"Error during k-mer regaining: {e}")
