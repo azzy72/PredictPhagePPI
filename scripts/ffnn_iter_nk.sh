@@ -33,7 +33,7 @@ parse_input() {
 # Validation
 if [ "$#" -ne 2 ]; then
     echo "Usage: $0 <n_input> <k_input>"
-    echo "Example: $0 1-3 500,800,1200"
+    echo "Example: $0 500,800,1200 1-3"
     exit 1
 fi
 
