@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=PredictPhage
+#SBATCH --job-name=IterExcl_PredictPhage
 #SBATCH --partition=gpu
 #SBATCH --nodes=4
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu
 #!SBATCH --time=00:00:00
-#SBATCH --begin=15:20:00
+#!SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=ALL
@@ -31,7 +31,6 @@ bact_count=$(echo "$bact_names" | wc -w)
 phage_count=$(echo "$phage_names" | wc -w)
 total_tasks=$((bact_count * phage_count))
 current_task=0
-ht
 echo "Starting training for $total_tasks pairs..."
 
 # 2. Training Loop
