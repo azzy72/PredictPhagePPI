@@ -160,8 +160,9 @@ def main():
         tag = "smote" if args.smote else "standard"
         if not args.out:
             if args.sbatch_id:
-                outdirname = f"{args.sbatch_id}_"
-            outdirname += f'torch_mlp_n{n}_k{k}_{tag}'
+                outdirname = f"{args.sbatch_id}_torch_mlp_n{n}_k{k}_{tag}"
+            else:
+                outdirname = f'torch_mlp_n{n}_k{k}_{tag}'
             outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
             while os.path.exists(outdir):
                 run += 1
