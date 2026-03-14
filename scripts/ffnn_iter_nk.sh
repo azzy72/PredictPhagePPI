@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=IterNK_PredictPhage
 #SBATCH --partition=gpu
-#SBATCH --nodes=4
+#SBATCH --nodes=1
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu
@@ -85,7 +85,7 @@ for n in "${n_values[@]}"; do
         
         # FIXED: Ensured paths and arguments are quoted
         python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
-            --nk " $n $k" \
+            --nk "$n $k" \
             --logging
     done
 done
