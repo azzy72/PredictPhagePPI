@@ -19,6 +19,11 @@ if [ -z "$@" ]; then
     exit 1
 fi
 
+if [ "$#" -eq 0 ]; then
+    echo "Error: No python script provided to sbatch."
+    exit 1
+fi
+
 #echo "Running script: $PYTHON_SCRIPT"
 echo "With arguments: $@"
 echo "Job ID: $SLURM_JOB_ID"
