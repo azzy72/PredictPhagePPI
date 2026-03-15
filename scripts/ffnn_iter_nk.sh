@@ -54,7 +54,7 @@ echo "--------------------------------"
 for n in "${n_values[@]}"; do
     for k in "${k_values[@]}"; do
         echo "Running: n=$n, k=$k"
-    done
+    donef
 done
 
 echo "--------------------------------"
