@@ -90,9 +90,6 @@ def binarize_host_range(host_range_dict, TS = False, continous = True, acceptive
         **acceptive** (bool): If true, any non-zero value is considered as 1 in binary mode.
     Returns:
         **host_range_norm** (dict): nested dictionary with strains as outer keys, phage as inner keys and normalized host range values as values.
-        
-    Normalization formula:
-    $$\text{Normalized}_x = \frac{\log(1 + x)}{\log(1 + \text{highest\_val})}$$
     """
     ### Numericalize 
     highest_val = 0

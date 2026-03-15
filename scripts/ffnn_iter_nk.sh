@@ -54,8 +54,6 @@ echo "--------------------------------"
 for n in "${n_values[@]}"; do
     for k in "${k_values[@]}"; do
         echo "Running: n=$n, k=$k"
-        # Place your command here, for example:
-        # python3 experiment.py --n "$n" --k "$k"
     done
 done
 
@@ -63,18 +61,18 @@ echo "--------------------------------"
 echo "🔭 Running $total_tasks combinations..."
 echo "--------------------------------"
 
-# # --- Phase 1: Downsampling ---
-# echo "🧹 Beginning downsampling..."
-# for n in "${n_values[@]}"; do
-#     for k in "${k_values[@]}"; do
-#         echo "Downsampling: n=$n, k=$k"
-#         # FIXED: Added missing backslash after 'minhash'
-#         python3 "$ROOT_DIR/scripts/downsampling.py" \
-#             --nk "$n $k" \
-#             --method "minhash"
-#     done
-# done
-# echo "✅ Downsampling complete."
+# --- Phase 1: Downsampling ---
+echo "🧹 Beginning downsampling..."
+for n in "${n_values[@]}"; do
+    for k in "${k_values[@]}"; do
+        echo "Downsampling: n=$n, k=$k"
+        # FIXED: Added missing backslash after 'minhash'
+        python3 "$ROOT_DIR/scripts/downsampling.py" \
+            --nk "$n" "$k" \
+            --method "minhash"
+    done
+done
+echo "✅ Downsampling complete."
 
 # --- Phase 2: Execution ---
 echo "🚀 Beginning execution..."
@@ -85,7 +83,7 @@ for n in "${n_values[@]}"; do
         
         # FIXED: Ensured paths and arguments are quoted
         python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
-            --nk "$n $k" \
+            --nk "$n" "$k" \
             --logging
     done
 done

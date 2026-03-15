@@ -12,11 +12,14 @@ def parse_arguments():
     # Parameters: Mutual exclusivity for n/k vs specific bn/bk/pn/pk
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--nk", nargs=2, type=int, metavar=('N', 'K'),
-                        help="Unified n and k values (e.g., -nk 500 12)")
+                        help="Unified n and k values (e.g., --nk 500 12)")
     group.add_argument("--split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'),
                         help="Split values for Bact (n, k) and Phage (n, k)")
 
     parser.add_argument("--method", choices=['sourmash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
+
+    args = parser.parse_args()
+    return args
 
 def main():
     args = parse_arguments()
