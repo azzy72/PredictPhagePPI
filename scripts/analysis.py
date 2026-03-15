@@ -34,10 +34,7 @@ from matplotlib.lines import Line2D
 from captum import attr 
 from captum.attr import IntegratedGradients
 from decompositions import KmerCodec
-
-##### Paths -------------
-raw_data_path = "../raw_data/"
-data_prod_path = "../data_prod/"
+from paths import raw_data_path, data_prod_path
 
 def perform_pca(data: pd.DataFrame, n_components=2):
     """

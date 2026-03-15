@@ -13,11 +13,7 @@ import pandas as pd
 from Bio import SeqIO
 from tqdm import tqdm
 import numpy as np
-
-##### Paths -------------
-raw_data_path = "../raw_data/"
-data_prod_path = "../data_prod/"
-
+from paths import raw_data_path, data_prod_path
 
 ##### Functions ---------
 def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.DataFrame:
@@ -259,6 +255,7 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
         raise ValueError(f"outdir exists but is not a directory: {outdir}")
 
     outpath = data_prod_path+"SM_sketches/"+outdir
+    if not quiet: print(f"Output path for sketches: {outpath}")
 
     # Ensuring sourmash parameters are appropriate
     if sourmash_parameters[0] > 0 and sourmash_parameters[1] > 0:
