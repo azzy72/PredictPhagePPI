@@ -7,12 +7,12 @@ from decompositions import KmerCodec, Decompose
 from paths import raw_data_path, data_prod_path
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="Downsample bacteria and phage genomes")
+    parser = argparse.ArgumentParser(description="FFNN Training Script")
 
     # Parameters: Mutual exclusivity for n/k vs specific bn/bk/pn/pk
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--nk", nargs=2, type=int, metavar=('N', 'K'),
-                        help="Unified n and k values (e.g., --nk 500 12)")
+                        help="Unified n and k values (e.g., -nk 500 12)")
     group.add_argument("--split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'),
                         help="Split values for Bact (n, k) and Phage (n, k)")
 
@@ -22,8 +22,8 @@ def parse_arguments():
     return args
 
 def main():
+    print("Starting downsampling script...")
     args = parse_arguments()
-    time_start = time()
 
     print(f"Downsampling method: {args.method}")
     if args.method == 'sourmash':
@@ -79,3 +79,6 @@ def main():
         except Exception as e:
             print(f"Error during one-hot encoding decomposition: {e}")
             sys.exit(1)
+
+if __name__ == "__main__":
+    main()
