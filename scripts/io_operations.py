@@ -16,11 +16,7 @@ import shutil
 from manipulations import construct_presence_matrix, short_species_name, clean_dict_keys
 from manipulations import binarize_host_range, hostrange_df_to_dict, hostrange_bact
 import re
-
-##### Paths -------------
-raw_data_path = "../raw_data/"
-data_prod_path = "../data_prod/"
-
+from paths import raw_data_path, data_prod_path
 
 def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool = False, sparse : bool = False) -> list:
     """
