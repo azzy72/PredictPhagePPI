@@ -25,6 +25,7 @@ def main():
     args = parse_arguments()
     time_start = time()
 
+    print(f"Downsampling method: {args.method}")
     if args.method == 'sourmash':
         ### Resolve N/K values ###
         if args.nk:
@@ -38,20 +39,24 @@ def main():
             bact_outdir = f"BactMinhash_n{bn}_k{bk}/"
             phage_outdir = f"PhageMinhash_n{pn}_k{pk}/"
 
-        ### Phage Minhash Sketch Construction ###
-        construct_SM_sketches(fasta = raw_data_path+"phagehost_KU/phage_cleaned.fasta", 
-                            k = pk, 
-                            outdir = phage_outdir, 
-                            quiet = False,
-                            sourmash_parameters=[pn, 0])
+        try:
+            ### Phage Minhash Sketch Construction ###
+            construct_SM_sketches(fasta = raw_data_path+"phagehost_KU/phage_cleaned.fasta", 
+                                k = pk, 
+                                outdir = phage_outdir, 
+                                quiet = False,
+                                sourmash_parameters=[pn, 0])
 
-        ### Bacteria Minhash Sketch Construction ###
-        construct_SM_sketches(fasta = raw_data_path+"phagehost_KU/bacteriaKU_cleaned.fasta", 
-                            k = bk, 
-                            outdir = bact_outdir, 
-                            quiet = False,
-                            sourmash_parameters=[bn, 0])
-    
+            ### Bacteria Minhash Sketch Construction ###
+            construct_SM_sketches(fasta = raw_data_path+"phagehost_KU/bacteriaKU_cleaned.fasta", 
+                                k = bk, 
+                                outdir = bact_outdir, 
+                                quiet = False,
+                                sourmash_parameters=[bn, 0])
+        except Exception as e:
+            print(f"Error during sourmash sketch construction: {e}")
+            sys.exit(1)
+
     elif args.method == 'ohe':
         ### Resolve N/K values ###
         if args.nk:
@@ -62,11 +67,15 @@ def main():
             n, k = bn, bk # Reference n/k for folder naming
 
         print("One-hot encoding downsampling method is not yet implemented.")
-        codec = KmerCodec()
-        with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+"encoded_sketches/", 
-                                    entity_type="phage") as decompose_phage:
-            decompose_phage.decompose(raw_data_path+"phagehost_KU/phage_cleaned.fasta")
+        try:
+            codec = KmerCodec()
+            with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+"encoded_sketches/", 
+                                        entity_type="phage") as decompose_phage:
+                decompose_phage.decompose(raw_data_path+"phagehost_KU/phage_cleaned.fasta")
 
-        with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+"encoded_sketches/", 
-                                   entity_type="bacteria") as decompose_bact:
-            decompose_bact.decompose(raw_data_path+"phagehost_KU/bacteriaKU_cleaned.fasta")
+            with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+"encoded_sketches/", 
+                                    entity_type="bacteria") as decompose_bact:
+                decompose_bact.decompose(raw_data_path+"phagehost_KU/bacteriaKU_cleaned.fasta")
+        except Exception as e:
+            print(f"Error during one-hot encoding decomposition: {e}")
+            sys.exit(1)
