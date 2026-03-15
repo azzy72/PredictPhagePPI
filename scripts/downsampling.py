@@ -16,7 +16,7 @@ def parse_arguments():
     group.add_argument("--split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'),
                         help="Split values for Bact (n, k) and Phage (n, k)")
 
-    parser.add_argument("--method", choices=['sourmash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
+    parser.add_argument("--method", choices=['sourmash', 'minhash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
 
     args = parser.parse_args()
     return args
@@ -26,7 +26,7 @@ def main():
     args = parse_arguments()
 
     print(f"Downsampling method: {args.method}")
-    if args.method == 'sourmash':
+    if args.method == 'sourmash' or args.method == 'minhash':
         ### Resolve N/K values ###
         if args.nk:
             n = bn = pn = args.nk[0]
