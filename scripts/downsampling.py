@@ -54,13 +54,9 @@ def main():
         if args.nk:
             n = bn = pn = args.nk[0]
             k = bk = pk = args.nk[1]
-            bact_inner_dirname = f"encode4bit_n{n}_k{k}/"
-            phage_inner_dirname = f"encode4bit_n{n}_k{k}/"
         else:
             bn, bk, pn, pk = args.split_nk
             n, k = bn, bk # Reference n/k for folder naming
-            bact_inner_dirname = f"encode4bit_n{bn}_k{bk}/"
-            phage_inner_dirname = f"encode4bit_n{pn}_k{pk}/"
 
         print("One-hot encoding downsampling method is not yet implemented.")
         codec = KmerCodec()
