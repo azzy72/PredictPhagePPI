@@ -31,15 +31,16 @@ parse_input() {
 }
 
 # Validation
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <n_input> <k_input>"
-    echo "Example: $0 500,800,1200 1-3"
+#[ "$#" -ne 3 ] ||
+if [ "$1" != "--nk" ]; then
+    echo "Usage: $0 --nk <n_input> <k_input>"
+    echo "Example: $0 --nk 500,800,1200 1-3"
     exit 1
 fi
 
 # Expand inputs into arrays
-n_values=($(parse_input "$1"))
-k_values=($(parse_input "$2"))
+n_values=($(parse_input "$2"))
+k_values=($(parse_input "$3"))
 
 # Calculate totals
 total_n=${#n_values[@]}
@@ -54,7 +55,7 @@ echo "--------------------------------"
 for n in "${n_values[@]}"; do
     for k in "${k_values[@]}"; do
         echo "Running: n=$n, k=$k"
-    donef
+    done
 done
 
 echo "--------------------------------"
@@ -67,15 +68,23 @@ for n in "${n_values[@]}"; do
     for k in "${k_values[@]}"; do
         echo "Downsampling: n=$n, k=$k"
         # FIXED: Added missing backslash after 'minhash'
-        python3 "$ROOT_DIR/scripts/downsampling.py" \
+        if [ -n "$METHOD" ]; then
+            python3 "$ROOT_DIR/scripts/downsampling.py" \
             --nk "$n" "$k" \
-            --method "minhash"
+            --method "$METHOD"
+        else
+            echo "No method specified, running downsampling with sourmash."
+            python3 "$ROOT_DIR/scripts/downsampling.py" \
+            --nk "$n" "$k"
+        fi
     done
 done
 echo "✅ Downsampling complete."
 
 # --- Phase 2: Execution ---
 echo "🚀 Beginning execution..."
+DIR_IN_NN_RUNS="$ROOT_DIR/nn_runs/IterNK/"
+mkdir -p "$DIR_IN_NN_RUNS"
 for n in "${n_values[@]}"; do
     for k in "${k_values[@]}"; do
         ((current_step++))
@@ -84,7 +93,15 @@ for n in "${n_values[@]}"; do
         # FIXED: Ensured paths and arguments are quoted
         python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
             --nk "$n" "$k" \
+            --out "IterNK/IterNK_n${n}_k${k}_$METHOD" \
             --logging
     done
 done
-echo "✅ Execution complete."
+echo "✅ FFNN iteration complete."
+
+# --- Phase 2: Collection ---
+echo "📊 Collecting results and generating plots..."
+python3 "$ROOT_DIR/scripts/collect_iternk_res.py" \
+    --base_dir "$DIR_IN_NN_RUNS" \
+echo "✅ Collection and plotting complete and can be found in $ROOT_DIR/data_prod/iterNK/"
+
