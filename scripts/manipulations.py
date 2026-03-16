@@ -13,11 +13,7 @@ import pandas as pd
 from Bio import SeqIO
 from tqdm import tqdm
 import numpy as np
-
-##### Paths -------------
-raw_data_path = "../raw_data/"
-data_prod_path = "../data_prod/"
-
+from paths import raw_data_path, data_prod_path
 
 ##### Functions ---------
 def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.DataFrame:
@@ -90,9 +86,6 @@ def binarize_host_range(host_range_dict, TS = False, continous = True, acceptive
         **acceptive** (bool): If true, any non-zero value is considered as 1 in binary mode.
     Returns:
         **host_range_norm** (dict): nested dictionary with strains as outer keys, phage as inner keys and normalized host range values as values.
-        
-    Normalization formula:
-    $$\text{Normalized}_x = \frac{\log(1 + x)}{\log(1 + \text{highest\_val})}$$
     """
     ### Numericalize 
     highest_val = 0
@@ -262,6 +255,7 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
         raise ValueError(f"outdir exists but is not a directory: {outdir}")
 
     outpath = data_prod_path+"SM_sketches/"+outdir
+    if not quiet: print(f"Output path for sketches: {outpath}")
 
     # Ensuring sourmash parameters are appropriate
     if sourmash_parameters[0] > 0 and sourmash_parameters[1] > 0:

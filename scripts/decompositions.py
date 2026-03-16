@@ -4,8 +4,7 @@ from tqdm import tqdm
 import shutil
 import json
 import hashlib
-data_prod_path = "../data_prod/"
-raw_data_path = "../raw_data/"
+from paths import raw_data_path, data_prod_path
 
 class KmerCodec:
     def __init__(self):

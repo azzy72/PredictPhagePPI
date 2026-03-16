@@ -1,21 +1,21 @@
 #!/bin/bash
-#SBATCH --job-name=PredictPhage
+#SBATCH --job-name=IterExcl_PredictPhage
 #SBATCH --partition=gpu
 #SBATCH --nodes=4
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu
 #!SBATCH --time=00:00:00
-#SBATCH --begin=15:20:00
+#!SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=s215045@student.dtu.dk
 
 # Configuration
-PROJ_DIR="/home/projects/s215045/PredictPhagePPI/"
-DATA_DIR="$PROJ_DIR/data_prod/"
-RAW_DIR="$PROJ_DIR/raw_data/phagehost_KU/"
+ROOT_DIR=$(git rev-parse --show-toplevel)
+DATA_DIR="$ROOT_DIR/data_prod/"
+RAW_DIR="$ROOT_DIR/raw_data/phagehost_KU/"
 BACTA_FILE="$RAW_DIR/bacteriaKU_cleaned.fasta"
 PHAGE_FILE="$RAW_DIR/phage_cleaned.fasta"
 NK_VALS="500 12"
@@ -31,7 +31,6 @@ bact_count=$(echo "$bact_names" | wc -w)
 phage_count=$(echo "$phage_names" | wc -w)
 total_tasks=$((bact_count * phage_count))
 current_task=0
-ht
 echo "Starting training for $total_tasks pairs..."
 
 # 2. Training Loop
@@ -53,7 +52,7 @@ for bact in $bact_names; do
                "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$bact" "$phage"
 
         CUSTOM_OUT="excl_${bact}_${phage}"
-        python3 "$PROJ_DIR/scripts/FFNN_inner.py" \
+        python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
             --nk $NK_VALS \
             --cv \
             --kf_n_splits 4 \
@@ -72,7 +71,7 @@ echo "-------------------------------------------------------"
 
 # Extract accuracy values from all log_run*.txt files produced in this session
 # The regex looks for 'test accuracy:' followed by the numerical value
-accuracies=$(find "$PROJ_DIR/nn_runs/${CUSTOM_OUT}_run*/log_run*.txt" -exec grep "Final test loss:" {} + | awk -F'test accuracy: ' '{print $2}')
+accuracies=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run*/log_run*.txt" -exec grep "Final test loss:" {} + | awk -F'test accuracy: ' '{print $2}')
 
 # Perform the average using awk
 average=$(echo "$accuracies" | awk '
