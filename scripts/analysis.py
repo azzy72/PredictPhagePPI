@@ -570,10 +570,10 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
     if idx_to_minhash is not None:
         top_idx = list(idx_to_minhash.keys()) 
         top_vals = "N/A"
-        if TS: print(f"Using provided idx_list for top indices: {top_idx}")
+        if TS: print(f"Using provided idx_to_minhash for top indices: {top_idx}")
     else:
         if attributions is None:
-            raise ValueError("Attributions must be provided if idx_list is None.")
+            raise ValueError("Attributions must be provided if idx_to_minhash is None.")
         avg_attr = attributions.mean(dim=0)
         abs_avg = avg_attr.abs()
         k_count = min(top_n, abs_avg.numel())
@@ -853,7 +853,7 @@ class FeatureImportance():
             plt.savefig(self.outdir+outname)
         plt.show()
     
-    def regain_kmers(self, k : int, sourmash : bool, top_n : int = 20, idx_list : list = None, mapping_func=None, mapping_args=None):
+    def regain_kmers_fa(self, k : int, sourmash : bool, top_n : int = 20, idx_to_minhash : dict = None, mapping_func=None, mapping_args=None):
         """
         Wrapper inside the class that calls the standalone regain_kmers function.
         """
@@ -863,7 +863,7 @@ class FeatureImportance():
             k=k, 
             sourmash=sourmash, 
             top_n=top_n, 
-            idx_list=idx_list, 
+            idx_to_minhash=idx_to_minhash, 
             mapping_func=mapping_func, 
             mapping_args=mapping_args, 
             attributions=self.attributions, 
