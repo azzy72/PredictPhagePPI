@@ -120,8 +120,7 @@ fi
 
 # --- Phase 2: Collection ---
 echo "📊 Collecting results and generating plots..."
-echo "$DIR_IN_NN_RUNS"
 python3 "$ROOT_DIR/scripts/collect_iternk_res.py" \
-    --base_dir "$DIR_IN_NN_RUNS" \
+    --base_dir "$DIR_IN_NN_RUNS" 
 echo "✅ Collection and plotting complete and can be found in $ROOT_DIR/data_prod/iterNK/"
 
