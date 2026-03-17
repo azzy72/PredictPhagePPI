@@ -1010,163 +1010,198 @@ class GeneAnalysis():
         """
         Entrez.email = "s215045@student.dtu.dk"
         if outfile is None:
-            outfile = self.root + "logs/NCBI_gene_search.txt"
+            outfile = self.root + "logs/NCBI_gene_search.csv"
 
-        if type(kmer_list) == pd.DataFrame:
+        input_is_df = isinstance(kmer_list, pd.DataFrame)
+        if input_is_df:
             kmer_list_df = kmer_list.copy()
             kmer_list = kmer_list['decoded_kmer'].tolist() # Assuming the DataFrame has a column named 'kmer'
 
-        with open(outfile, "w") as logfile:
-            print(f"Starting BLAST for {len(kmer_list)} kmers against Viral Database...", file=logfile)
+        print(f"Starting BLAST for {len(kmer_list)} kmers against Database {ncbi_db} using {ncbi_program}...")
+        
+        # We combine kmers into one FASTA-style string to save API calls
+        fasta_query = "\n".join([f">kmer_{i}\n{k}" for i, k in enumerate(kmer_list)])
+        
+        try:
+            # qblast parameters for short sequences:
+            # - program: blastn
+            # - database: nt (nucleotide)
+            # - entrez_query: Restrict to Viruses
+            # - word_size: 7 (minimum for blastn)
+            # - expect: 1000 (higher to catch short hits)
+            result_handle = NCBIWWW.qblast(
+                program=ncbi_program, 
+                database=ncbi_db, 
+                sequence=fasta_query,
+                entrez_query=tax_origin,
+                word_size=7,
+                expect=1000,
+                short_query=True,
+                hitlist_size=acc_num
+            )
             
-            # We combine kmers into one FASTA-style string to save API calls
-            fasta_query = "\n".join([f">kmer_{i}\n{k}" for i, k in enumerate(kmer_list)])
+            #Read fully to check for completion
+            blast_results_raw = result_handle.read()
+            result_handle.close()
+
+            if "</BlastOutput>" not in blast_results_raw:
+                print("ERROR: NCBI returned incomplete XML (truncated). Try a smaller kmer batch." )
+                return pd.DataFrame() # Or handle as needed
+
+            from io import StringIO
+            blast_records = list(NCBIXML.parse(StringIO(blast_results_raw)))
             
-            try:
-                # qblast parameters for short sequences:
-                # - program: blastn
-                # - database: nt (nucleotide)
-                # - entrez_query: Restrict to Viruses
-                # - word_size: 7 (minimum for blastn)
-                # - expect: 1000 (higher to catch short hits)
-                result_handle = NCBIWWW.qblast(
-                    program=ncbi_program, 
-                    database=ncbi_db, 
-                    sequence=fasta_query,
-                    entrez_query=tax_origin,
-                    word_size=7,
-                    expect=1000,
-                    short_query=True,
-                    hitlist_size=acc_num
-                )
+            # Use enumerate to match records back to the original kmer_list
+            results = []
+            for i, record in enumerate(tqdm(blast_records, desc="Processing BLAST records")):
+                # Safety check: ensure we match the right kmer
+                # NCBI sometimes skips records if NO hits are found at all
+                kmer_seq = kmer_list[i] 
+                #print(f"\n--- Results for Kmer: {kmer_seq} ---")
                 
-                #Read fully to check for completion
-                blast_results_raw = result_handle.read()
-                result_handle.close()
-
-                if "</BlastOutput>" not in blast_results_raw:
-                    print("ERROR: NCBI returned incomplete XML (truncated). Try a smaller kmer batch.", file=logfile)
-                    return pd.DataFrame() # Or handle as needed
-
-                from io import StringIO
-                blast_records = list(NCBIXML.parse(StringIO(blast_results_raw)))
+                if not record.alignments:
+                    print("No significant hits found." )
+                    continue
                 
-                # Use enumerate to match records back to the original kmer_list
-                for i, record in enumerate(tqdm(blast_records, desc="Processing BLAST records")):
-                    # Safety check: ensure we match the right kmer
-                    # NCBI sometimes skips records if NO hits are found at all
-                    kmer_seq = kmer_list[i] 
-                    print(f"\n--- Results for Kmer: {kmer_seq} ---", file=logfile)
+                output = []
+                gene_found = []
+                function_found = []
+                results_inner = []
+                for alignment in record.alignments:
+                    accession = alignment.accession
+                    hit_def = alignment.title
+                    output.append(f"Checking Gene in Hit: {accession}")
                     
-                    if not record.alignments:
-                        print("No significant hits found.", file=logfile)
-                        continue
-                    
-                    output = []
-                    gene_found = []
-                    function_found = []
-                    for alignment in record.alignments:
-                        accession = alignment.accession
-                        hit_def = alignment.title
-                        output.append(f"Checking Gene in Hit: {accession}")
+                    # We use a try-block for Entrez in case one specific ID fails
+                    try:
+                        # 4. FETCH: Use small sleep to avoid 429 Too Many Requests
+                        #time.sleep(0.5) 
+                        handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", retmode="text")
+                        genbank_rec = SeqIO.read(handle, "genbank")
+                        handle.close()
                         
-                        # We use a try-block for Entrez in case one specific ID fails
-                        try:
-                            # 4. FETCH: Use small sleep to avoid 429 Too Many Requests
-                            #time.sleep(0.5) 
-                            handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", retmode="text")
-                            genbank_rec = SeqIO.read(handle, "genbank")
-                            handle.close()
+                        hsp = alignment.hsps[0]
+                        start, end = min(hsp.sbjct_start, hsp.sbjct_end), max(hsp.sbjct_start, hsp.sbjct_end)
+                        
+                        found_gene = False
+                        for feature in genbank_rec.features:
+                            if feature.type == "CDS":
+                                if start >= feature.location.start and end <= feature.location.end:
+                                    product = feature.qualifiers.get('product', ['Unknown'])[0]
+                                    gene = feature.qualifiers.get('gene', ['N/A'])[0]
+                                    #print(f"  [MATCH] Found in Gene: {gene} | Function: {product}")
+                                    #gene_found.append(gene)
+                                    #function_found.append(product)
+                                    found_gene = True
+                                    # Populate results_inner 
+                                    results_inner.append({"Kmer": kmer_seq, "Gene": gene, "Function": product})
+                                    break
+                        if not found_gene:
+                            results_inner.append({"Kmer": kmer_seq, "Gene": "N/A", "Function": "N/A"})
+                        #     output.append("  [INFO] Hit is in an intergenic/non-coding region.")
                             
-                            hsp = alignment.hsps[0]
-                            start, end = min(hsp.sbjct_start, hsp.sbjct_end), max(hsp.sbjct_start, hsp.sbjct_end)
-                            
-                            found_gene = False
-                            for feature in genbank_rec.features:
-                                if feature.type == "CDS":
-                                    if start >= feature.location.start and end <= feature.location.end:
-                                        product = feature.qualifiers.get('product', ['Unknown'])[0]
-                                        gene = feature.qualifiers.get('gene', ['N/A'])[0]
-                                        output.append(f"  [MATCH] Found in Gene: {gene} | Function: {product}")
-                                        gene_found.append(gene)
-                                        function_found.append(product)
-                                        #print(f"  [MATCH] Found in Gene: {gene} | Function: {product}", file=logfile)
-                                        found_gene = True
-                                        break
-                            if not found_gene:
-                                output.append("  [INFO] Hit is in an intergenic/non-coding region.")
-                                
-                        except Exception as e:
-                            output.append(f"  [ERROR] Could not fetch details for {accession}: {e}")
-                            #print(f"  [ERROR] Could not fetch details for {accession}: {e}", file=logfile)
-                    
-                    if summarise_by is None:
-                        for line in output:
-                            print(line, file=logfile)
-                    else:
-                        print(f"--- Summary for Kmer: {kmer_seq} ---", file=logfile)
-                        if summarise_by == "gene":
-                            if gene_found:
-                                #find majority gene if multiple found
-                                gene_counts = Counter(gene_found)
-                                most_common_gene, count = gene_counts.most_common(1)[0]
-                                print(f"Most common gene found: {most_common_gene} (found in {count} hits)", file=logfile)
-                            else:                                
-                                print("No genes found for this kmer.", file=logfile)
-                        elif summarise_by == "function":
-                            if function_found:
-                                #find majority function if multiple found
-                                function_counts = Counter(function_found)
-                                most_common_function, count = function_counts.most_common(1)[0]
-                                print(f"Most common function found: {most_common_function} (found in {count} hits)", file=logfile)
-                            else:
-                                print("No functions found for this kmer.", file=logfile)
+                    except Exception as e:
+                        #output.append(f"  [ERROR] Could not fetch details for {accession}: {e}")
+                        print(f"  [ERROR] Could not fetch details for {accession}: {e}" )
+                        results_inner.append({"Kmer": kmer_seq, "Gene": "Error Fetching", "Function": "Error Fetching"})
 
-            except Exception as e:
-                print(f"BLAST search failed: {e}", file=logfile)
+                results.extend(results_inner)
+
+        except Exception as e:
+            print(f"BLAST search failed: {e}" )        
+
+        try:    
+            results_df = pd.DataFrame(results)
+            if summarise_by is None:
+                pass
+            elif summarise_by == "gene":
+                # Group by Kmer and find the most common gene
+                results_df = results_df.groupby('Kmer')['Gene'].agg(lambda x: x.value_counts().idxmax()).reset_index()
+            elif summarise_by == "function":
+                # Group by Kmer and find the most common function
+                results_df = results_df.groupby('Kmer')['Function'].agg(lambda x: x.value_counts().idxmax()).reset_index()
+        except Exception as e:
+            print(f"Error during summarization: {e}" )
+
+        return results_df
+
+            # if summarise_by is None:
+            #     results.extend([{"Kmer": kmer_seq, "Gene": g, "Function": f} for g, f in zip(gene_found, function_found)])
+            # else:
+            #     most_common_gene = "N/A"
+            #     most_common_function = "N/A"
+            #     print(f"--- Summary for Kmer: {kmer_seq} ---" )
+            #     if summarise_by == "gene":
+            #         if gene_found:
+            #             #find majority gene if multiple found
+            #             gene_counts = Counter(gene_found)
+            #             most_common_gene, count = gene_counts.most_common(1)[0]
+            #             print(f"Most common gene found: {most_common_gene} (found in {count} hits)" )
+            #         else:                                
+            #             print("No genes found for this kmer." )
+            #     elif summarise_by == "function":
+            #         if function_found:
+            #             #find majority function if multiple found
+            #             function_counts = Counter(function_found)
+            #             most_common_function, count = function_counts.most_common(1)[0]
+            #             print(f"Most common function found: {most_common_function} (found in {count} hits)" )
+            #         else:
+            #             print("No functions found for this kmer." )
+            #     results.append({"Kmer": kmer_seq, "Gene": most_common_gene, "Function": most_common_function})
 
         #Collect results as pandas dataframe and return
-        results = []
-        with open(outfile, "r") as logfile:
-            current_kmer = None
-            if summarise_by is None:
-                for line in logfile:
-                    if line.startswith("--- Results for Kmer:"):
-                        current_kmer = line.split(":")[-1].strip().strip("---").strip()
-                    elif line.startswith("  [MATCH]"):
-                        parts = line.split("|")
-                        gene_info = parts[0].split("Found in Gene:")[-1].strip()
-                        function_info = parts[1].split("Function:")[-1].strip()
-                        results.append({"Kmer": current_kmer, "Gene": gene_info, "Function": function_info})
-                    elif line.startswith("  [INFO]"):
-                        results.append({"Kmer": current_kmer, "Gene": "Intergenic/Non-coding", "Function": "N/A"})
-                    elif line.startswith("  [ERROR]"):
-                        results.append({"Kmer": current_kmer, "Gene": "Error Fetching", "Function": "N/A"})
-                    elif line.startswith("No significant phage hits found."):
-                        results.append({"Kmer": current_kmer, "Gene": "No Hits", "Function": "N/A"})
-            elif summarise_by == "gene":
-                for line in logfile:
-                    if line.startswith("--- Summary for Kmer:"):
-                        current_kmer = line.split(":")[-1].strip().strip("---").strip()
-                    elif line.startswith("Most common gene found:"):
-                        gene_info = line.split("Most common gene found:")[-1].split("(")[0].strip()
-                        results.append({"Kmer": current_kmer, "Gene": gene_info})
-                    elif line.startswith("No genes found for this kmer."):
-                        results.append({"Kmer": current_kmer, "Gene": "No Genes Found"})
-            elif summarise_by == "function":
-                for line in logfile:
-                    if line.startswith("--- Summary for Kmer:"):
-                        current_kmer = line.split(":")[-1].strip().strip("---").strip()
-                    elif line.startswith("Most common function found:"):
-                        function_info = line.split("Most common function found:")[-1].split("(")[0].strip()
-                        results.append({"Kmer": current_kmer, "Function": function_info})
-                    elif line.startswith("No functions found for this kmer."):
-                        results.append({"Kmer": current_kmer, "Function": "No Functions Found"})
+        # results = []
+        # with open(outfile, "r") as logfile:
+        #     current_kmer = None
+        #     if summarise_by is None:
+        #         for line in logfile:
+        #             if line.startswith("--- Results for Kmer:"):
+        #                 current_kmer = line.split(":")[-1].strip().strip("---").strip()
+        #             elif line.startswith("  [MATCH]"):
+        #                 parts = line.split("|")
+        #                 gene_info = parts[0].split("Found in Gene:")[-1].strip()
+        #                 function_info = parts[1].split("Function:")[-1].strip()
+        #                 results.append({"Kmer": current_kmer, "Gene": gene_info, "Function": function_info})
+        #             elif line.startswith("  [INFO]"):
+        #                 results.append({"Kmer": current_kmer, "Gene": "Intergenic/Non-coding", "Function": "N/A"})
+        #             elif line.startswith("  [ERROR]"):
+        #                 results.append({"Kmer": current_kmer, "Gene": "Error Fetching", "Function": "N/A"})
+        #             elif line.startswith("No significant phage hits found."):
+        #                 results.append({"Kmer": current_kmer, "Gene": "No Hits", "Function": "N/A"})
+        #     elif summarise_by == "gene":
+        #         for line in logfile:
+        #             if line.startswith("--- Summary for Kmer:"):
+        #                 current_kmer = line.split(":")[-1].strip().strip("---").strip()
+        #             elif line.startswith("Most common gene found:"):
+        #                 gene_info = line.split("Most common gene found:")[-1].split("(")[0].strip()
+        #                 results.append({"Kmer": current_kmer, "Gene": gene_info})
+        #             elif line.startswith("No genes found for this kmer."):
+        #                 results.append({"Kmer": current_kmer, "Gene": "No Genes Found"})
+        #     elif summarise_by == "function":
+        #         for line in logfile:
+        #             if line.startswith("--- Summary for Kmer:"):
+        #                 current_kmer = line.split(":")[-1].strip().strip("---").strip()
+        #             elif line.startswith("Most common function found:"):
+        #                 function_info = line.split("Most common function found:")[-1].split("(")[0].strip()
+        #                 results.append({"Kmer": current_kmer, "Function": function_info})
+        #             elif line.startswith("No functions found for this kmer."):
+        #                 results.append({"Kmer": current_kmer, "Function": "No Functions Found"})
 
-        if type(kmer_list) == pd.DataFrame:
+        if input_is_df:
             results_df = pd.DataFrame(results)
-            merged_df = pd.merge(kmer_list_df, results_df, left_on='decoded_kmer', right_on='Kmer', how='left')
-            return merged_df.drop(columns=['Kmer'])
+            kmer_list_df["Kmer"] = kmer_list_df['decoded_kmer'] # Ensure the original kmer column is named 'Kmer' for merging
+            print(results_df.head(5))
+            print(kmer_list_df.head(5))
+            merged_df = pd.merge(kmer_list_df, results_df, on ="Kmer", how='left')
+            #merged_df = pd.merge(kmer_list_df, results_df, left_on='decoded_kmer', right_on='Kmer', how='left')
+            if 'Kmer' in merged_df.columns:
+                merged_df = merged_df.drop(columns=['Kmer'])
+
+            if 'feature_index' in merged_df.columns:
+                feature_index = merged_df.pop('feature_index')
+                merged_df.insert(0, 'feature_index', feature_index)
+
+            return merged_df
         else:
             return pd.DataFrame(results)
 
