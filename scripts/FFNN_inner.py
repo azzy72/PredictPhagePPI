@@ -24,11 +24,10 @@ from scipy.special import expit
 from imblearn.over_sampling import SMOTE
 
 # Custom imports
-from io_operations import presence_matrix, call_hostrange_df, color_sheet_from_matrix
+from io_operations import presence_matrix, obtain_idx_to_entity_mapping, call_hostrange_df, color_sheet_from_matrix
 from paths import raw_data_path, data_prod_path, path_to_nn_runs
 from manipulations import hostrange_df_to_dict, binarize_host_range
-from analysis import (f1_analysis, plot_entity_counts, plot_bipartite_network, 
-                      FeatureImportance)
+from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, FeatureImportance, GeneAnalysis
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="FFNN Training Script")
@@ -51,12 +50,13 @@ def parse_arguments():
     # Flags
     parser.add_argument("--logging", action="store_true", help="Enable logging and saving")
     parser.add_argument("--cv", action="store_true", help="Enable cross-validation")
-    parser.add_argument("--kf_n_splits", type=int, default=1, help="Number of folds for K-Fold CV")
+    parser.add_argument("--kf_n_splits", type=int, default=4, help="Number of folds for K-Fold CV")
     parser.add_argument("--smote", action="store_true", help="Apply SMOTE oversampling")
     parser.add_argument("--train_by_cluster", action="store_true", help="Split data by bacterial clusters")
     parser.add_argument("--no_randomize", action="store_false", dest="randomize", help="Disable entity randomization")
     parser.add_argument("--no_shuffle", action="store_false", dest="shuffle", help="Disable feature shuffling")
     parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
+    parser.add_argument("--perform_ga", action="store_true", help="Perform gene analysis on top features")
 
     # Exclusions
     parser.add_argument("--exclude_noninteractions", action="store_true", help="Exclude non-interacting pairs")
@@ -80,6 +80,10 @@ def parse_arguments():
     # Requirement: exclude_noninteractions requires exclude_bacts and exclude_phages
     if args.exclude_noninteractions and (len(args.exclude_bacts) != 1 or len(args.exclude_phages) != 1):
         parser.error("--exclude_noninteractions requires both --exclude_bacts and --exclude_phages lists.")
+
+    # Requirement: can't have perform_ga with not args.use_encoded
+    if args.perform_ga and not args.use_encoded:
+        parser.error("--perform_ga requires --use_encoded as kmers can't be decoded from MinHash sketches.")
 
     return args
 
@@ -148,6 +152,19 @@ def main():
         with open(os.path.join(full_presmat_path, "phage_minhash_data.pkl"), "rb") as f: phage_minhash_data = pickle.load(f)
         with open(os.path.join(full_presmat_path, "bact_minhash_data.pkl"), "rb") as f: bact_minhash_data = pickle.load(f)
         with open(os.path.join(full_presmat_path, "minhash_to_index.pkl"), "rb") as f: minhash_to_index = pickle.load(f) 
+
+    # Create inverse mapping: column_index -> kmer_encoded_int
+    idx_to_minhash = {v: k for k, v in minhash_to_index.items()}
+
+    # Create an idx_to_entity to lookup the origin of index (phage or bacteria, and which one)
+    idx_to_entity = obtain_idx_to_entity_mapping(
+        phage_minhash_data=phage_minhash_data,
+        bact_minhash_data=bact_minhash_data,
+        minhash_to_index=minhash_to_index
+    )
+
+    #Create inverse mapping: entity_name to column_index
+    entity_to_idx = {v: k for k, v in idx_to_entity.items()}
 
     ### 4. Host Range Setup ###
     bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"))
@@ -443,6 +460,7 @@ def main():
 
     # ROC Curve ------------------
     roc_auc = roc_auc_score(true_labels, probabilities)
+    if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ROC AUC: {roc_auc:.4f}', file=logfile)
     fpr, tpr, thresholds = roc_curve(true_labels, probabilities)
 
     # 3. Plot the ROC Curve
@@ -633,13 +651,48 @@ def main():
 
     # Regain kmer as string, given encoding
     try:
-        fi.regain_kmers(k=k, sourmash=sourmash_used, top_n=10, mapping_func=model_idx_to_kmer,
+        fi.regain_kmers_fa(k=k, sourmash=sourmash_used, top_n=10, mapping_func=model_idx_to_kmer,
                             mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash))
         fi.plot_top_kmers(sourmash=sourmash_used, top_n=10)
     except Exception as e:
         print(f"Error during k-mer regaining: {e}")
         traceback.print_exc()
+    
+    ### Gene Annotation of Kmers ###
+    if args.perform_ga:
+        try:
+            indices, vals, all_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=10, 
+                idx_to_minhash=idx_to_minhash,
+                mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
+                logging=args.logging, logfile=logfile)
+            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers: {all_kmers_decoded}', file=logfile)
+            kmers_entity_df = pd.DataFrame([
+                {
+                    "feature_index": idx,
+                    "entity": idx_to_entity.get(idx, "unknown"),
+                    "organism": "bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data.keys() else "unknown"),
+                    "decoded_kmer": all_kmers_decoded[i] if i < len(all_kmers_decoded) else None
+                }
+                for i, idx in enumerate(indices)
+            ])
 
+        except Exception as e:
+            print(f"Error during k-mer regaining for annotation: {e}")
+            traceback.print_exc()
+
+        try:
+            GA = GeneAnalysis(logfile=logfile, logging=args.logging)
+            phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
+            bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
+
+            ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, summarise_by="function", tax_origin="txid38018[orgn]", expect=10) # Phage first
+            ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, GA.search_and_annotate_kmers(bact_kmers_decoded_df, summarise_by="function", tax_origin="txid91347[orgn]", expect=10)], ignore_index=True) # Bact second
+            ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
+
+        except Exception as e:
+            print(f"Error during GeneAnalysis: {e}")
+            traceback.print_exc()
+    
     ### X. Closing & Terminating ###
     print(f"Process completed in {time() - time_start:.2f} seconds.")
     if logfile: logfile.close()

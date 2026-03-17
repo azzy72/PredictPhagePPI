@@ -13,9 +13,9 @@
 #SBATCH --mail-user=s215045@student.dtu.dk
 
 # Configuration
-PROJ_DIR="/home/projects/s215045/PredictPhagePPI"
-DATA_DIR="$PROJ_DIR/data_prod/"
-RAW_DIR="$PROJ_DIR/raw_data/phagehost_KU/"
+ROOT_DIR=$(git rev-parse --show-toplevel)
+DATA_DIR="$ROOT_DIR/data_prod/"
+RAW_DIR="$ROOT_DIR/raw_data/phagehost_KU/"
 BACTA_FILE="$RAW_DIR/bacteriaKU_cleaned.fasta"
 PHAGE_FILE="$RAW_DIR/phage_cleaned.fasta"
 NK_VALS="500 12"
@@ -51,18 +51,18 @@ echo "Starting training for $total_tasks pairs..."
 #         printf "\rProgress: [%s%s] %d%% (%d/%d) | Current: %s/%s " \
 #                "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$bact" "$phage"
 
-#         CUSTOM_OUT="excl_${bact}_${phage}"
-#         python3 "$PROJ_DIR/scripts/FFNN_inner.py" \
-#             --nk $NK_VALS \
-#             --cv \
-#             --kf_n_splits 4 \
-#             --exclude_noninteractions \
-#             --exclude_bacts "$bact" \
-#             --exclude_phages "$phage" \
-#             --out "$CUSTOM_OUT" \
-#             --logging
-#     done
-# done
+        CUSTOM_OUT="excl_${bact}_${phage}"
+        python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
+            --nk $NK_VALS \
+            --cv \
+            --kf_n_splits 4 \
+            --exclude_noninteractions \
+            --exclude_bacts "$bact" \
+            --exclude_phages "$phage" \
+            --out "$CUSTOM_OUT" \
+            --logging
+    done
+done
 
 # 3. Post-Processing: Average Accuracies
 echo "-------------------------------------------------------"
@@ -71,6 +71,7 @@ echo "-------------------------------------------------------"
 
 # Extract accuracy values from all log_run*.txt files produced in this session
 # The regex looks for 'test accuracy:' followed by the numerical value
+accuracies=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run*/log_run*.txt" -exec grep "Final test loss:" {} + | awk -F'test accuracy: ' '{print $2}')
 
 for bact in $bact_names; do
     for phage in $phage_names; do

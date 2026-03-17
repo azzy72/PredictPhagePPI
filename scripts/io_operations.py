@@ -16,11 +16,7 @@ import shutil
 from manipulations import construct_presence_matrix, short_species_name, clean_dict_keys
 from manipulations import binarize_host_range, hostrange_df_to_dict, hostrange_bact
 import re
-
-##### Paths -------------
-raw_data_path = "../raw_data/"
-data_prod_path = "../data_prod/"
-
+from paths import raw_data_path, data_prod_path
 
 def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool = False, sparse : bool = False) -> list:
     """
@@ -228,6 +224,23 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
         print("Sample columns (minhashes):", sorted_minhashes[:5])
     
     return binary_matrix, entity_to_index, minhash_to_index, phage_minhash_data, bact_minhash_data
+
+def obtain_idx_to_entity_mapping(phage_minhash_data, bact_minhash_data, minhash_to_index, TS : bool = False):
+    """
+    Given the stored phage and bacteria minhash data, create a mapping from column index to entity name (phage or bacteria)
+
+    """
+    idx_to_entity = {}
+    for name, val in phage_minhash_data.items():
+        for minhash in val:
+            idx_to_entity[minhash_to_index[minhash]] = name
+    for name, val in bact_minhash_data.items():
+        for minhash in val:
+            idx_to_entity[minhash_to_index[minhash]] = name
+
+    if TS: print(f"idx_to_entity mapping created with {len(idx_to_entity)} entries.")
+    
+    return idx_to_entity
 
 def color_sheet_from_matrix(
         input_excel: str,
