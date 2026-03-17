@@ -1,19 +1,19 @@
 #!/bin/bash
-#SBATCH --job-name=PredictPhage
+#SBATCH --job-name=IterExcl_PredictPhage
 #SBATCH --partition=gpu
-#SBATCH --nodes=4
+#SBATCH --nodes=1
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu
 #!SBATCH --time=00:00:00
-#SBATCH --begin=15:20:00
+#!SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=s215045@student.dtu.dk
 
 # Configuration
-PROJ_DIR="/home/projects/s215045/PredictPhagePPI/"
+PROJ_DIR="/home/projects/s215045/PredictPhagePPI"
 DATA_DIR="$PROJ_DIR/data_prod/"
 RAW_DIR="$PROJ_DIR/raw_data/phagehost_KU/"
 BACTA_FILE="$RAW_DIR/bacteriaKU_cleaned.fasta"
@@ -31,39 +31,38 @@ bact_count=$(echo "$bact_names" | wc -w)
 phage_count=$(echo "$phage_names" | wc -w)
 total_tasks=$((bact_count * phage_count))
 current_task=0
-ht
 echo "Starting training for $total_tasks pairs..."
 
-# 2. Training Loop
-for bact in $bact_names; do
-    for phage in $phage_names; do
-        ((current_task++))
+# # 2. Training Loop
+# for bact in $bact_names; do
+#     for phage in $phage_names; do
+#         ((current_task++))
         
-        # --- Progress Bar Logic ---
-        percent=$((current_task * 100 / total_tasks))
-        filled=$((percent / 4)) # Bar length of 25 characters
-        empty=$((25 - filled))
+#         # --- Progress Bar Logic ---
+#         percent=$((current_task * 100 / total_tasks))
+#         filled=$((percent / 4)) # Bar length of 25 characters
+#         empty=$((25 - filled))
         
-        # Create strings for the bar
-        printf -v bar_str "%${filled}s" ""; bar_str=${bar_str// /#}
-        printf -v space_str "%${empty}s" ""; space_str=${space_str// /-}
+#         # Create strings for the bar
+#         printf -v bar_str "%${filled}s" ""; bar_str=${bar_str// /#}
+#         printf -v space_str "%${empty}s" ""; space_str=${space_str// /-}
         
-        # Print the progress bar (\r keeps it on the same line)
-        printf "\rProgress: [%s%s] %d%% (%d/%d) | Current: %s/%s " \
-               "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$bact" "$phage"
+#         # Print the progress bar (\r keeps it on the same line)
+#         printf "\rProgress: [%s%s] %d%% (%d/%d) | Current: %s/%s " \
+#                "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$bact" "$phage"
 
-        CUSTOM_OUT="excl_${bact}_${phage}"
-        python3 "$PROJ_DIR/scripts/FFNN_inner.py" \
-            --nk $NK_VALS \
-            --cv \
-            --kf_n_splits 4 \
-            --exclude_noninteractions \
-            --exclude_bacts "$bact" \
-            --exclude_phages "$phage" \
-            --out "$CUSTOM_OUT" \
-            --logging
-    done
-done
+#         CUSTOM_OUT="excl_${bact}_${phage}"
+#         python3 "$PROJ_DIR/scripts/FFNN_inner.py" \
+#             --nk $NK_VALS \
+#             --cv \
+#             --kf_n_splits 4 \
+#             --exclude_noninteractions \
+#             --exclude_bacts "$bact" \
+#             --exclude_phages "$phage" \
+#             --out "$CUSTOM_OUT" \
+#             --logging
+#     done
+# done
 
 # 3. Post-Processing: Average Accuracies
 echo "-------------------------------------------------------"
@@ -72,8 +71,18 @@ echo "-------------------------------------------------------"
 
 # Extract accuracy values from all log_run*.txt files produced in this session
 # The regex looks for 'test accuracy:' followed by the numerical value
-accuracies=$(find "$PROJ_DIR/nn_runs/${CUSTOM_OUT}_run*/log_run*.txt" -exec grep "Final test loss:" {} + | awk -F'test accuracy: ' '{print $2}')
 
+for bact in $bact_names; do
+    for phage in $phage_names; do
+        echo "Extracting accuracy for pair: $bact / $phage"
+        #echo "$PROJ_DIR/nn_runs/excl_${bact}_${phage}_run1/log_run1.txt"
+        acc=$(find "$PROJ_DIR/nn_runs/excl_${bact}_${phage}_run1/log_run1.txt" -exec grep "Final test loss:" {} + | awk -F'test accuracy: ' '{print $2}')
+        if [[ -n "$acc" ]]; then
+            accuracies="${accuracies}"$'\n'"$acc"
+        fi
+        echo $accuracies
+    done
+done
 # Perform the average using awk
 average=$(echo "$accuracies" | awk '
     { sum += $1; count++ } 
