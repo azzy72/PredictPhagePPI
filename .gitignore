@@ -17,3 +17,6 @@ scripts_ext/mike/
 raw_data/
 logs/
 tmp/
+scripts/__pycache__/
+scripts_ext/__pycache__/
+notebooks/__pycache__/
