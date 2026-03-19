@@ -33,25 +33,25 @@ total_tasks=$((bact_count * phage_count))
 current_task=0
 echo "Starting training for $total_tasks pairs..."
 
-# # 2. Training Loop
-# for bact in $bact_names; do
-#     for phage in $phage_names; do
-#         ((current_task++))
+# 2. Training Loop
+for bact in $bact_names; do
+    for phage in $phage_names; do
+        ((current_task++))
         
-#         # --- Progress Bar Logic ---
-#         percent=$((current_task * 100 / total_tasks))
-#         filled=$((percent / 4)) # Bar length of 25 characters
-#         empty=$((25 - filled))
+        # --- Progress Bar Logic ---
+        percent=$((current_task * 100 / total_tasks))
+        filled=$((percent / 4)) # Bar length of 25 characters
+        empty=$((25 - filled))
         
-#         # Create strings for the bar
-#         printf -v bar_str "%${filled}s" ""; bar_str=${bar_str// /#}
-#         printf -v space_str "%${empty}s" ""; space_str=${space_str// /-}
+        # Create strings for the bar
+        printf -v bar_str "%${filled}s" ""; bar_str=${bar_str// /#}
+        printf -v space_str "%${empty}s" ""; space_str=${space_str// /-}
         
-#         # Print the progress bar (\r keeps it on the same line)
-#         printf "\rProgress: [%s%s] %d%% (%d/%d) | Current: %s/%s " \
-#                "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$bact" "$phage"
+        # Print the progress bar (\r keeps it on the same line)
+        printf "\rProgress: [%s%s] %d%% (%d/%d) | Current: %s/%s " \
+               "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$bact" "$phage"
 
-        CUSTOM_OUT="excl_${bact}_${phage}"
+        CUSTOM_OUT="iter_excl/${bact}_${phage}"
         python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
             --nk $NK_VALS \
             --cv \
@@ -94,3 +94,7 @@ total_runs=$(echo "$accuracies" | wc -l)
 
 echo "Total Runs Analyzed: $total_runs"
 echo "Global Average Test Accuracy: $average"
+
+# 4. Collecting results
+echo "📊 Collecting results..."
+python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUN

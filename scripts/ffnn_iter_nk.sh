@@ -107,4 +107,4 @@ fi
 
 # --- Phase 3: Collection ---
 echo "📊 Collecting results..."
-python3 "$ROOT_DIR/scripts/collect_iternk_res.py" --base_dir "$DIR_IN_NN_RUNS"
+python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUNS"
