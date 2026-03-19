@@ -60,8 +60,10 @@ def parse_arguments():
 
     # Exclusions
     parser.add_argument("--exclude_noninteractions", action="store_true", help="Exclude non-interacting pairs")
+    parser.add_argument("--exclude_pairs", action="store_true", help="Exclude specified pairs of bacteria and phages, requires --exclude_bacts and --exclude_phages")
     parser.add_argument("--exclude_bacts", nargs='+', default=["J26_21_reoriented"], help="List of bacteria to exclude")
     parser.add_argument("--exclude_phages", nargs='+', default=["Abuela"], help="List of phages to exclude")
+    parser.add_argument("--test_on_excluded", action="store_true", help="Test the model on the excluded pairs and not a test split from the main dataset")
 
     # Hyperparameters
     parser.add_argument("--n_epochs", type=int, default=50)
@@ -78,8 +80,17 @@ def parse_arguments():
         parser.error("--kf_n_splits must be greater than 1 when --cv is enabled.")
 
     # Requirement: exclude_noninteractions requires exclude_bacts and exclude_phages
-    if args.exclude_noninteractions and (len(args.exclude_bacts) != 1 or len(args.exclude_phages) != 1):
-        parser.error("--exclude_noninteractions requires both --exclude_bacts and --exclude_phages lists.")
+    if args.exclude_pairs and (len(args.exclude_bacts) < 1 or len(args.exclude_phages) < 1):
+        parser.error("--exclude_pairs requires both --exclude_bacts and --exclude_phages lists.")
+
+    # Requirement: test_on_excluded requires exclude_noninteractions
+    if args.test_on_excluded and not args.exclude_pairs:
+        parser.error("--test_on_excluded requires --exclude_pairs to be enabled.")
+    
+    # Warning: exclude_noninteractions with exclude_pairs means that both the entities in --exclude_bacts and --exclude_phages will be excluded from the training set, as well as all entities that doesn't have a positive interaction in hostrange 
+    # This may result in a very small training set if those entities are involved in many interactions. This is not an error, but should be used with caution.
+    if args.exclude_pairs and args.exclude_noninteractions:
+        print("WARNING: Using --exclude_pairs with --exclude_noninteractions will exclude all pairs involving the specified bacteria and phages, as well as all non-interacting pairs. This may result in a very small training set if those entities are involved in many interactions. Please use with caution.", file=sys.stderr)
 
     # Requirement: can't have perform_ga with not args.use_encoded
     if args.perform_ga and not args.use_encoded:
@@ -137,7 +148,7 @@ def main():
 
     ### 3. Load Data ###
     bact_clusters = pd.read_csv(os.path.join(data_prod_path, "bact_clusters.csv"), index_col=0)
-    
+
     # Load Presence Matrix
     full_presmat_path = os.path.join(data_prod_path, presmat_path)
     if not os.path.exists(full_presmat_path):
@@ -214,6 +225,7 @@ def main():
     # Create inverse mapping: column_index -> kmer_encoded_int
     idx_to_minhash = {v: k for k, v in minhash_to_index.items()}
 
+    if args.logging: feature_flag = False
     for bact in tqdm(bacteria_names, desc="Building dataset"):
         # Exclusion logic
         if args.exclude_noninteractions and not any(host_range_data.get(bact, {}).values()):
@@ -229,8 +241,13 @@ def main():
             elif args.entity_order == "phage_first":
                 features = np.concatenate((binary_matrix[entity_to_index[phage]], 
                                        binary_matrix[entity_to_index[bact]]))
+            
+            if args.logging and not feature_flag:
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample feature vector for pair ({bact}, {phage}) with score: {score}', file=logfile)
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - Number of features: {len(features.tolist())}', file=logfile)
+                feature_flag = True
 
-            if args.exclude_noninteractions and (bact in args.exclude_bacts or phage in args.exclude_phages):
+            if args.exclude_pairs and (bact in args.exclude_bacts or phage in args.exclude_phages):
                 X_excl.append(features)
                 y_excl.append(score)    
                 continue
@@ -246,25 +263,58 @@ def main():
 
     X, y = np.array(X), np.array(y)
     X_excl, y_excl = np.array(X_excl), np.array(y_excl)
+    if args.logging:
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} --- Finished building dataset ---', file=logfile)
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Built dataset with {len(X)} interacting pairs and {len(X_excl)} non-interacting pairs.', file=logfile)
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X)} times {len(X[0])} total features for interacting pairs:', file=logfile)
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X)} x {len(X[0])} = {X.shape}', file=logfile)
+        if args.exclude_pairs:
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Excluded {len(X_excl)} pairs based on --exclude_bacts and --exclude_phages lists.', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X_excl)} times {len(X_excl[0])} total non-unique features:', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X_excl)} represen', file=logfile)
     
     ### 7. Splitting & Scaling ###
     if args.train_by_cluster:
         groups = bact_clusters.loc[[m[0] for m in rows_meta], 'Cluster'].values
-        gss = GroupShuffleSplit(n_splits=1, test_size=args.test_split, random_state=42)
-        train_idx, test_idx = next(gss.split(X, y, groups=groups))
+        if args.test_on_excluded:
+            X_train_f, y_train_f = X, y
+            X_test, y_test = X_excl, y_excl
+        else:
+            # Split data into train and test
+            gss = GroupShuffleSplit(n_splits=1, test_size=args.test_split, random_state=42)
+            train_full_idx, test_idx = next(gss.split(X, y, groups=groups))
+
+            X_train_f, X_test = X[train_full_idx], X[test_idx]
+            y_train_f, y_test = y[train_full_idx], y[test_idx]
+            groups_train_full = groups[train_full_idx]
+
+        if not args.cv:
+            # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
+            adj_val_ratio = args.val_split / (1 - args.test_split)
+            gss_val = GroupShuffleSplit(n_splits=1, test_size=adj_val_ratio, random_state=42)
+            train_idx, val_idx = next(gss_val.split(X_train_f, y_train_f, groups=groups_train_full if args.test_on_excluded else groups))
+            X_train_f, X_val = X_train_f[train_idx], X_train_f[val_idx]
+            y_train_f, y_val = y_train_f[train_idx], y_train_f[val_idx]
 
     else:
-        train_idx, test_idx = train_test_split(np.arange(len(y)), test_size=args.test_split, random_state=42, stratify=y)
+        if args.test_on_excluded:
+            X_train_f, y_train_f = X, y
+            X_test, y_test = X_excl, y_excl
+        else:
+            train_idx, test_idx = train_test_split(np.arange(len(y)), test_size=args.test_split, random_state=42, stratify=y)
+            X_train_f, X_test, y_train_f, y_test = X[train_idx], X[test_idx], y[train_idx], y[test_idx]
 
-    X_train_f, X_test, y_train_f, y_test = X[train_idx], X[test_idx], y[train_idx], y[test_idx]
+        # Split data into train and test
+        if not args.cv:
+            # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
+            train_idx, val_idx = train_test_split(train_idx, test_size=args.val_split/(1-args.test_split), random_state=42, stratify=y[train_idx])
+            X_train_f, X_val = X[train_idx], X[val_idx]
+            y_train_f, y_val = y[train_idx], y[val_idx]
     
     metadata_np = np.array(rows_meta, dtype=object)
     metadata_train_full, metadata_test = metadata_np[train_idx], metadata_np[test_idx]
-
-    if args.logging: 
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Train size: {X_train_f.shape[0]} samples, Test size: {X_test.shape[0]} samples', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in train: {round(sum(y_train_f)/len(y_train_f)*100,2)}%', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%', file=logfile)
+    if not args.cv:
+        metadata_train, metadata_val = metadata_np[train_idx], metadata_np[val_idx]
 
     scaler = StandardScaler()
     X_train_f = scaler.fit_transform(X_train_f)
@@ -282,37 +332,110 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Training loop
-    kf = KFold(n_splits=args.kf_n_splits, shuffle=True, random_state=42)
-    fold = 1
+    if args.cv:
+        if args.logging: 
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Train + Val size: {X_train_f.shape[0]} samples, Test size: {X_test.shape[0]} samples', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in train+val: {round(sum(y_train_f)/len(y_train_f)*100,2)}%', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%\n', file=logfile)
 
-    if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting cross-validation with {kf.get_n_splits()} folds...', file=logfile)
 
-    for train_idx, val_idx in kf.split(X_train_f):
-        print(f"Fold {fold}:")
-        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fold {fold}...', file=logfile)
+        kf = KFold(n_splits=args.kf_n_splits, shuffle=True, random_state=42)
+        fold = 1
 
-        # Split data into training and validation sets for this fold
-        X_train_fold, X_val_fold = X_train_f[train_idx], X_train_f[val_idx]
-        y_train_fold, y_val_fold = y_train_f[train_idx], y_train_f[val_idx]
+        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting cross-validation with {kf.get_n_splits()} folds...', file=logfile)
 
+        for train_idx, val_idx in kf.split(X_train_f):
+            print(f"Fold {fold}:")
+            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fold {fold}...', file=logfile)
+
+            # Split data into training and validation sets for this fold
+            X_train_fold, X_val_fold = X_train_f[train_idx], X_train_f[val_idx]
+            y_train_fold, y_val_fold = y_train_f[train_idx], y_train_f[val_idx]
+
+            # Convert to torch tensors
+            X_train_t = torch.from_numpy(X_train_fold).float()
+            X_val_t = torch.from_numpy(X_val_fold).float()
+            y_train_t = torch.from_numpy(y_train_fold.reshape(-1, 1)).float()
+            y_val_t = torch.from_numpy(y_val_fold.reshape(-1, 1)).float()
+
+            # Create data loaders
+            train_ds = TensorDataset(X_train_t, y_train_t)
+            val_ds = TensorDataset(X_val_t, y_val_t)
+            train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+            val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+
+            # Initialize model, criterion, and optimizer
+            model = MLP(input_dim=X_train_f.shape[1]).to(device)
+            criterion = nn.BCEWithLogitsLoss()
+            optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+
+            # Training loop for this fold
+            for epoch in range(1, args.n_epochs + 1):
+                model.train()
+                running_loss = 0.0
+                for xb, yb in train_loader:
+                    xb, yb = xb.to(device), yb.to(device)
+                    optimizer.zero_grad()
+                    logits = model(xb)
+                    loss = criterion(logits, yb)
+                    loss.backward()
+                    optimizer.step()
+                    running_loss += loss.item() * xb.size(0)
+                epoch_loss = running_loss / len(train_loader.dataset)
+                train_losses.append(epoch_loss)
+
+                # Evaluate on validation set each epoch
+                model.eval()
+                with torch.no_grad():
+                    total = 0
+                    correct = 0
+                    val_running_loss = 0.0
+                    for xb, yb in val_loader:
+                        xb, yb = xb.to(device), yb.to(device)
+                        logits = model(xb)
+                        loss = criterion(logits, yb)
+                        val_running_loss += loss.item() * xb.size(0)
+                        probs = torch.sigmoid(logits)
+                        preds = (probs >= 0.5).float()
+                        correct += (preds == yb).sum().item()
+                        total += yb.numel()
+                    val_loss = val_running_loss / len(val_loader.dataset) if len(val_loader.dataset) > 0 else float('nan')
+                    val_acc = correct / total if total > 0 else float('nan')
+                    val_losses.append(val_loss)
+                    val_accuracies.append(val_acc)
+
+                print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
+                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}', file=logfile)
+
+            fold += 1
+        fold -= 1 # Adjust fold count after loop to reflect actual number of folds completed
+    
+    else:
+        if args.logging: 
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Train size: {X_train_f.shape[0]} samples, Val size: {X_val.shape[0]} samples, Test size: {X_test.shape[0]} samples', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in train: {round(sum(y_train_f)/len(y_train_f)*100,2)}%', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in val: {round(sum(y_val)/len(y_val)*100,2)}%', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%', file=logfile)
+
+        fold = 1 #used for n_epochs multiplier in later code
         # Convert to torch tensors
-        X_train_t = torch.from_numpy(X_train_fold).float()
-        X_val_t = torch.from_numpy(X_val_fold).float()
-        y_train_t = torch.from_numpy(y_train_fold.reshape(-1, 1)).float()
-        y_val_t = torch.from_numpy(y_val_fold.reshape(-1, 1)).float()
+        X_train_t = torch.from_numpy(X_train_f).float()
+        X_val_t = torch.from_numpy(X_val).float()
+        y_train_t = torch.from_numpy(y_train_f.reshape(-1, 1)).float()
+        y_val_t = torch.from_numpy(y_val.reshape(-1, 1)).float()
 
-        # Create data loaders
+        # Datasets / loaders
         train_ds = TensorDataset(X_train_t, y_train_t)
         val_ds = TensorDataset(X_val_t, y_val_t)
         train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
         val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
 
-        # Initialize model, criterion, and optimizer
         model = MLP(input_dim=X_train_f.shape[1]).to(device)
-        criterion = nn.BCEWithLogitsLoss()
-        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+        criterion = nn.BCEWithLogitsLoss() #Loss function
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate) #Optimizes weights and biases
 
-        # Training loop for this fold
+        # Training loop
+        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting training with epochs: {args.n_epochs}...', file=logfile)
         for epoch in range(1, args.n_epochs + 1):
             model.train()
             running_loss = 0.0
@@ -349,15 +472,12 @@ def main():
 
             print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
             if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}', file=logfile)
-
-        fold += 1
-    fold -= 1 # Adjust fold count after loop to reflect actual number of folds completed
-
+    
     # Appropriating test and excluded sets
     X_test_t = torch.from_numpy(X_test).float().to(device)
     y_test_t = torch.from_numpy(y_test.reshape(-1, 1)).float().to(device)
-    X_excluded_t = torch.from_numpy(X_excl).float().to(device) if X_excl.size > 0 else None 
-    y_excluded_t = torch.from_numpy(y_excl.reshape(-1, 1)).float().to(device) if y_excl.size > 0 else None
+    # X_excluded_t = torch.from_numpy(X_excl).float().to(device) if X_excl.size > 0 else None 
+    # y_excluded_t = torch.from_numpy(y_excl.reshape(-1, 1)).float().to(device) if y_excl.size > 0 else None
 
     test_ds = TensorDataset(X_test_t, y_test_t)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
@@ -377,7 +497,10 @@ def main():
         test_acc = (test_preds.to(device) == y_test_t).float().mean().item()
 
     #print(f"\nFinal test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}")
-    if args.logging: print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}', file=logfile)
+    if args.logging: 
+        if args.test_on_excluded:
+            print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Tested on excluded set', file=logfile)
+        print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}', file=logfile)
     
     # Plotting the losses 
     fig,ax = plt.subplots(1,1, figsize=(9,5))
@@ -399,21 +522,21 @@ def main():
     if args.logging: plt.savefig(outdir+outname)
     if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Accuracy and train figure saved as: {outdir+outname}', file=logfile)
 
-    # Eval on excluded set (if toggled and data exists)
-    if args.exclude_noninteractions and X_excluded_t is not None:
-        model.eval()
-        with torch.no_grad():
-            excluded_logits = model(X_excluded_t)
-            excluded_probs = torch.sigmoid(excluded_logits).cpu().numpy().flatten()
-            excluded_preds = (excluded_probs >= 0.5).astype(int)
+    # # Eval on excluded set (if toggled and data exists)
+    # if args.exclude_pairs and X_excluded_t is not None:
+    #     model.eval()
+    #     with torch.no_grad():
+    #         excluded_logits = model(X_excluded_t)
+    #         excluded_probs = torch.sigmoid(excluded_logits).cpu().numpy().flatten()
+    #         excluded_preds = (excluded_probs >= 0.5).astype(int)
 
-        print(f"\n--- Excluded Pairs Results ---")
-        for i in range(len(excluded_preds)):
-            # Note: You'll need to track the names of excluded pairs if you want to print them specifically here
-            line = f"Excluded pair {i} - prediction: {excluded_preds[i]} (prob: {excluded_probs[i]:.4f}), actual: {y_excl[i]}"
-            print(line)
-            if args.logging: 
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
+    #     print(f"\n--- Excluded Pairs Results ---")
+    #     for i in range(len(excluded_preds)):
+    #         # Note: You'll need to track the names of excluded pairs if you want to print them specifically here
+    #         line = f"Excluded pair {i} - prediction: {excluded_preds[i]} (prob: {excluded_probs[i]:.4f}), actual: {y_excl[i]}"
+    #         print(line)
+    #         if args.logging: 
+    #             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
 
     ### 10. Model Evaluations ###
     model.eval() # Set the model to evaluation mode

@@ -9,13 +9,15 @@ import seaborn as sns
 import numpy as np
 import argparse
 from paths import data_prod_path, path_to_nn_runs
-outdir = data_prod_path + "iterNK/"
+outdir_default = data_prod_path + "iterNK/"
 print(path_to_nn_runs)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Metric Extraction Script")
     parser.add_argument("--base_dir", type=str, default=path_to_nn_runs, 
                         help="Base directory containing run folders")
+    parser.add_argument("--outdir", type=str, default=outdir_default,
+                        help="Directory to save output graphs and CSV")
     return parser.parse_args()
 
 def extract_metrics_from_log(file_path):
@@ -85,7 +87,7 @@ def extract_metrics_from_log(file_path):
 
     return metrics
 
-def plot_graphs(df):
+def plot_graphs(df, outdir=outdir_default):
     # Ensure all columns are integers for proper sorting
     df['n'] = pd.to_numeric(df['n'])
     df['k'] = pd.to_numeric(df['k'])
@@ -93,7 +95,15 @@ def plot_graphs(df):
     df['precision'] = pd.to_numeric(df['precision'])
     df['recall'] = pd.to_numeric(df['recall'])
     df['f1'] = pd.to_numeric(df['f1'])
-    df = df.sort_values(['n', 'k'])
+
+    if len(set(df['n'])) == 1 and len(set(df['k'])) == 1:
+        print("All runs have the same 'n' & 'k' value. Results will be plotted based on rows and not grouped by 'n' and 'k'.")
+        singular_nk = True
+    else:
+        df = df.sort_values(['n', 'k'])
+        singular_nk = False
+
+    title_suffix = "by N and K" if not singular_nk else "for single N and K"
 
     print("Recognized metrics:")
     for col in df.columns:
@@ -104,19 +114,28 @@ def plot_graphs(df):
     plt.figure(figsize=(12, 7))
     sns.set_style("whitegrid")
     
-    ax = sns.barplot(
-        data=df, 
-        x='n', 
-        y='test_accuracy', 
-        hue='k', 
-        palette='viridis',
-        edgecolor='black'
-    )
+    if singular_nk:
+        ax = sns.barplot(
+            data=df, 
+            x = df["folder"],
+            y='test_accuracy', 
+            edgecolor='black'
+        )
+        plt.xticks(rotation=45, ha='right')
+    else:
+        ax = sns.barplot(
+            data=df, 
+            x='n', 
+            y='test_accuracy', 
+            hue='k', 
+            palette='viridis',
+            edgecolor='black'
+        )
     
-    plt.title('FFNN Test Accuracy by N and K', fontsize=15, pad=15)
+    plt.title(f'FFNN Test Accuracy {title_suffix}', fontsize=15, pad=15)
     plt.ylabel('Test Accuracy', fontsize=12)
     plt.xlabel('n (Number of Features/Samples)', fontsize=12)
-    plt.legend(title='k values', bbox_to_anchor=(1.05, 1), loc='upper left')
+    if not singular_nk: plt.legend(title='k values', bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.ylim(0.8, 1.0) # Adjust based on your performance range
     plt.tight_layout()
     plt.savefig(outdir + 'accuracy_by_nk.png')
@@ -126,11 +145,20 @@ def plot_graphs(df):
     plt.figure(figsize=(12, 7))
     sns.set_style("whitegrid")
     
-    ax = sns.barplot(
-        data=df, 
-        x='n', 
-        y='f1', 
-        hue='k', 
+    if singular_nk:
+        ax = sns.barplot(
+            data=df, 
+            x = df["folder"],
+            y='f1', 
+            edgecolor='black'
+        )
+        plt.xticks(rotation=45, ha='right')
+    else:
+        ax = sns.barplot(
+            data=df, 
+            x='n', 
+            y='f1', 
+            hue='k', 
         palette='viridis',
         edgecolor='black'
     )
@@ -150,10 +178,10 @@ def plot_graphs(df):
             ha='center', va='bottom', fontsize=6, color='black'
         )
     
-    plt.title('FFNN F1 score by N and K', fontsize=15, pad=15)
+    plt.title(f'FFNN F1 score {title_suffix}', fontsize=15, pad=15)
     plt.ylabel('Test F1', fontsize=12)
     plt.xlabel('n (Number of Features/Samples)', fontsize=12)
-    plt.legend(title='k values', bbox_to_anchor=(1.05, 1), loc='upper left')
+    if not singular_nk: plt.legend(title='k values', bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.ylim(0.2, 1.0)
     plt.tight_layout()
     plt.savefig(outdir + 'f1_by_nk.png')
@@ -174,12 +202,16 @@ def plot_graphs(df):
     plt.savefig(outdir + 'averaged_confusion_matrix.png')
     print("Saved: averaged_confusion_matrix.png")
 
-def main(base_dir=path_to_nn_runs):
+def main(base_dir=path_to_nn_runs, outdir=outdir_default):
     all_data = []
     
     if not os.path.exists(base_dir):
         print(f"Directory {base_dir} not found.")
         return
+    
+    if not os.path.exists(outdir):
+        os.makedirs(outdir, exist_ok=True)
+        print(f"Created output directory: {outdir}")
 
     # Iterate through all folders in nn_runs
     for folder_name in os.listdir(base_dir):          
@@ -196,7 +228,7 @@ def main(base_dir=path_to_nn_runs):
 
     if all_data:
         df = pd.DataFrame(all_data)
-        plot_graphs(df)
+        plot_graphs(df, outdir=outdir)
         # Optional: save the raw data for inspection
         df.to_csv(outdir +'all_runs_summary.csv', index=False)
         print("Summary CSV saved as all_runs_summary.csv")
@@ -205,6 +237,6 @@ def main(base_dir=path_to_nn_runs):
 
 if __name__ == "__main__":
     if parse_arguments().base_dir:
-        main(base_dir=parse_arguments().base_dir)
+        main(base_dir=parse_arguments().base_dir, outdir=parse_arguments().outdir)
     else:
         main()
