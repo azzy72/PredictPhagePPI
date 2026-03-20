@@ -87,6 +87,54 @@ def extract_metrics_from_log(file_path):
 
     return metrics
 
+def _plot_cm_bars(df, outdir, title_suffix=""):
+    # 1. Prepare the Confusion Matrix Data
+    # We melt the dataframe so 'TN', 'FN', 'FP', 'TP' become categories in one column
+    cm_cols = ['TN', 'FN', 'FP', 'TP']
+    cm_df = df[cm_cols + ['folder']].copy()
+    cm_melted = cm_df.melt(id_vars='folder', var_name='Metric', value_name='Count')
+
+    # 2. Setup the Plot
+    plt.figure(figsize=(16, 7)) # Wider figure for many bars
+    sns.set_style("whitegrid")
+    
+    # 3. Create the Grouped Barplot
+    # x='folder' creates the groups, hue='Metric' creates the individual bars per group
+    ax = sns.barplot(
+        data=cm_melted, 
+        x='folder', 
+        y='Count', 
+        hue='Metric', 
+        palette='muted', # 'muted' or 'Set2' works well here
+        edgecolor='black'
+    )
+
+    # 4. Add labels on top of bars (similar to your reference image)
+    for p in ax.patches:
+        if p.get_height() > 0: # Only label bars with a value
+            ax.annotate(f'{int(p.get_height())}', 
+                        (p.get_x() + p.get_width() / 2., p.get_height()), 
+                        ha='center', va='center', 
+                        fontsize=9, color='black', 
+                        xytext=(0, 7), 
+                        textcoords='offset points')
+
+    # 5. Formatting
+    plt.xticks(rotation=45, ha='right')
+    plt.title(f'Confusion Matrix Components by Run {title_suffix}', fontsize=16, weight='bold', pad=20)
+    plt.ylabel('Count (Number of Samples)', fontsize=12)
+    plt.xlabel('Run / Configuration', fontsize=12)
+    
+    # Place legend outside to the right
+    plt.legend(title='Metrics', bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0.)
+    
+    plt.tight_layout()
+    
+    # 6. Save
+    plt.savefig(outdir + 'confusion_matrix_by_run.png', dpi=300)
+    plt.close() # Close to free up memory
+    print("Saved: confusion_matrix_by_run.png")
+
 def plot_graphs(df, outdir=outdir_default):
     # Ensure all columns are integers for proper sorting
     df['n'] = pd.to_numeric(df['n'])
@@ -187,7 +235,10 @@ def plot_graphs(df, outdir=outdir_default):
     plt.savefig(outdir + 'f1_by_nk.png')
     print("Saved: f1_by_nk.png")
 
-    # --- Graph 3: Averaged Confusion Matrix ---
+    # --- Graph 3: Confusion Matrix as bars ---
+    _plot_cm_bars(df, outdir, title_suffix=title_suffix)
+
+    # --- Graph 4: Averaged Confusion Matrix ---
     avg_cm = df[['TN', 'FN', 'FP', 'TP']].mean()
     # Reshape into 2x2 matrix: [[TN, FN], [FP, TP]]
     cm_data = np.array([[avg_cm['TN'], avg_cm['FN']], 

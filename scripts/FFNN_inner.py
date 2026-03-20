@@ -246,6 +246,9 @@ def main():
     idx_to_minhash = {v: k for k, v in minhash_to_index.items()}
 
     if args.logging: feature_flag = False
+    cidx = 0
+    X_idx = []
+    X_excl_idx = []
     for bact in tqdm(bacteria_names, desc="Building dataset"):
         # Exclusion logic
         if args.exclude_noninteractions and not any(host_range_data.get(bact, {}).values()):
@@ -262,6 +265,13 @@ def main():
                 features = np.concatenate((binary_matrix[entity_to_index[phage]], 
                                        binary_matrix[entity_to_index[bact]]))
             
+            if args.entity_order == "bact_first":
+                rows_meta.append((bact, phage))
+            elif args.entity_order == "phage_first":
+                rows_meta.append((phage, bact))
+            else:
+                raise ValueError("Invalid entity_order argument. Must be 'bact_first' or 'phage_first'.")
+
             if args.logging and not feature_flag:
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample feature vector for pair ({bact}, {phage}) with score: {score}', file=logfile)
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - Number of features: {len(features.tolist())}', file=logfile)
@@ -270,16 +280,14 @@ def main():
             if args.exclude_pairs and (bact in args.exclude_bacts or phage in args.exclude_phages):
                 X_excl.append(features)
                 y_excl.append(score)    
+                X_excl_idx.append(cidx)
+                cidx += 1
                 continue
 
             X.append(features)
             y.append(score)
-            if args.entity_order == "bact_first":
-                rows_meta.append((bact, phage))
-            elif args.entity_order == "phage_first":
-                rows_meta.append((phage, bact))
-            else:
-                raise ValueError("Invalid entity_order argument. Must be 'bact_first' or 'phage_first'.")
+            X_idx.append(cidx)
+            cidx += 1
 
     X, y = np.array(X), np.array(y)
     X_excl, y_excl = np.array(X_excl), np.array(y_excl)
@@ -288,12 +296,14 @@ def main():
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Built dataset with {len(X)} interacting pairs and {len(X_excl)} non-interacting pairs.', file=logfile)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X)} times {len(X[0])} total features for interacting pairs:', file=logfile)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X)} x {len(X[0])} = {X.shape}', file=logfile)
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} cidx: {cidx}', file=logfile)
         if args.exclude_pairs:
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Excluded {len(X_excl)} pairs based on --exclude_bacts and --exclude_phages lists.', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X_excl)} times {len(X_excl[0])} total non-unique features:', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X_excl)} represen', file=logfile)
     
     ### 7. Splitting & Scaling ###
+    train_idx, test_idx = X_idx, X_excl_idx
     if args.train_by_cluster:
         groups = bact_clusters.loc[[m[0] for m in rows_meta], 'Cluster'].values
         val_clusters = None
@@ -311,20 +321,18 @@ def main():
             test_clusters = groups[test_idx]
             groups = groups[train_full_idx] #Redefing groups in case dataset was split into test and train
 
+        train_clusters = groups
         if not args.use_val:
             X_val, y_val = None, None
-        else:
-            if not args.cv:
-                # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
-                adj_val_ratio = args.val_split / (1 - args.test_split)
-                gss_val = GroupShuffleSplit(n_splits=1, test_size=adj_val_ratio, random_state=42)
-                train_idx, val_idx = next(gss_val.split(X_train_f, y_train_f, groups=groups))
-                X_train_f, X_val = X_train_f[train_idx], X_train_f[val_idx]
-                y_train_f, y_val = y_train_f[train_idx], y_train_f[val_idx]
-                train_clusters = groups[train_idx]
-                val_clusters = groups[val_idx]
-            else:
-                train_clusters = groups
+        elif not args.cv:
+            # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
+            adj_val_ratio = args.val_split / (1 - args.test_split)
+            gss_val = GroupShuffleSplit(n_splits=1, test_size=adj_val_ratio, random_state=42)
+            train_idx, val_idx = next(gss_val.split(X_train_f, y_train_f, groups=groups))
+            X_train_f, X_val = X_train_f[train_idx], X_train_f[val_idx]
+            y_train_f, y_val = y_train_f[train_idx], y_train_f[val_idx]
+            train_clusters = groups[train_idx]
+            val_clusters = groups[val_idx]
         
         # Construct a bar graph on the distribution of bacterial clusters in train vs val vs test to confirm that the split is indeed by cluster and that the clusters are distributed in a way that makes sense (e.g. not all cluster 1 in train and all cluster 2 in test)
         split_cluster_counts = {
@@ -376,8 +384,6 @@ def main():
     
     metadata_np = np.array(rows_meta, dtype=object)
     metadata_train_full, metadata_test = metadata_np[train_idx], metadata_np[test_idx]
-    if not args.cv:
-        metadata_train, metadata_val = metadata_np[train_idx], metadata_np[val_idx]
 
     scaler = StandardScaler()
     X_train_f = scaler.fit_transform(X_train_f)
@@ -475,9 +481,10 @@ def main():
     
     else:
         if args.logging: 
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Train size: {X_train_f.shape[0]} samples, Val size: {X_val.shape[0]} samples, Test size: {X_test.shape[0]} samples', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Train size: {X_train_f.shape[0]} samples, Val size: {X_val.shape[0] if X_val is not None else 0} samples, Test size: {X_test.shape[0]} samples', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in train: {round(sum(y_train_f)/len(y_train_f)*100,2)}%', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in val: {round(sum(y_val)/len(y_val)*100,2)}%', file=logfile)
+            if args.use_val:
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in val: {round(sum(y_val)/len(y_val)*100,2)}%', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%', file=logfile)
 
         fold = 1 #used for n_epochs multiplier in later code
