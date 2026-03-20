@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=IterExcl_PredictPhage
 #SBATCH --partition=gpu
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=2
 #SBATCH --gres=gpu
-#!SBATCH --time=00:00:00
+#SBATCH --time=48:00:00
 #!SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
@@ -56,7 +56,7 @@ for bact in $bact_names; do
             --nk $NK_VALS \
             --cv \
             --kf_n_splits 4 \
-            --exclude_noninteractions \
+            --exclude_pairs \
             --exclude_bacts "$bact" \
             --exclude_phages "$phage" \
             --out "$CUSTOM_OUT" \

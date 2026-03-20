@@ -57,6 +57,7 @@ def parse_arguments():
     parser.add_argument("--no_shuffle", action="store_false", dest="shuffle", help="Disable feature shuffling")
     parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
     parser.add_argument("--perform_ga", action="store_true", help="Perform gene analysis on top features")
+    parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
 
     # Exclusions
     parser.add_argument("--exclude_noninteractions", action="store_true", help="Exclude non-interacting pairs")
@@ -95,15 +96,22 @@ def parse_arguments():
     # Requirement: can't have perform_ga with not args.use_encoded
     if args.perform_ga and not args.use_encoded:
         parser.error("--perform_ga requires --use_encoded as kmers can't be decoded from MinHash sketches.")
+    
+    # Warning: Using --no_val will ignore val_split
+    if not args.use_val and args.val_split:
+        print("WARNING: Using --no_val will ignore val_split.", file=sys.stderr)
+    
+    # Warning: Using --test_on_excluded will ignore test_split
+    if args.test_on_excluded and args.test_split:
+        print("WARNING: Using --test_on_excluded will ignore test_split.", file=sys.stderr)
+    
+    # Requirement: if --no_val is used, then --cv cannot be used because cross-validation requires a validation set for epoch-wise evaluation
+    if not args.use_val and args.cv:
+        parser.error("--no_val cannot be used with --cv because cross-validation requires a validation set for epoch-wise evaluation.") 
 
     return args
 
 # This function maps model feature index 'idx' back to the encoded k-mer
-def model_idx_to_kmer(idx, num_features_per_entity, feature_indices, idx_to_minhash):
-    # Determine if it's a Bact feature (idx < N) or Phage feature (idx >= N)
-    original_col_idx = feature_indices[idx % num_features_per_entity]
-    return idx_to_minhash[original_col_idx]
-
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden1=256, hidden2=128):
         super().__init__()
@@ -119,9 +127,21 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
+class helper:
+    def __init__(self, parser_args=None):
+        self.args = parser_args
+        pass
+
+    def model_idx_to_kmer(self, idx, num_features_per_entity, feature_indices, idx_to_minhash):
+        # Determine if it's a Bact feature (idx < N) or Phage feature (idx >= N)
+        original_col_idx = feature_indices[idx % num_features_per_entity]
+        return idx_to_minhash[original_col_idx]
+    
 def main():
     args = parse_arguments()
     time_start = time()
+    h = helper(args)
 
     ### 1. Resolve N/K values ###
     if args.nk:
@@ -276,6 +296,8 @@ def main():
     ### 7. Splitting & Scaling ###
     if args.train_by_cluster:
         groups = bact_clusters.loc[[m[0] for m in rows_meta], 'Cluster'].values
+        val_clusters = None
+        test_clusters = None
         if args.test_on_excluded:
             X_train_f, y_train_f = X, y
             X_test, y_test = X_excl, y_excl
@@ -286,16 +308,54 @@ def main():
 
             X_train_f, X_test = X[train_full_idx], X[test_idx]
             y_train_f, y_test = y[train_full_idx], y[test_idx]
-            groups_train_full = groups[train_full_idx]
+            test_clusters = groups[test_idx]
+            groups = groups[train_full_idx] #Redefing groups in case dataset was split into test and train
 
-        if not args.cv:
-            # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
-            adj_val_ratio = args.val_split / (1 - args.test_split)
-            gss_val = GroupShuffleSplit(n_splits=1, test_size=adj_val_ratio, random_state=42)
-            train_idx, val_idx = next(gss_val.split(X_train_f, y_train_f, groups=groups_train_full if args.test_on_excluded else groups))
-            X_train_f, X_val = X_train_f[train_idx], X_train_f[val_idx]
-            y_train_f, y_val = y_train_f[train_idx], y_train_f[val_idx]
+        if not args.use_val:
+            X_val, y_val = None, None
+        else:
+            if not args.cv:
+                # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
+                adj_val_ratio = args.val_split / (1 - args.test_split)
+                gss_val = GroupShuffleSplit(n_splits=1, test_size=adj_val_ratio, random_state=42)
+                train_idx, val_idx = next(gss_val.split(X_train_f, y_train_f, groups=groups))
+                X_train_f, X_val = X_train_f[train_idx], X_train_f[val_idx]
+                y_train_f, y_val = y_train_f[train_idx], y_train_f[val_idx]
+                train_clusters = groups[train_idx]
+                val_clusters = groups[val_idx]
+            else:
+                train_clusters = groups
+        
+        # Construct a bar graph on the distribution of bacterial clusters in train vs val vs test to confirm that the split is indeed by cluster and that the clusters are distributed in a way that makes sense (e.g. not all cluster 1 in train and all cluster 2 in test)
+        split_cluster_counts = {
+            "Train": pd.Series(train_clusters).value_counts()
+        }
+        if val_clusters is not None:
+            split_cluster_counts["Val"] = pd.Series(val_clusters).value_counts()
+        if test_clusters is not None:
+            split_cluster_counts["Test"] = pd.Series(test_clusters).value_counts()
 
+        cluster_dist_df = pd.DataFrame(split_cluster_counts).fillna(0).astype(int)
+        if not cluster_dist_df.empty:
+            try:
+                cluster_dist_df = cluster_dist_df.sort_index(key=lambda x: pd.to_numeric(x, errors='coerce'))
+            except Exception:
+                cluster_dist_df = cluster_dist_df.sort_index()
+
+            fig, ax = plt.subplots(figsize=(12, 6))
+            cluster_dist_df.plot(kind='bar', ax=ax)
+            ax.set_title('Bacterial Cluster Distribution Across Data Splits')
+            ax.set_xlabel('Cluster')
+            ax.set_ylabel('Number of pairs')
+            ax.legend(title='Split')
+            plt.tight_layout()
+
+            if args.logging:
+                outname = 'cluster_distribution_train_val_test.png'
+                plt.savefig(outdir+outname)
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Cluster distribution figure saved as: {outdir+outname}', file=logfile)
+            plt.close(fig)
+        
     else:
         if args.test_on_excluded:
             X_train_f, y_train_f = X, y
@@ -303,13 +363,16 @@ def main():
         else:
             train_idx, test_idx = train_test_split(np.arange(len(y)), test_size=args.test_split, random_state=42, stratify=y)
             X_train_f, X_test, y_train_f, y_test = X[train_idx], X[test_idx], y[train_idx], y[test_idx]
-
-        # Split data into train and test
+        
+        # Split train into train and val
         if not args.cv:
             # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
             train_idx, val_idx = train_test_split(train_idx, test_size=args.val_split/(1-args.test_split), random_state=42, stratify=y[train_idx])
             X_train_f, X_val = X[train_idx], X[val_idx]
             y_train_f, y_val = y[train_idx], y[val_idx]
+        else: 
+            if not args.use_val:
+                X_val, y_val = None, None
     
     metadata_np = np.array(rows_meta, dtype=object)
     metadata_train_full, metadata_test = metadata_np[train_idx], metadata_np[test_idx]
@@ -420,15 +483,18 @@ def main():
         fold = 1 #used for n_epochs multiplier in later code
         # Convert to torch tensors
         X_train_t = torch.from_numpy(X_train_f).float()
-        X_val_t = torch.from_numpy(X_val).float()
         y_train_t = torch.from_numpy(y_train_f.reshape(-1, 1)).float()
-        y_val_t = torch.from_numpy(y_val.reshape(-1, 1)).float()
+
+        if args.use_val:
+            X_val_t = torch.from_numpy(X_val).float()
+            y_val_t = torch.from_numpy(y_val.reshape(-1, 1)).float()
 
         # Datasets / loaders
         train_ds = TensorDataset(X_train_t, y_train_t)
-        val_ds = TensorDataset(X_val_t, y_val_t)
         train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
-        val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+        if args.use_val:
+            val_ds = TensorDataset(X_val_t, y_val_t)
+            val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
 
         model = MLP(input_dim=X_train_f.shape[1]).to(device)
         criterion = nn.BCEWithLogitsLoss() #Loss function
@@ -450,41 +516,38 @@ def main():
             epoch_loss = running_loss / len(train_loader.dataset)
             train_losses.append(epoch_loss)
 
-            # Evaluate on validation set each epoch
-            model.eval()
-            with torch.no_grad():
-                total = 0
-                correct = 0
-                val_running_loss = 0.0
-                for xb, yb in val_loader:
-                    xb, yb = xb.to(device), yb.to(device)
-                    logits = model(xb)
-                    loss = criterion(logits, yb)
-                    val_running_loss += loss.item() * xb.size(0)
-                    probs = torch.sigmoid(logits)
-                    preds = (probs >= 0.5).float()
-                    correct += (preds == yb).sum().item()
-                    total += yb.numel()
-                val_loss = val_running_loss / len(val_loader.dataset) if len(val_loader.dataset) > 0 else float('nan')
-                val_acc = correct / total if total > 0 else float('nan')
-                val_losses.append(val_loss)
-                val_accuracies.append(val_acc)
+            if args.use_val:
+                # Evaluate on validation set each epoch
+                model.eval()
+                with torch.no_grad():
+                    total = 0
+                    correct = 0
+                    val_running_loss = 0.0
+                    for xb, yb in val_loader:
+                        xb, yb = xb.to(device), yb.to(device)
+                        logits = model(xb)
+                        loss = criterion(logits, yb)
+                        val_running_loss += loss.item() * xb.size(0)
+                        probs = torch.sigmoid(logits)
+                        preds = (probs >= 0.5).float()
+                        correct += (preds == yb).sum().item()
+                        total += yb.numel()
+                    val_loss = val_running_loss / len(val_loader.dataset) if len(val_loader.dataset) > 0 else float('nan')
+                    val_acc = correct / total if total > 0 else float('nan')
+                    val_losses.append(val_loss)
+                    val_accuracies.append(val_acc)
 
-            print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}', file=logfile)
+                print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
+                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}', file=logfile)
+            else:
+                print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}")
+                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}', file=logfile)
     
     # Appropriating test and excluded sets
     X_test_t = torch.from_numpy(X_test).float().to(device)
     y_test_t = torch.from_numpy(y_test.reshape(-1, 1)).float().to(device)
-    # X_excluded_t = torch.from_numpy(X_excl).float().to(device) if X_excl.size > 0 else None 
-    # y_excluded_t = torch.from_numpy(y_excl.reshape(-1, 1)).float().to(device) if y_excl.size > 0 else None
-
     test_ds = TensorDataset(X_test_t, y_test_t)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
-    #X_excluded_ds = TensorDataset(X_excluded_t, y_excluded_t) if len(X_excl) > 0 else None
-    #X_excluded_loader = DataLoader(X_excluded_ds, batch_size=args.batch_size, shuffle=False) if X_excluded_ds is not None else None
-    #y_excluded_ds = TensorDataset(y_excluded_t) if len(y_excl) > 0 else None
-    #y_excluded_loader = DataLoader(y_excluded_ds, batch_size=args.batch_size, shuffle=False) if y_excluded_ds is not None else None
 
     ### 9. Accuracy and training loss ###
     # Final evaluation on test set: loss + accuracy
@@ -503,40 +566,27 @@ def main():
         print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}', file=logfile)
     
     # Plotting the losses 
-    fig,ax = plt.subplots(1,1, figsize=(9,5))
+    if args.use_val:
+        fig,ax = plt.subplots(1,1, figsize=(9,5))
 
-    ax.plot(range(args.n_epochs*fold), train_losses, label='Train loss', color='#FF8C00', linewidth=2)
-    ax.plot(range(args.n_epochs*fold), val_losses, label='Val loss', color="#D88682", linewidth=2)
-    ax.legend(loc='lower right')
-    ax.set_ylabel('Loss')
+        ax.plot(range(args.n_epochs*fold), train_losses, label='Train loss', color='#FF8C00', linewidth=2)
+        ax.plot(range(args.n_epochs*fold), val_losses, label='Val loss', color="#D88682", linewidth=2)
+        ax.legend(loc='lower right')
+        ax.set_ylabel('Loss')
 
-    ax2 = ax.twinx()
-    ax2.plot(range(args.n_epochs*fold), val_accuracies, label='Val accuracy', c='g', linestyle='--')
-    ax2.set_ylabel('Accuracy')
-    ax2.legend(loc='upper right')
+        ax2 = ax.twinx()
+        ax2.plot(range(args.n_epochs*fold), val_accuracies, label='Val accuracy', c='g', linestyle='--')
+        ax2.set_ylabel('Accuracy')
+        ax2.legend(loc='upper right')
 
-    ax.set_xlabel('Epochs')
-    fig.suptitle(f"Torch MLP Train/Val Loss & Val Accuracy for n{n}, k{k}. Test accuracy: {test_acc:.2f}")
+        ax.set_xlabel('Epochs')
+        fig.suptitle(f"Torch MLP Train/Val Loss & Val Accuracy for n{n}, k{k}. Test accuracy: {test_acc:.2f}")
 
-    outname = 'torchMLP_acc_loss.png'    
-    if args.logging: plt.savefig(outdir+outname)
-    if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Accuracy and train figure saved as: {outdir+outname}', file=logfile)
-
-    # # Eval on excluded set (if toggled and data exists)
-    # if args.exclude_pairs and X_excluded_t is not None:
-    #     model.eval()
-    #     with torch.no_grad():
-    #         excluded_logits = model(X_excluded_t)
-    #         excluded_probs = torch.sigmoid(excluded_logits).cpu().numpy().flatten()
-    #         excluded_preds = (excluded_probs >= 0.5).astype(int)
-
-    #     print(f"\n--- Excluded Pairs Results ---")
-    #     for i in range(len(excluded_preds)):
-    #         # Note: You'll need to track the names of excluded pairs if you want to print them specifically here
-    #         line = f"Excluded pair {i} - prediction: {excluded_preds[i]} (prob: {excluded_probs[i]:.4f}), actual: {y_excl[i]}"
-    #         print(line)
-    #         if args.logging: 
-    #             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
+        outname = 'torchMLP_acc_loss.png'    
+        if args.logging: plt.savefig(outdir+outname)
+        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Accuracy and train figure saved as: {outdir+outname}', file=logfile)
+    else:
+        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} No validation set used, skipping loss and accuracy plotting.', file=logfile) 
 
     ### 10. Model Evaluations ###
     model.eval() # Set the model to evaluation mode
@@ -774,7 +824,7 @@ def main():
 
     # Regain kmer as string, given encoding
     try:
-        fi.regain_kmers_fa(k=k, sourmash=sourmash_used, top_n=10, mapping_func=model_idx_to_kmer,
+        fi.regain_kmers_fa(k=k, sourmash=sourmash_used, top_n=10, mapping_func=h.model_idx_to_kmer,
                             mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash))
         fi.plot_top_kmers(sourmash=sourmash_used, top_n=10)
     except Exception as e:
