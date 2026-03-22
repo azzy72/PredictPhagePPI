@@ -384,3 +384,50 @@ def construct_presence_matrix(phage_dict : dict, bact_dict : dict, TS : bool = F
     if TS: print("Bact binary presence matrix shape (rows, cols):", bact_pres_df.shape)
 
     return phage_pres_df, bact_pres_df
+
+def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : dict, host_range_data : dict, phage_names : list, bacteria_names : list, outfile : str = None) -> [dict, dict]:
+    """
+    Construct a dictionary of interaction pairs given the minhash data for phages and bacteria and the host range data.
+    The dictionary will have keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
+
+    Args:
+        **phage_minhash_data** (dict): dictionary with keys as phage names and values as lists of minhashes.
+        **bact_minhash_data** (dict): dictionary with keys as bacteria strain IDs and values as lists of minhashes.
+        **host_range_data** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
+        **phage_names** (list): list of phage names to consider (should match keys in phage_minhash_data)
+        **bacteria_names** (list): list of bacteria names to consider (should match keys in bact_minhash_data)
+    Returns:
+        **interaction_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
+        **occurence_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the number of occurrences of that pair across all phage-bacteria combinations.
+    """
+    interaction_pairs = dict()
+    occurence_pairs = dict()
+    c = 0
+    for pname in tqdm(phage_names, desc="Phages processed"):
+        for bname in bacteria_names:
+            # Supports nested dict format and tuple-key format
+            interaction_score = host_range_data.get(bname, {}).get(pname, host_range_data.get((bname, pname), 0))
+
+            for pkmer in phage_minhash_data.get(pname, []):
+                for bkmer in bact_minhash_data.get(bname, []):
+                    pair = (pkmer, bkmer)
+                    if pair in interaction_pairs:
+                        interaction_pairs[pair] += interaction_score
+                    else:
+                        interaction_pairs[pair] = interaction_score
+                    occurence_pairs[pair] = occurence_pairs.get(pair, 0) + 1
+
+            c += 1
+    
+    if outfile is not None:
+        try:
+            with open(outfile, "w") as f:
+                f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\n")
+                for pair in interaction_pairs.keys():
+                    f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\n")
+            print(f"Interaction pairs saved to {outfile}")
+        except Exception as e:
+            print(f"Error saving interaction pairs to {outfile}: {e}")
+    
+    print(f"Total phage-bacteria combinations processed: {c}")
+    return interaction_pairs, occurence_pairs
