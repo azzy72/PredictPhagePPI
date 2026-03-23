@@ -610,6 +610,37 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
     
     return top_idx, top_vals, decoded_kmers_dict
 
+def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, logging : bool, outdir: str = None):
+    # Divide interaction score by occurrence count for matching keys
+    interaction_ratio_pairs = {}
+
+    for pair in interaction_pairs.keys() & occurence_pairs.keys():
+        occ = occurence_pairs[pair]
+        interaction_ratio_pairs[pair] = interaction_pairs[pair] / occ if occ != 0 else float("nan")
+
+    # Create DataFrame for plotting
+    pair_df = pd.DataFrame({
+        "Bacterium": [pair[0] for pair in interaction_ratio_pairs.keys()],
+        "Phage": [pair[1] for pair in interaction_ratio_pairs.keys()],
+        "Interaction_Ratio": list(interaction_ratio_pairs.values())
+    })
+
+    pair_no_zero_df = pair_df[pair_df["Interaction_Ratio"] > 0]
+    print(f"Pairs with non-zero interaction ratio: {len(pair_no_zero_df)}")
+    print(pair_no_zero_df.head())
+
+    # Plotting
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(pair_no_zero_df.pivot_table(index="Bacterium", columns="Phage", values="Interaction_Ratio", fill_value=0), cmap="viridis", cbar_kws={"label": "Interaction Ratio"})
+    plt.title("Interaction Ratio of Bacterium-Phage Pairs")
+    plt.xlabel("Bacterium")
+    plt.ylabel("Phage")
+    plt.xticks(rotation=90)
+    plt.tight_layout()
+    if logging: 
+        plt.savefig(outdir + 'interaction_pairs.png')
+    plt.show()
+
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
         self.raw_data_path = raw_data_path

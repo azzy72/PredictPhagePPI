@@ -403,7 +403,8 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
     interaction_pairs = dict()
     occurence_pairs = dict()
     c = 0
-    for pname in tqdm(phage_names, desc="Phages processed"):
+    total_combinations = len(phage_names) * len(bacteria_names)
+    for pname in phage_names:
         for bname in bacteria_names:
             # Supports nested dict format and tuple-key format
             interaction_score = host_range_data.get(bname, {}).get(pname, host_range_data.get((bname, pname), 0))
@@ -418,6 +419,7 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
                     occurence_pairs[pair] = occurence_pairs.get(pair, 0) + 1
 
             c += 1
+            print(f"Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
     
     if outfile is not None:
         try:

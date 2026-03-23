@@ -26,8 +26,8 @@ from imblearn.over_sampling import SMOTE
 # Custom imports
 from io_operations import presence_matrix, obtain_idx_to_entity_mapping, call_hostrange_df, color_sheet_from_matrix
 from paths import raw_data_path, data_prod_path, path_to_nn_runs
-from manipulations import hostrange_df_to_dict, binarize_host_range
-from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, FeatureImportance, GeneAnalysis
+from manipulations import hostrange_df_to_dict, binarize_host_range, construct_interaction_pairs
+from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, plot_interaction_pairs, FeatureImportance, GeneAnalysis
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="FFNN Training Script")
@@ -58,6 +58,7 @@ def parse_arguments():
     parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
     parser.add_argument("--perform_ga", action="store_true", help="Perform gene analysis on top features")
     parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
+    parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
 
     # Exclusions
     parser.add_argument("--exclude_noninteractions", action="store_true", help="Exclude non-interacting pairs")
@@ -873,6 +874,46 @@ def main():
             print(f"Error during GeneAnalysis: {e}")
             traceback.print_exc()
     
+    ### Investigating Pairs ###
+    try:
+        #load the interaction data if it's already been saved
+        with open(data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt", "r") as f:
+            interaction_pairs = {}
+            occurence_pairs = {}
+            for line in f:
+                parts = line.strip().split("\t")
+                if len(parts) == 3:
+                    pair, iscore, oscore = parts
+                    interaction_pairs[pair] = float(iscore)
+                    occurence_pairs[pair] = float(oscore)
+
+    except FileNotFoundError:
+        interaction_pairs, occurence_pairs = construct_interaction_pairs(phage_minhash_data, bact_minhash_data, host_range_data, phage_names, bacteria_names, outfile = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt")
+        if args.logging: 
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {outdir+"interaction_pairs.txt"}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total interacting pairs found: {len(interaction_pairs)}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total pairs with shared k-mers: {len(occurence_pairs)}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample of interaction pairs:', file=logfile)
+            max_c = 10
+            for i, (pair, iscore) in enumerate(interaction_pairs.items()):
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Interaction Score = {iscore}', file=logfile)
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Occurrence Score = {occurence_pairs.get(pair, "N/A")}', file=logfile)
+                if i >= max_c - 1:
+                    break
+            # for line in interaction_pairs[:10]:
+            #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
+            # print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample of occurrence pairs:', file=logfile)
+            # for line in occurence_pairs[:10]:
+            #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
+
+    plot_interaction_pairs(interaction_pairs, occurence_pairs, logging=args.logging, outdir=outdir)
+
+    ### Optional: Save the trained model for future use ###
+    if args.save_model:
+        model_save_path = outdir + "torchMLP_model.pth"
+        torch.save(model.state_dict(), model_save_path)
+        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Trained model saved to {model_save_path}', file=logfile)
+
     ### X. Closing & Terminating ###
     print(f"Process completed in {time() - time_start:.2f} seconds.")
     if logfile: logfile.close()
