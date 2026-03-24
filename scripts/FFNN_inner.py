@@ -880,31 +880,39 @@ def main():
         with open(data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt", "r") as f:
             interaction_pairs = {}
             occurence_pairs = {}
+            next(f, None)  # skip header line
             for line in f:
                 parts = line.strip().split("\t")
-                if len(parts) == 3:
-                    pair, iscore, oscore = parts
-                    interaction_pairs[pair] = float(iscore)
-                    occurence_pairs[pair] = float(oscore)
-
+                if len(parts) == 4:
+                    phage_hash, bact_hash, iscore, oscore = parts
+                    pair = (phage_hash, bact_hash)
+                    try:
+                        interaction_pairs[pair] = float(iscore)
+                        occurence_pairs[pair] = float(oscore)
+                    except ValueError as ve:
+                        print(f"ValueError for line: {line.strip()} - {ve}")
+                        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ValueError for line: {line.strip()} - {ve}', file=logfile)
+                        print(f"Line: {line.strip()}\nparts: {parts}\n")
+                        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Line: {line.strip()} - parts: {parts}', file=logfile)
+        if args.logging:
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded interaction pairs from {data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt"}', file=logfile)
+           
     except FileNotFoundError:
         interaction_pairs, occurence_pairs = construct_interaction_pairs(phage_minhash_data, bact_minhash_data, host_range_data, phage_names, bacteria_names, outfile = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt")
         if args.logging: 
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {outdir+"interaction_pairs.txt"}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total interacting pairs found: {len(interaction_pairs)}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total pairs with shared k-mers: {len(occurence_pairs)}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample of interaction pairs:', file=logfile)
-            max_c = 10
-            for i, (pair, iscore) in enumerate(interaction_pairs.items()):
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Interaction Score = {iscore}', file=logfile)
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Occurrence Score = {occurence_pairs.get(pair, "N/A")}', file=logfile)
-                if i >= max_c - 1:
-                    break
+            
+    if args.logging:
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total interacting pairs found: {len(interaction_pairs)}', file=logfile)
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total pairs with shared k-mers: {len(occurence_pairs)}', file=logfile)
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample of interaction pairs:', file=logfile)
+        max_c = 10
+        for i, (pair, iscore) in enumerate(interaction_pairs.items()):
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Interaction Score = {iscore}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Occurrence Score = {occurence_pairs.get(pair, "N/A")}', file=logfile)
+            if i >= max_c - 1:
+                break
             # for line in interaction_pairs[:10]:
-            #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
-            # print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample of occurrence pairs:', file=logfile)
-            # for line in occurence_pairs[:10]:
-            #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
 
     plot_interaction_pairs(interaction_pairs, occurence_pairs, logging=args.logging, outdir=outdir)
 
