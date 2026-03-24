@@ -1060,7 +1060,7 @@ class GeneAnalysis():
                 if "Top 10 decoded kmers:" in line:
                     return self._clean_kmer_line(line)
 
-    def search_and_annotate_kmers(self, kmer_list, summarise_by: str = None, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt", expect:int = 10):
+    def search_and_annotate_kmers(self, kmer_list, summarise_by: str = None, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt", expect:int = 100):
         """
         Blasts each of the kmers against NCBI, for related species (accessions), then searches its genes for the kmer along with possible functionalities.
         
@@ -1181,12 +1181,18 @@ class GeneAnalysis():
 
         except Exception as e:
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: BLAST search failed: {e}', file=self.logfile)
+            return None
+
+        try:  # Try to convert results to DataFrame and save raw results to CSV for record-keeping
+            results_df = pd.DataFrame(results)
+            results_df.to_csv(outfile, index=False)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [INFO]: Results saved to {outfile}', file=self.logfile)
+        except Exception as e:
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: Failed to save results to CSV: {e}', file=self.logfile)
+            return None
 
         try:    
-            results_df = pd.DataFrame(results)
-            if summarise_by is None:
-                pass
-            elif summarise_by == "gene":
+            if summarise_by == "gene":
                 # Group by Kmer and find the most common gene
                 results_df = results_df.groupby('Kmer')['Gene'].agg(lambda x: x.value_counts().idxmax()).reset_index()
             elif summarise_by == "function":

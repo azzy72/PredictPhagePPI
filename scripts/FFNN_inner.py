@@ -851,7 +851,7 @@ def main():
                 idx_to_minhash=idx_to_minhash,
                 mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
                 logging=args.logging, logfile=logfile)
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers: {all_kmers_decoded}', file=logfile)
+            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers (subset): {[all_kmers_decoded[i] for i in range(5)]}', file=logfile)
             kmers_entity_df = pd.DataFrame([
                 {
                     "feature_index": idx,
@@ -877,12 +877,19 @@ def main():
             
             print("Phage_df - Started k-mer annotation with GeneAnalysis...")
             ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, summarise_by="function", tax_origin="txid38018[orgn]") # Phage first
-            sleep(10) #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
-            print("Bact_df - Started k-mer annotation with GeneAnalysis...")
-            ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, GA.search_and_annotate_kmers(bact_kmers_decoded_df, summarise_by="function", tax_origin="txid91347[orgn]", ncbi_db="refseq_select_nucleotide")], ignore_index=True) # Bact second
-            ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
-
+            if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
+                number_of_blast_res_before = len(ncbi_blast_res_df)
+                sleep(10) #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
+                print("Bact_df - Started k-mer annotation with GeneAnalysis...")
+                ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, GA.search_and_annotate_kmers(bact_kmers_decoded_df, summarise_by="function", tax_origin="txid91347[orgn]", ncbi_db="refseq_select_nucleotide")], ignore_index=True) # Bact second
+                if len(ncbi_blast_res_df) > number_of_blast_res_before and ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
+                    ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
+                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
+                else:
+                    raise ValueError("No BLAST results were obtained for either phage or bacterial k-mers. Please check the input data and BLAST parameters.")
+            else:
+                raise ValueError("No BLAST results were obtained for phage k-mers. Please check the input data and BLAST parameters.")
+            
         except Exception as e:
             print(f"Error during GeneAnalysis: {e}")
             traceback.print_exc()
