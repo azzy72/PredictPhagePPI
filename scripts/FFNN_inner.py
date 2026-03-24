@@ -940,14 +940,14 @@ def main():
         top_kmers_df = None
         try:
             top_indices = [idx for idx, mh in filtered_idx_to_minhash.items()]
-            top_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=50, 
+            top_idx, top_vals, top_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=50, 
                 idx_to_minhash=filtered_idx_to_minhash,
                 mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
                 logging=args.logging, logfile=logfile)
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers for top interaction pairs: {top_kmers_decoded}', file=logfile)
+            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers for top interaction pairs: {list(top_kmers_decoded.values())}', file=logfile)
             top_kmers_df = pd.DataFrame({
-                "feature_index": top_indices,
-                "decoded_kmer": top_kmers_decoded
+                "feature_index": list(top_kmers_decoded.keys()),
+                "decoded_kmer": list(top_kmers_decoded.values())
             })
             top_kmers_df.to_csv(outdir+"top_interaction_pair_kmers.csv", index=False)
             if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved decoded k-mers for top interaction pairs to {outdir+"top_interaction_pair_kmers.csv"}', file=logfile)
