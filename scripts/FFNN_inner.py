@@ -56,6 +56,7 @@ def parse_arguments():
     parser.add_argument("--no_randomize", action="store_false", dest="randomize", help="Disable entity randomization")
     parser.add_argument("--no_shuffle", action="store_false", dest="shuffle", help="Disable feature shuffling")
     parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
+    parser.add_argument("--perform_fi", action="store_true", help="Perform feature importance analysis")
     parser.add_argument("--perform_ga", action="store_true", help="Perform gene analysis on top features")
     parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
     parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
@@ -819,25 +820,26 @@ def main():
         )
 
     ### Feature Importance ###
-    fi = FeatureImportance(model, outdir, metadata_test, id_lookup_bact, host_range_data, 
-                            raw_data_path, data_prod_path, TS = True, logging = args.logging, logfile=logfile)
-    fi.compute_importance(X_test_t, target=0, delta=True)
-    fi.plot_attributions()
-    fi.plot_PCA(color_samples_by="bacteria")
-    fi.plot_PCA(color_samples_by="phage")
-    fi.plot_PCA(color_samples_by="interaction")
+    if args.perform_fi:
+        fi = FeatureImportance(model, outdir, metadata_test, id_lookup_bact, host_range_data, 
+                                raw_data_path, data_prod_path, TS = True, logging = args.logging, logfile=logfile)
+        fi.compute_importance(X_test_t, target=0, delta=True)
+        fi.plot_attributions()
+        fi.plot_PCA(color_samples_by="bacteria")
+        fi.plot_PCA(color_samples_by="phage")
+        fi.plot_PCA(color_samples_by="interaction")
 
-    # Do the attributions concur across samples?
-    fi.plot_attributions_PCA_clusters() 
+        # Do the attributions concur across samples?
+        fi.plot_attributions_PCA_clusters() 
 
-    # Regain kmer as string, given encoding
-    try:
-        fi.regain_kmers_fa(k=k, sourmash=sourmash_used, top_n=10, mapping_func=h.model_idx_to_kmer,
-                            mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash))
-        fi.plot_top_kmers(sourmash=sourmash_used, top_n=10)
-    except Exception as e:
-        print(f"Error during k-mer regaining: {e}")
-        traceback.print_exc()
+        # Regain kmer as string, given encoding
+        try:
+            fi.regain_kmers_fa(k=k, sourmash=sourmash_used, top_n=10, mapping_func=h.model_idx_to_kmer,
+                                mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash))
+            fi.plot_top_kmers(sourmash=sourmash_used, top_n=10)
+        except Exception as e:
+            print(f"Error during k-mer regaining: {e}")
+            traceback.print_exc()
     
     ### Gene Annotation of Kmers ###
     if args.perform_ga:

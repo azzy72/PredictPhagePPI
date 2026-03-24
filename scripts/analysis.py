@@ -663,6 +663,7 @@ class FeatureImportance():
         
         else:
             self.outdir = outdir
+            
     def compute_importance(self, input_tensor, target, delta : bool = False):
         """
         Computes feature importance attributions using Integrated Gradients for a given input tensor and target class. If delta is True, also computes the convergence delta to assess attribution completeness.
