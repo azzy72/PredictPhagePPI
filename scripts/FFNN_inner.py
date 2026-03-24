@@ -864,7 +864,6 @@ def main():
 
         except Exception as e:
             print(f"Error during k-mer regaining for annotation: {e}")
-            traceback.print_exc()
 
         try:
             GA = GeneAnalysis(logfile=logfile, logging=args.logging)
@@ -885,7 +884,6 @@ def main():
 
         except Exception as e:
             print(f"Error during GeneAnalysis: {e}")
-            traceback.print_exc()
     
     ### Investigating Pairs ###
     if args.perform_pfi:
@@ -929,6 +927,47 @@ def main():
                 # for line in interaction_pairs[:10]:
 
         plot_interaction_pairs(interaction_pairs, occurence_pairs, logging=args.logging, outdir=outdir)
+
+        # Filter idx_to_minhash to only include the top X interaction pairs
+        top_pairs = sorted(interaction_pairs.items(), key=lambda x: x[1], reverse=True)[:50] # Get top 50 pairs by interaction score
+        top_minhashes = set()
+        for (phage_hash, bact_hash), score in top_pairs:
+            top_minhashes.add(phage_hash)
+            top_minhashes.add(bact_hash)
+        filtered_idx_to_minhash = {idx: mh for idx, mh in idx_to_minhash.items() if mh in top_minhashes}
+
+        # Regain k-mers for the top interaction pairs
+        top_kmers_df = None
+        try:
+            top_indices = [idx for idx, mh in filtered_idx_to_minhash.items()]
+            top_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=50, 
+                idx_to_minhash=filtered_idx_to_minhash,
+                mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
+                logging=args.logging, logfile=logfile)
+            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers for top interaction pairs: {top_kmers_decoded}', file=logfile)
+            top_kmers_df = pd.DataFrame({
+                "feature_index": top_indices,
+                "decoded_kmer": top_kmers_decoded
+            })
+            top_kmers_df.to_csv(outdir+"top_interaction_pair_kmers.csv", index=False)
+            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved decoded k-mers for top interaction pairs to {outdir+"top_interaction_pair_kmers.csv"}', file=logfile)
+        except Exception as e:
+            print(f"Error during k-mer regaining for top interaction pairs: {e}")
+        
+        #Plot the top k-mers for interaction pairs
+        if top_kmers_df is not None:
+            plt.figure(figsize=(10, 6))
+            sns.barplot(x='feature_index', y='decoded_kmer', data=top_kmers_df.head(20), palette='viridis')
+            plt.title('Top k-mers for Interaction Pairs')
+            plt.xlabel('Feature Index')
+            plt.ylabel('Decoded k-mer')
+            plt.xticks(rotation=45)
+            outname = 'top_interaction_pair_kmers.png'
+            if args.logging: 
+                plt.tight_layout()
+                plt.savefig(outdir + outname)
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved plot of top k-mers for interaction pairs to {outdir + outname}', file=logfile)
+            
 
     ### Optional: Save the trained model for future use ###
     if args.save_model:
