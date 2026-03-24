@@ -26,7 +26,8 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.metrics import precision_score, recall_score, f1_score, classification_report, precision_recall_curve, average_precision_score, confusion_matrix
-from time import time
+from time import time, sleep
+from datetime import datetime
 from datetime import datetime
 import networkx as nx
 from matplotlib.colors import Normalize
@@ -35,6 +36,7 @@ from captum import attr
 from captum.attr import IntegratedGradients
 from decompositions import KmerCodec
 from paths import raw_data_path, data_prod_path
+
 
 def perform_pca(data: pd.DataFrame, n_components=2):
     """
@@ -192,7 +194,7 @@ def pca_biplot(score = None, coeff = None, PCA = None, data : pd.DataFrame = Non
     plt.grid(True, linestyle='--')
     plt.axhline(0, color='gray', linewidth=0.5, linestyle='-')
     plt.axvline(0, color='gray', linewidth=0.5, linestyle='-')
-    plt.show()
+    ##plt.show()
 
 def plot_roc_curve_rf(rf, x_test, y_test, title=None, save=None):
     y_pred_prob = rf.predict_proba(x_test)[:, 1]
@@ -239,7 +241,7 @@ def plot_residuals(x_vals, y_vals, tile=None):
     plt.ylabel('Residuals ($y - \hat{y}$)')
     plt.grid(True, linestyle=':', alpha=0.6)
 
-    plt.show()
+    ##plt.show()
 
 def plot_losses(train_losses, valid_losses, n_epochs, title=None):
     # Plotting the losses 
@@ -339,8 +341,8 @@ def f1_analysis(y_true, y_probs, logging : bool, outdir = None, logfile = None, 
         plt.savefig(outdir + outname, bbox_inches='tight')
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} F1 analysis figure saved as: {outdir+outname}', file=logfile)
 
-    if silent is False:
-        plt.show()
+    # if silent is False:
+    #     plt.show()
 
 def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging : bool, outdir: str = None,):
     """
@@ -399,7 +401,7 @@ def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging : bool, out
         else:
             plt.savefig(outdir + 'bacterium_tp_counts.png')
     
-    plt.show()
+    ##plt.show()
 
 def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, logging : bool, outdir: str = None, limit: int = 50, conf_threshold=0.5):
     """
@@ -544,7 +546,7 @@ def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, loggi
     plt.axis('off')
     plt.tight_layout()
     if logging: plt.savefig(outdir + f'bipartisan_conf_interactions_p{conf_threshold}.png') 
-    plt.show()
+    ###plt.show()
 
 def model_idx_to_kmer(idx, num_features_per_entity, feature_indices, idx_to_minhash):
     """
@@ -580,19 +582,18 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
         topk = torch.topk(abs_avg, k_count)
         top_idx = topk.indices.cpu().numpy()
         top_vals = avg_attr[top_idx].cpu().numpy()
+        if TS: 
+            print(f"Top {top_n} indices:", top_idx)
+            print("Mean attributions:", top_vals)
+        if logging and logfile: 
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top {top_n} indices: {top_idx}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Mean attributions: {top_vals}', file=logfile)
 
     # 2. Setup mapping
     if mapping_func is None:
         if mapping_args is None:
             raise ValueError("If no mapping_func is provided, mapping_args must be provided.")
         mapping_func = model_idx_to_kmer
-
-    if TS: 
-        print(f"Top {top_n} indices:", top_idx)
-        print("Mean attributions:", top_vals)
-    if logging and logfile: 
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top {top_n} indices: {top_idx}', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Mean attributions: {top_vals}', file=logfile)
 
     # 3. Decode
     decoded_kmers_dict = {}  # Changed from list to dict
@@ -602,11 +603,14 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
         kmer_hash_val = mapping_func(idx, *mapping_args)
         decoded_kmers_dict[int(idx)] = codec.decode(kmer_hash_val, k=k)
     
-    if TS: 
-        print("Decoded kmers mapping:", decoded_kmers_dict)
-    
-    if logging and logfile: 
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Decoded kmers: {decoded_kmers_dict}', file=logfile)
+    if idx_to_minhash is not None:
+        pass
+    else:
+        if TS: 
+            print("Decoded kmers mapping:", decoded_kmers_dict)
+        
+        if logging and logfile: 
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Decoded kmers: {decoded_kmers_dict}', file=logfile)
     
     return top_idx, top_vals, decoded_kmers_dict
 
@@ -639,7 +643,7 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, loggi
     plt.tight_layout()
     if logging: 
         plt.savefig(outdir + 'interaction_pairs.png')
-    plt.show()
+    ###plt.show()
 
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
@@ -663,7 +667,7 @@ class FeatureImportance():
         
         else:
             self.outdir = outdir
-            
+
     def compute_importance(self, input_tensor, target, delta : bool = False):
         """
         Computes feature importance attributions using Integrated Gradients for a given input tensor and target class. If delta is True, also computes the convergence delta to assess attribution completeness.
@@ -705,7 +709,7 @@ class FeatureImportance():
         plt.xlim([-1, top_n])
         plt.tight_layout()
         if self.logging: plt.savefig(self.outdir + outname)
-        plt.show()
+        ##plt.show()
     
     def plot_attributions(self):
         """
@@ -725,7 +729,7 @@ class FeatureImportance():
         plt.title('Average Feature Attributions for Test Samples')
         plt.legend()
         if self.logging: plt.savefig(self.outdir+outname)
-        plt.show()
+        ##plt.show()
 
     def _prep_PCA(self):
         """Prepares the feature importance attributions for PCA analysis by converting them to a numpy array, extracting labels for coloring, and performing PCA to compute the scores and loadings."""
@@ -883,7 +887,7 @@ class FeatureImportance():
         if self.logging: 
             outname = 'cluster_span_attr_bcolor.png'
             plt.savefig(self.outdir+outname)
-        plt.show()
+        ##plt.show()
     
     def regain_kmers_fa(self, k : int, sourmash : bool, top_n : int = 20, idx_to_minhash : dict = None, mapping_func=None, mapping_args=None):
         """
@@ -926,7 +930,7 @@ class FeatureImportance():
             if self.logging: 
                 outname = f'top10_{self.k}mer_attr.png'
                 plt.savefig(self.outdir+outname)
-            plt.show()
+            ##plt.show()
         
         else:
             print("Sourmash-based model does not support k-mer decoding or plotting.")
@@ -968,7 +972,7 @@ class FeatureImportance():
             plt.savefig(self.outdir + "shap_first_wf.png", bbox_inches='tight')
             print(f"SHAP first sample waterfall saved to {self.outdir}")
         
-        plt.show()
+        ##plt.show()
 
         ###### 2. Visualization: Global importance ######
         # Manually create shap explanation with metadata, for plotting
@@ -986,7 +990,7 @@ class FeatureImportance():
             plt.savefig(self.outdir + "shap_glob_attr.png", bbox_inches='tight')
             print(f"SHAP Global Attributions saved to {self.outdir}")
         
-        plt.show()
+        ##plt.show()
 
 class GeneAnalysis():
     def __init__(self, logfile, logging : bool):
@@ -996,11 +1000,43 @@ class GeneAnalysis():
         self.path_to_nn_runs = os.path.join(self.root, "nn_runs/")
         self.logfile = logfile
         self.logging = logging
+
+        # Load kmer annotations from CSV into a dictionary for quick lookup
+        self.local_kmer_db = self.data_prod_path + "kmer_annotations.csv"
     
     def _clean_kmer_line(self, kmer_line):
         """Clean the line containing kmers, from a messy string with noise, to a list with only decoded kmers"""
         kmers_string = kmer_line.split(":")[-1].strip()
         return kmers_string.strip("[]").replace("'", "").split(", ")
+
+    def _load_kmer_annotations(self, kmer_list):
+        """
+        Performs a lookup in the CSV file containing the annotations for all kmers from previous runs, and returns a dataframe with existing kmer and their annotations. This allows for quick retrieval of functional information for any given kmer.
+        Args:
+            kmer_list (list): A list of k-mer sequences for which to try to retrieve annotations.
+        Returns:
+            pd.DataFrame: A dataframe containing the kmer sequences and their annotated functions.
+        """
+        try:
+            kmer_annot_df = pd.read_csv(self.local_kmer_db)            
+            # Filter df to only include kmers from kmer_list (case-insensitive)
+            kmer_annot_df = kmer_annot_df[kmer_annot_df['kmer'].isin(kmer_list)]
+        
+            # Check for missing kmers
+            found_kmers_lower = set(kmer_annot_df['kmer'])
+            missing_kmers = set(kmer_list) - found_kmers_lower
+            
+            if missing_kmers and self.logging:
+                print(f"Note: {len(missing_kmers)} kmers not found in annotation database")
+                print(f"Missing kmers: {missing_kmers}")
+        
+        except FileNotFoundError:
+            print(f"Annotation file {self.local_kmer_db} not found. Kmer annotations will be unavailable.")
+        
+        except Exception as e:
+            print(f"Error loading kmer annotations: {e}")
+
+        return kmer_annot_df
 
     def extract_kmer_list(self, file_path):
         """
@@ -1024,7 +1060,7 @@ class GeneAnalysis():
                 if "Top 10 decoded kmers:" in line:
                     return self._clean_kmer_line(line)
 
-    def search_and_annotate_kmers(self, kmer_list, summarise_by: str = None, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt", expect:int = 100):
+    def search_and_annotate_kmers(self, kmer_list, summarise_by: str = None, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt", expect:int = 10):
         """
         Blasts each of the kmers against NCBI, for related species (accessions), then searches its genes for the kmer along with possible functionalities.
         
@@ -1066,18 +1102,22 @@ class GeneAnalysis():
                 database=ncbi_db, 
                 sequence=fasta_query,
                 entrez_query=tax_origin,
-                word_size=7,
-                expect=1000,
+                word_size=10,
+                expect=expect,
                 short_query=True,
                 hitlist_size=acc_num
             )
-            
+        except Exception as e:
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: BLAST search failed: {e}', file=self.logfile)
+            return pd.DataFrame() # Return empty DataFrame on failure
+        
+        try:
             #Read fully to check for completion
             blast_results_raw = result_handle.read()
             result_handle.close()
 
             if "</BlastOutput>" not in blast_results_raw:
-                print("ERROR: NCBI returned incomplete XML (truncated). Try a smaller kmer batch." )
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ERROR: NCBI returned incomplete XML (truncated). Try a smaller kmer batch.', file=self.logfile)
                 return pd.DataFrame() # Or handle as needed
 
             from io import StringIO
@@ -1092,7 +1132,7 @@ class GeneAnalysis():
                 #print(f"\n--- Results for Kmer: {kmer_seq} ---")
                 
                 if not record.alignments:
-                    print("No significant hits found." )
+                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} No significant hits found.', file=self.logfile)
                     continue
                 
                 output = []
@@ -1107,7 +1147,7 @@ class GeneAnalysis():
                     # We use a try-block for Entrez in case one specific ID fails
                     try:
                         # 4. FETCH: Use small sleep to avoid 429 Too Many Requests
-                        #time.sleep(0.5) 
+                        sleep(0.5) 
                         handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", retmode="text")
                         genbank_rec = SeqIO.read(handle, "genbank")
                         handle.close()
@@ -1134,13 +1174,13 @@ class GeneAnalysis():
                             
                     except Exception as e:
                         #output.append(f"  [ERROR] Could not fetch details for {accession}: {e}")
-                        print(f"  [ERROR] Could not fetch details for {accession}: {e}" )
+                        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR] Could not fetch details for {accession}: {e}', file=self.logfile)
                         results_inner.append({"Kmer": kmer_seq, "Gene": "Error Fetching", "Function": "Error Fetching"})
 
                 results.extend(results_inner)
 
         except Exception as e:
-            print(f"BLAST search failed: {e}" )        
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: BLAST search failed: {e}', file=self.logfile)
 
         try:    
             results_df = pd.DataFrame(results)
@@ -1153,7 +1193,7 @@ class GeneAnalysis():
                 # Group by Kmer and find the most common function
                 results_df = results_df.groupby('Kmer')['Function'].agg(lambda x: x.value_counts().idxmax()).reset_index()
         except Exception as e:
-            print(f"Error during summarization: {e}" )
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: Error during summarization: {e}', file=self.logfile)
 
         return results_df
 

@@ -14,7 +14,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-from time import time
+from time import time, sleep
 from datetime import datetime
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.preprocessing import StandardScaler
@@ -57,7 +57,9 @@ def parse_arguments():
     parser.add_argument("--no_shuffle", action="store_false", dest="shuffle", help="Disable feature shuffling")
     parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
     parser.add_argument("--perform_fi", action="store_true", help="Perform feature importance analysis")
+    parser.add_argument("--perform_pfi", action="store_true", help="Perform pairwise feature importance analysis")
     parser.add_argument("--perform_ga", action="store_true", help="Perform gene analysis on top features")
+    parser.add_argument("--reconstruct_gene_annotation", action="store_true", help="Reconstruct gene annotations from GeneAnalysis, rather than loading them from a file from a previous run.")
     parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
     parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
 
@@ -225,6 +227,7 @@ def main():
         os.makedirs(outdir, exist_ok=True)
         logfile = open(os.path.join(outdir, f'log_run{run}.txt'), 'w')
         logfile.write(f'Run started: {datetime.now()}\nParams: {vars(args)}\n')
+        print("Logging enabled. Output directory created at:", outdir)
 
     ### 6. Feature Preparation ###
     X, y, X_excl, y_excl, rows_meta = [], [], [], [], []
@@ -867,56 +870,65 @@ def main():
             GA = GeneAnalysis(logfile=logfile, logging=args.logging)
             phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
             bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
-
-            ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, summarise_by="function", tax_origin="txid38018[orgn]", expect=10) # Phage first
-            ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, GA.search_and_annotate_kmers(bact_kmers_decoded_df, summarise_by="function", tax_origin="txid91347[orgn]", expect=10)], ignore_index=True) # Bact second
+            
+            #limit dfs to 10 for testing purposes
+            phage_kmers_decoded_df = phage_kmers_decoded_df.head(10)
+            bact_kmers_decoded_df = bact_kmers_decoded_df.head(10)
+            
+            print("Phage_df - Started k-mer annotation with GeneAnalysis...")
+            ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, summarise_by="function", tax_origin="txid38018[orgn]") # Phage first
+            sleep(10) #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
+            print("Bact_df - Started k-mer annotation with GeneAnalysis...")
+            ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, GA.search_and_annotate_kmers(bact_kmers_decoded_df, summarise_by="function", tax_origin="txid91347[orgn]", ncbi_db="refseq_select_nucleotide")], ignore_index=True) # Bact second
             ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
 
         except Exception as e:
             print(f"Error during GeneAnalysis: {e}")
             traceback.print_exc()
     
     ### Investigating Pairs ###
-    try:
-        #load the interaction data if it's already been saved
-        with open(data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt", "r") as f:
-            interaction_pairs = {}
-            occurence_pairs = {}
-            next(f, None)  # skip header line
-            for line in f:
-                parts = line.strip().split("\t")
-                if len(parts) == 4:
-                    phage_hash, bact_hash, iscore, oscore = parts
-                    pair = (phage_hash, bact_hash)
-                    try:
-                        interaction_pairs[pair] = float(iscore)
-                        occurence_pairs[pair] = float(oscore)
-                    except ValueError as ve:
-                        print(f"ValueError for line: {line.strip()} - {ve}")
-                        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ValueError for line: {line.strip()} - {ve}', file=logfile)
-                        print(f"Line: {line.strip()}\nparts: {parts}\n")
-                        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Line: {line.strip()} - parts: {parts}', file=logfile)
-        if args.logging:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded interaction pairs from {data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt"}', file=logfile)
-           
-    except FileNotFoundError:
-        interaction_pairs, occurence_pairs = construct_interaction_pairs(phage_minhash_data, bact_minhash_data, host_range_data, phage_names, bacteria_names, outfile = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt")
-        if args.logging: 
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {outdir+"interaction_pairs.txt"}', file=logfile)
+    if args.perform_pfi:
+        try:
+            #load the interaction data if it's already been saved
+            with open(data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt", "r") as f:
+                interaction_pairs = {}
+                occurence_pairs = {}
+                next(f, None)  # skip header line
+                for line in f:
+                    parts = line.strip().split("\t")
+                    if len(parts) == 4:
+                        phage_hash, bact_hash, iscore, oscore = parts
+                        pair = (phage_hash, bact_hash)
+                        try:
+                            interaction_pairs[pair] = float(iscore)
+                            occurence_pairs[pair] = float(oscore)
+                        except ValueError as ve:
+                            print(f"ValueError for line: {line.strip()} - {ve}")
+                            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ValueError for line: {line.strip()} - {ve}', file=logfile)
+                            print(f"Line: {line.strip()}\nparts: {parts}\n")
+                            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Line: {line.strip()} - parts: {parts}', file=logfile)
+            if args.logging:
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded interaction pairs from {data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt"}', file=logfile)
             
-    if args.logging:
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total interacting pairs found: {len(interaction_pairs)}', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total pairs with shared k-mers: {len(occurence_pairs)}', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample of interaction pairs:', file=logfile)
-        max_c = 10
-        for i, (pair, iscore) in enumerate(interaction_pairs.items()):
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Interaction Score = {iscore}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Occurrence Score = {occurence_pairs.get(pair, "N/A")}', file=logfile)
-            if i >= max_c - 1:
-                break
-            # for line in interaction_pairs[:10]:
+        except FileNotFoundError:
+            interaction_pairs, occurence_pairs = construct_interaction_pairs(phage_minhash_data, bact_minhash_data, host_range_data, phage_names, bacteria_names, outfile = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt")
+            if args.logging: 
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {outdir+"interaction_pairs.txt"}', file=logfile)
+                
+        if args.logging:
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total interacting pairs found: {len(interaction_pairs)}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total pairs with shared k-mers: {len(occurence_pairs)}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample of interaction pairs:', file=logfile)
+            max_c = 10
+            for i, (pair, iscore) in enumerate(interaction_pairs.items()):
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Interaction Score = {iscore}', file=logfile)
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Occurrence Score = {occurence_pairs.get(pair, "N/A")}', file=logfile)
+                if i >= max_c - 1:
+                    break
+                # for line in interaction_pairs[:10]:
 
-    plot_interaction_pairs(interaction_pairs, occurence_pairs, logging=args.logging, outdir=outdir)
+        plot_interaction_pairs(interaction_pairs, occurence_pairs, logging=args.logging, outdir=outdir)
 
     ### Optional: Save the trained model for future use ###
     if args.save_model:
