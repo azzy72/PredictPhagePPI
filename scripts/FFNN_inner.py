@@ -71,7 +71,7 @@ def parse_arguments():
     parser.add_argument("--exclude_clusters", action="store_true", help="Exclude all pairs involving bacteria in the specified clusters, requires --exclude_bact_clusters and --exclude_phage_clusters")
     parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="List of bacterial clusters to exclude")
     parser.add_argument("--exclude_phage_clusters", nargs='+', default=[], help="List of phage clusters to exclude")
-    parser.add_argument("--test_on_excluded", action="store_true", help="Test the model on the excluded pairs and not a test split from the main dataset")
+    parser.add_argument("--test_on_excluded", action="store_true", help="Test the model on the excluded pairs/clusters and not a test split from the main dataset")
 
     # Hyperparameters
     parser.add_argument("--n_epochs", type=int, default=50)
@@ -272,7 +272,8 @@ def main():
             
         for phage in phage_names:
             if phage not in host_range_data.get(bact, {}): continue
-
+            
+            # Get features and metadata for this pair
             score = host_range_data[bact][phage]
             if args.entity_order == "bact_first":
                 features = np.concatenate((binary_matrix[entity_to_index[bact]], 
@@ -288,11 +289,13 @@ def main():
             else:
                 raise ValueError("Invalid entity_order argument. Must be 'bact_first' or 'phage_first'.")
 
+            # Logging
             if args.logging and not feature_flag:
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample feature vector for pair ({bact}, {phage}) with score: {score}', file=logfile)
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - Number of features: {len(features.tolist())}', file=logfile)
                 feature_flag = True
 
+            # Decide what to do with this pair based on exclusion criteria
             if args.exclude_pairs and (bact in args.exclude_bacts or phage in args.exclude_phages):
                 X_excl.append(features)
                 y_excl.append(score)    
@@ -300,6 +303,14 @@ def main():
                 cidx += 1
                 continue
 
+            if args.exclude_clusters and ((bact in bact_clusters.index and str(bact_clusters.loc[bact, 'Cluster']) in args.exclude_bact_clusters) or (phage in args.exclude_phage_clusters)):
+                X_excl.append(features)
+                y_excl.append(score)    
+                X_excl_idx.append(cidx)
+                cidx += 1
+                continue
+            
+            # If it passes exclusion criteria, add to main dataset
             X.append(features)
             y.append(score)
             X_idx.append(cidx)
@@ -313,7 +324,7 @@ def main():
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X)} times {len(X[0])} total features for interacting pairs:', file=logfile)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X)} x {len(X[0])} = {X.shape}', file=logfile)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} cidx: {cidx}', file=logfile)
-        if args.exclude_pairs:
+        if args.exclude_pairs or args.exclude_clusters:
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Excluded {len(X_excl)} pairs based on --exclude_bacts and --exclude_phages lists.', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X_excl)} times {len(X_excl[0])} total non-unique features:', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X_excl)} represen', file=logfile)
@@ -829,6 +840,8 @@ def main():
             input_excel=raw_data_path + "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx",
             sheet1_name="sum_hostrange",
             prediction_matrix_df=pred_matrix,
+            excluded_bacteria=args.exclude_bact_clusters,
+            excluded_phages=args.exclude_phage_clusters,
             output_excel=outdir + "hostrange_colored.xlsx", 
             TS=True
         )

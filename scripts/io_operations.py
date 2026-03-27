@@ -247,11 +247,14 @@ def color_sheet_from_matrix(
         sheet1_name: str,
         prediction_matrix_df: pd.DataFrame,
         output_excel: str = "colored_output.xlsx",
+        excluded_bacteria : list = None,
+        excluded_phages : list = None,
         TS: bool = False
     ):
     """
     Reads an Excel file, colors Sheet1 based on the corresponding values
     in torchMLP_prediction_matrix, and writes a new Excel file.
+    Optionally highlights excluded bacteria/phage names in row/column labels.
     Assumptions:
     - Colors Sheet1 (F3:AB112) based on values in prediction matrix.
     - Sheet1 column names come from F2:AB2.
@@ -300,6 +303,11 @@ def color_sheet_from_matrix(
     # ---- Colors ----
     fill_1 = PatternFill(start_color="FFCCFFCC", end_color="FFCCFFCC", fill_type="solid")  # light green
     fill_0 = PatternFill(start_color="FFFFCCCC", end_color="FFFFCCCC", fill_type="solid")  # light red
+    excluded_bact_fill = PatternFill(start_color="FFFFF2CC", end_color="FFFFF2CC", fill_type="solid")  # light yellow
+    excluded_phage_fill = PatternFill(start_color="FFD9E1F2", end_color="FFD9E1F2", fill_type="solid")  # light blue
+
+    excluded_bacteria_set = {str(x).strip() for x in (excluded_bacteria or [])}
+    excluded_phages_set = {str(x).strip() for x in (excluded_phages or [])}
 
     # ---- Apply coloring in F3:AB112 or dynamically based on DataFrame ----
     for r_idx, row_name in enumerate(row_names_sheet1, start=3):
@@ -323,6 +331,20 @@ def color_sheet_from_matrix(
                 cell.fill = fill_1
             elif val == 0:
                 cell.fill = fill_0
+
+    # ---- Highlight excluded row/column labels (without overriding matrix-cell colors) ----
+    for r_idx, row_name in enumerate(row_names_sheet1, start=3):
+        if str(row_name).strip() in excluded_bacteria_set:
+            ws.cell(row=r_idx, column=2).fill = excluded_bact_fill  # Column B (row label)
+
+    for c_index, col_name in enumerate(col_names_sheet1):
+        if str(col_name).strip() in excluded_phages_set:
+            excel_col = col_start + c_index + 1
+            ws.cell(row=2, column=excel_col).fill = excluded_phage_fill  # Header row
+
+    if TS and (excluded_bacteria_set or excluded_phages_set):
+        print(f"Excluded bacteria highlighted (row labels): {len(excluded_bacteria_set)}")
+        print(f"Excluded phages highlighted (column headers): {len(excluded_phages_set)}")
 
     # ---- Save result ----
     wb.save(output_excel)
