@@ -68,6 +68,9 @@ def parse_arguments():
     parser.add_argument("--exclude_pairs", action="store_true", help="Exclude specified pairs of bacteria and phages, requires --exclude_bacts and --exclude_phages")
     parser.add_argument("--exclude_bacts", nargs='+', default=["J26_21_reoriented"], help="List of bacteria to exclude")
     parser.add_argument("--exclude_phages", nargs='+', default=["Abuela"], help="List of phages to exclude")
+    parser.add_argument("--exclude_clusters", action="store_true", help="Exclude all pairs involving bacteria in the specified clusters, requires --exclude_bact_clusters and --exclude_phage_clusters")
+    parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="List of bacterial clusters to exclude")
+    parser.add_argument("--exclude_phage_clusters", nargs='+', default=[], help="List of phage clusters to exclude")
     parser.add_argument("--test_on_excluded", action="store_true", help="Test the model on the excluded pairs and not a test split from the main dataset")
 
     # Hyperparameters
@@ -83,6 +86,14 @@ def parse_arguments():
     # Requirement: kf_n_splits must be > 1 if --cv is on
     if args.cv and args.kf_n_splits <= 1:
         parser.error("--kf_n_splits must be greater than 1 when --cv is enabled.")
+
+    # Requirement: exclude_pairs cannot be used with exclude_clusters
+    if args.exclude_pairs and args.exclude_clusters:
+        parser.error("--exclude_pairs cannot be used with --exclude_clusters because they represent two different exclusion strategies that would conflict with each other.")
+
+    # Requirement: exclude_clusters requires exclude_bact_clusters and exclude_phage_clusters
+    if args.exclude_clusters and (len(args.exclude_bact_clusters) < 1 or len(args.exclude_phage_clusters) < 1):
+        parser.error("--exclude_clusters requires both --exclude_bact_clusters and --exclude_phage_clusters lists.")
 
     # Requirement: exclude_noninteractions requires exclude_bacts and exclude_phages
     if args.exclude_pairs and (len(args.exclude_bacts) < 1 or len(args.exclude_phages) < 1):
@@ -171,7 +182,7 @@ def main():
     print(f"Recognized data paths\ninput_phage_path:\t{input_phage_path}\ninput_bact_path:\t{input_bact_path}\npresmat_path:\t{presmat_path}")
 
     ### 3. Load Data ###
-    bact_clusters = pd.read_csv(os.path.join(data_prod_path, "bact_clusters.csv"), index_col=0)
+    bact_clusters = pd.read_csv(os.path.join(data_prod_path, "bact_clusters_with_genus.csv"), index_col=0)
 
     # Load Presence Matrix
     full_presmat_path = os.path.join(data_prod_path, presmat_path)

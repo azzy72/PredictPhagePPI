@@ -178,7 +178,7 @@ def short_species_name(full_name):
     if len(full_name.split(" ")) < 2:
         return full_name
     else:
-        return full_name.split(" ")[0][0] + "." + full_name.split(" ")[1]
+        return full_name.split(" ")[0][0] + ". " + full_name.split(" ")[1]
     
 def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=0.5, TS = False) -> dict:
     """
