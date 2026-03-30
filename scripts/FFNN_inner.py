@@ -69,8 +69,8 @@ def parse_arguments():
     parser.add_argument("--exclude_bacts", nargs='+', default=["J26_21_reoriented"], help="List of bacteria to exclude")
     parser.add_argument("--exclude_phages", nargs='+', default=["Abuela"], help="List of phages to exclude")
     parser.add_argument("--exclude_clusters", action="store_true", help="Exclude all pairs involving bacteria in the specified clusters, requires --exclude_bact_clusters and --exclude_phage_clusters")
-    parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="List of bacterial clusters to exclude")
-    parser.add_argument("--exclude_phage_clusters", nargs='+', default=[], help="List of phage clusters to exclude")
+    parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="Array of bacterial strains to exclude in a cluster like manner")
+    parser.add_argument("--exclude_phage_clusters", nargs='+', default=[], help="Array of phage strains to exclude in a cluster like manner")
     parser.add_argument("--test_on_excluded", action="store_true", help="Test the model on the excluded pairs/clusters and not a test split from the main dataset")
 
     # Hyperparameters
@@ -303,12 +303,16 @@ def main():
                 cidx += 1
                 continue
 
-            if args.exclude_clusters and ((bact in bact_clusters.index and str(bact_clusters.loc[bact, 'Cluster']) in args.exclude_bact_clusters) or (phage in args.exclude_phage_clusters)):
-                X_excl.append(features)
-                y_excl.append(score)    
-                X_excl_idx.append(cidx)
-                cidx += 1
-                continue
+            if args.exclude_clusters:
+                #print("bact_clusters.index:", bact_clusters.index)
+                #print("bact_clusters.loc[bact, 'Cluster']:", bact_clusters.loc[bact, 'Cluster'] if bact in bact_clusters.index else "N/A")
+                #print("args.exclude_bact_clusters:", args.exclude_bact_clusters)
+                if ((bact in args.exclude_bact_clusters) or (phage in args.exclude_phage_clusters)):
+                    X_excl.append(features)
+                    y_excl.append(score)    
+                    X_excl_idx.append(cidx)
+                    cidx += 1
+                    continue
             
             # If it passes exclusion criteria, add to main dataset
             X.append(features)
