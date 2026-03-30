@@ -3,6 +3,7 @@ mike/
 KMC/
 doc/
 fig/
+tmp/
 nn_*/
 cnn_*/
 proj1128/
@@ -17,4 +18,3 @@ scripts_ext/mike/
 raw_data/
 logs/
 tmp/
-logs/
