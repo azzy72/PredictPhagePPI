@@ -19,7 +19,7 @@ from datetime import datetime
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold, train_test_split, GroupShuffleSplit
-from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score
+from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score, balanced_accuracy_score
 from scipy.special import expit
 from imblearn.over_sampling import SMOTE
 
@@ -33,8 +33,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="FFNN Training Script")
 
     # Parameters: Mutual exclusivity for n/k vs specific bn/bk/pn/pk
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--nk", nargs=2, type=int, metavar=('N', 'K'),
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--nk", nargs=2, type=int, metavar=('N', 'K'), default=(500, 12),
                         help="Unified n and k values (e.g., -nk 500 12)")
     group.add_argument("--split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'),
                         help="Split values for Bact (n, k) and Phage (n, k)")
@@ -596,12 +596,17 @@ def main():
         test_probs = torch.sigmoid(test_logits)
         test_preds = (test_probs >= 0.5).float()
         test_acc = (test_preds.to(device) == y_test_t).float().mean().item()
+        #balanced accruacy calculation
+        test_ba = balanced_accuracy_score(y_test, test_preds)
+
 
     #print(f"\nFinal test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}")
     if args.logging: 
         if args.test_on_excluded:
             print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Tested on excluded set', file=logfile)
-        print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}', file=logfile)
+        print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}  test balanced accuracy: {test_ba:.4f}', file=logfile)
+    print(f'Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}  test balanced accuracy: {test_ba:.4f}')
+        
     
     # Plotting the losses 
     if args.use_val:
@@ -618,7 +623,7 @@ def main():
         ax2.legend(loc='upper right')
 
         ax.set_xlabel('Epochs')
-        fig.suptitle(f"Torch MLP Train/Val Loss & Val Accuracy for n{n}, k{k}. Test accuracy: {test_acc:.2f}")
+        fig.suptitle(f"Torch MLP Train/Val Loss & Val Accuracy for n{n}, k{k}. Test accuracy: {test_acc:.2f}, Test balanced accuracy: {test_ba:.2f}")
 
         outname = 'torchMLP_acc_loss.png'    
         if args.logging: plt.savefig(outdir+outname)
@@ -747,8 +752,8 @@ def main():
 
         # 5. Save and Plot
         if args.logging:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} \n--- Top True Positive Entries (Grouped by Cluster) ---')
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total True Positives found in unseen clusters: {len(best_tp_df)}')
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} \n--- Top True Positive Entries (Grouped by strain) ---')
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total True Positives found in unseen test: {len(best_tp_df)}')
             for line in best_tp_df.head(10):
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
             best_tp_df.to_csv(outdir+"best_predictions.csv", sep=";")
