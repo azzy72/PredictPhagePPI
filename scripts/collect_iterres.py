@@ -28,6 +28,7 @@ def extract_metrics_from_log(file_path):
     metrics = {
         'file_path': file_path,
         'test_accuracy': None,
+        'test_balanced_accuracy': None,
         'precision': None,
         'recall': None,
         'f1': None,
@@ -66,6 +67,11 @@ def extract_metrics_from_log(file_path):
     acc_match = re.search(r"test accuracy:\s+([\d.]+)", content)
     if acc_match:
         metrics['test_accuracy'] = float(acc_match.group(1))
+
+    # Extract Balanced Accuracy
+    ba_match = re.search(r"test balanced accuracy:\s+([\d.]+)", content)
+    if ba_match:
+        metrics['test_balanced_accuracy'] = float(ba_match.group(1))
 
     # Extract Baseline Metrics (Precision, Recall, F1) [cite: 29]
     base_metrics = re.search(r"Baseline .* Precision:\s+([\d.]+),\s+Recall:\s+([\d.]+),\s+F1:\s+([\d.]+)", content)
@@ -135,11 +141,42 @@ def _plot_cm_bars(df, outdir, title_suffix=""):
     plt.close() # Close to free up memory
     print("Saved: confusion_matrix_by_run.png")
 
+def _plot_bars(df, x_col, y_col, hue_col=None, title="", ylabel="", outpath=""):
+    plt.figure(figsize=(12, 7))
+    sns.set_style("whitegrid")
+    
+    if hue_col:
+        ax = sns.barplot(
+            data=df, 
+            x=x_col, 
+            y=y_col, 
+            hue=hue_col, 
+            palette='viridis',
+            edgecolor='black'
+        )
+    else:
+        ax = sns.barplot(
+            data=df, 
+            x=x_col, 
+            y=y_col, 
+            edgecolor='black'
+        )
+        plt.xticks(rotation=45, ha='right')
+
+    plt.title(title, fontsize=15, pad=15)
+    plt.ylabel(ylabel, fontsize=12)
+    plt.xlabel(x_col.capitalize(), fontsize=12)
+    if hue_col: plt.legend(title=hue_col.capitalize(), bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plt.savefig(outpath)
+    print(f"Saved: {outpath}")
+
 def plot_graphs(df, outdir=outdir_default):
     # Ensure all columns are integers for proper sorting
     df['n'] = pd.to_numeric(df['n'])
     df['k'] = pd.to_numeric(df['k'])
     df['test_accuracy'] = pd.to_numeric(df['test_accuracy'])
+    df['test_balanced_accuracy'] = pd.to_numeric(df['test_balanced_accuracy'])
     df['precision'] = pd.to_numeric(df['precision'])
     df['recall'] = pd.to_numeric(df['recall'])
     df['f1'] = pd.to_numeric(df['f1'])
@@ -159,96 +196,51 @@ def plot_graphs(df, outdir=outdir_default):
     print(df[['n', 'k', 'test_accuracy', 'precision', 'recall', 'f1']])
 
     # --- Graph 1: Grouped Accuracy Bar Chart (X=n, Hue=k) ---
-    plt.figure(figsize=(12, 7))
-    sns.set_style("whitegrid")
-    
-    if singular_nk:
-        ax = sns.barplot(
-            data=df, 
-            x = df["folder"],
-            y='test_accuracy', 
-            edgecolor='black'
-        )
-        plt.xticks(rotation=45, ha='right')
-    else:
-        ax = sns.barplot(
-            data=df, 
-            x='n', 
-            y='test_accuracy', 
-            hue='k', 
-            palette='viridis',
-            edgecolor='black'
-        )
-    
-    plt.title(f'FFNN Test Accuracy {title_suffix}', fontsize=15, pad=15)
-    plt.ylabel('Test Accuracy', fontsize=12)
-    plt.xlabel('n (Number of Features/Samples)', fontsize=12)
-    if not singular_nk: plt.legend(title='k values', bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.ylim(0.8, 1.0) # Adjust based on your performance range
-    plt.tight_layout()
-    plt.savefig(outdir + 'accuracy_by_nk.png')
-    print("Saved: accuracy_by_nk.png")
-
-    # --- Graph 2: Grouped F1 Bar Chart (X=n, Hue=k) ---
-    plt.figure(figsize=(12, 7))
-    sns.set_style("whitegrid")
-    
-    if singular_nk:
-        ax = sns.barplot(
-            data=df, 
-            x = df["folder"],
-            y='f1', 
-            edgecolor='black'
-        )
-        plt.xticks(rotation=45, ha='right')
-    else:
-        ax = sns.barplot(
-            data=df, 
-            x='n', 
-            y='f1', 
-            hue='k', 
-        palette='viridis',
-        edgecolor='black'
+    _plot_bars(
+        df=df, 
+        x_col='n', 
+        y_col='test_accuracy', 
+        hue_col='k' if not singular_nk else None, 
+        title=f'FFNN Test Accuracy {title_suffix}', 
+        ylabel='Test Accuracy',
+        outpath=outdir + 'accuracy_by_nk.png'
     )
-    
-    for i, bar in enumerate(ax.patches):
-        # Find corresponding row in df
-        n = bar.get_x() + bar.get_width() / 2
-        height = bar.get_height()
-        # Get index for the bar (barplot arranges bars sequentially)
-        idx = i % len(df)
-        recall = df.iloc[idx]['recall']
-        precision = df.iloc[idx]['precision']
-        label = f'R:{recall:.2f}\nP:{precision:.2f}'
-        ax.text(
-            bar.get_x() + bar.get_width() / 2, height + 0.01,
-            label,
-            ha='center', va='bottom', fontsize=6, color='black'
-        )
-    
-    plt.title(f'FFNN F1 score {title_suffix}', fontsize=15, pad=15)
-    plt.ylabel('Test F1', fontsize=12)
-    plt.xlabel('n (Number of Features/Samples)', fontsize=12)
-    if not singular_nk: plt.legend(title='k values', bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.ylim(0.2, 1.0)
-    plt.tight_layout()
-    plt.savefig(outdir + 'f1_by_nk.png')
-    print("Saved: f1_by_nk.png")
 
-    # --- Graph 3: Confusion Matrix as bars ---
+    # --- Graph 2: Grouped Balanced Accuracy Bar Chart (X=n, Hue=k) ---
+    _plot_bars(
+        df=df, 
+        x_col='n', 
+        y_col='test_balanced_accuracy', 
+        hue_col='k' if not singular_nk else None, 
+        title=f'FFNN Test Balanced Accuracy {title_suffix}', 
+        ylabel='Test Balanced Accuracy',
+        outpath=outdir + 'balanced_accuracy_by_nk.png'
+    )
+
+    # --- Graph 3: Grouped F1 Bar Chart (X=n, Hue=k) ---
+    _plot_bars(
+        df=df, 
+        x_col='n', 
+        y_col='f1', 
+        hue_col='k' if not singular_nk else None, 
+        title=f'FFNN F1 score {title_suffix}', 
+        ylabel='Test F1',
+        outpath=outdir + 'f1_by_nk.png'
+    )
+
+    # --- Graph 4: Confusion Matrix as bars ---
     _plot_cm_bars(df, outdir, title_suffix=title_suffix)
 
-    # --- Graph 4: Averaged Confusion Matrix ---
+    # --- Graph 5: Averaged Confusion Matrix ---
     avg_cm = df[['TN', 'FN', 'FP', 'TP']].mean()
     # Reshape into 2x2 matrix: [[TN, FN], [FP, TP]]
     cm_data = np.array([[avg_cm['TN'], avg_cm['FN']], 
                         [avg_cm['FP'], avg_cm['TP']]])
-    
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm_data, annot=True, fmt='.1f', cmap='Blues', 
                 xticklabels=['Predicted 0', 'Predicted 1'],
                 yticklabels=['Actual 0', 'Actual 1'])
-    plt.title(f'Global Averaged Confusion Matrix\n(Across {len(df)} runs)')
+    plt.title(f'Global Averaged Confusion Matrix\n(Across {len(df)} runs)', fontsize=15, pad=15)
     plt.tight_layout()
     plt.savefig(outdir + 'averaged_confusion_matrix.png')
     print("Saved: averaged_confusion_matrix.png")

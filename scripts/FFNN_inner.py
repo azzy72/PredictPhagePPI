@@ -68,10 +68,13 @@ def parse_arguments():
     parser.add_argument("--exclude_pairs", action="store_true", help="Exclude specified pairs of bacteria and phages, requires --exclude_bacts and --exclude_phages")
     parser.add_argument("--exclude_bacts", nargs='+', default=["J26_21_reoriented"], help="List of bacteria to exclude")
     parser.add_argument("--exclude_phages", nargs='+', default=["Abuela"], help="List of phages to exclude")
+    
     parser.add_argument("--exclude_clusters", action="store_true", help="Exclude all pairs involving bacteria in the specified clusters, requires --exclude_bact_clusters and --exclude_phage_clusters")
     parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="Array of bacterial strains to exclude in a cluster like manner")
     parser.add_argument("--exclude_phage_clusters", nargs='+', default=[], help="Array of phage strains to exclude in a cluster like manner")
+    parser.add_argument("--cluster_by_genus", action="store_true", help="Cluster by genus instead of a pre-defined cluster file. This is a more extreme exclusion strategy that may be useful to test the model's ability to generalize to completely unseen genera.")
     parser.add_argument("--test_on_excluded", action="store_true", help="Test the model on the excluded pairs/clusters and not a test split from the main dataset")
+
 
     # Hyperparameters
     parser.add_argument("--n_epochs", type=int, default=50)
