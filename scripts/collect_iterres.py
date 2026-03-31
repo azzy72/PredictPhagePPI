@@ -9,7 +9,7 @@ import seaborn as sns
 import numpy as np
 import argparse
 from paths import data_prod_path, path_to_nn_runs
-outdir_default = data_prod_path + "iterNK/"
+outdir_default = data_prod_path + "iterExclClus/"
 print(path_to_nn_runs)
 
 def parse_arguments():

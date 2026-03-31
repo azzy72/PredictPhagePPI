@@ -399,9 +399,13 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
     Returns:
         **interaction_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
         **occurence_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the number of occurrences of that pair across all phage-bacteria combinations.
+        **interaction_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized interaction score for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
+        **occurence_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized occurrence for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
     """
     interaction_pairs = dict()
     occurence_pairs = dict()
+    interaction_freq_pairs = dict()
+    occurence_freq_pairs = dict()
     c = 0
     total_combinations = len(phage_names) * len(bacteria_names)
     for pname in phage_names:
@@ -417,19 +421,26 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
                     else:
                         interaction_pairs[pair] = interaction_score
                     occurence_pairs[pair] = occurence_pairs.get(pair, 0) + 1
-
-            c += 1
-            print(f"Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
     
+            c += 1
+            print(f"Int/Occ: Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
+    
+    c = 0
+    for pair in interaction_pairs.keys():
+        interaction_freq_pairs[pair] = interaction_pairs[pair] / sum(interaction_pairs.values())
+        occurence_freq_pairs[pair] = occurence_pairs[pair] / sum(occurence_pairs.values())
+        c += 1
+        print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
+
     if outfile is not None:
         try:
             with open(outfile, "w") as f:
-                f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\n")
+                f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\n")
                 for pair in interaction_pairs.keys():
-                    f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\n")
+                    f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\n")
             print(f"Interaction pairs saved to {outfile}")
         except Exception as e:
             print(f"Error saving interaction pairs to {outfile}: {e}")
     
     print(f"Total phage-bacteria combinations processed: {c}")
-    return interaction_pairs, occurence_pairs
+    return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs

@@ -970,6 +970,7 @@ def main():
                 # for line in interaction_pairs[:10]:
 
         plot_interaction_pairs(interaction_pairs, occurence_pairs, logging=args.logging, outdir=outdir)
+        plot_interaction_pairs(interaction_pairs, occurence_pairs, sort_by_ratio = True, logging=args.logging, outdir=outdir)
 
         # Filter idx_to_minhash to only include the top X interaction pairs
         top_pairs = sorted(interaction_pairs.items(), key=lambda x: x[1], reverse=True)[:50] # Get top 50 pairs by interaction score

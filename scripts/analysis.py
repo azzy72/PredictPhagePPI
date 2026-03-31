@@ -614,7 +614,7 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
     
     return top_idx, top_vals, decoded_kmers_dict
 
-def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, logging : bool, outdir: str = None):
+def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, sort_by_ratio: bool = False, logging : bool = False, outdir: str = None):
     # Divide interaction score by occurrence count for matching keys
     interaction_ratio_pairs = {}
 
@@ -630,6 +630,11 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, loggi
     })
 
     pair_no_zero_df = pair_df[pair_df["Interaction_Ratio"] > 0]
+    
+    # Sort by interaction ratio if requested
+    if sort_by_ratio:
+        pair_no_zero_df = pair_no_zero_df.sort_values("Interaction_Ratio", ascending=False)
+    
     print(f"Pairs with non-zero interaction ratio: {len(pair_no_zero_df)}")
     print(pair_no_zero_df.head())
 
