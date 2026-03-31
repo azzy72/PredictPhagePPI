@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=IterExcl_PredictPhage
 #SBATCH --partition=gpu
-#SBATCH --nodes=2
-#SBATCH --mem=50G
-#SBATCH --cpus-per-task=2
+#SBATCH --nodes=4
+#SBATCH --mem=500G
+#SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu
 #SBATCH --time=48:00:00
 #!SBATCH --begin=15:20:00
@@ -59,6 +59,7 @@ for bact in $bact_names; do
             --exclude_pairs \
             --exclude_bacts "$bact" \
             --exclude_phages "$phage" \
+            --test_on_excluded \
             --out "$CUSTOM_OUT" \
             --logging
     done
@@ -97,4 +98,4 @@ echo "Global Average Test Accuracy: $average"
 
 # 4. Collecting results
 echo "📊 Collecting results..."
-python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUN
+python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUN" --out_dir "$DATA_DIR/collected_results/iter_excl/"

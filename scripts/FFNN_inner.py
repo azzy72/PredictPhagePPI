@@ -73,6 +73,7 @@ def parse_arguments():
     parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="Array of bacterial strains to exclude in a cluster like manner")
     parser.add_argument("--exclude_phage_clusters", nargs='+', default=[], help="Array of phage strains to exclude in a cluster like manner")
     parser.add_argument("--cluster_by_genus", action="store_true", help="Cluster by genus instead of a pre-defined cluster file. This is a more extreme exclusion strategy that may be useful to test the model's ability to generalize to completely unseen genera.")
+    
     parser.add_argument("--test_on_excluded", action="store_true", help="Test the model on the excluded pairs/clusters and not a test split from the main dataset")
 
 
@@ -126,6 +127,11 @@ def parse_arguments():
     # Requirement: if --no_val is used, then --cv cannot be used because cross-validation requires a validation set for epoch-wise evaluation
     if not args.use_val and args.cv:
         parser.error("--no_val cannot be used with --cv because cross-validation requires a validation set for epoch-wise evaluation.") 
+
+    # # Modification: automatically set test_on_excluded to True if exclude_pairs or exclude_clusters is used, since it doesn't make sense to have a test split from the main dataset if the excluded pairs/clusters are not in the test set
+    # if (args.exclude_pairs or args.exclude_clusters) and not args.test_on_excluded:
+    #     args.test_on_excluded = True
+    #     print("INFO: --test_on_excluded has been automatically set to True because --exclude_pairs or --exclude_clusters is used. This means the model will be tested on the excluded pairs/clusters and not a test split from the main dataset.", file=sys.stderr)
 
     return args
 
@@ -599,8 +605,8 @@ def main():
         test_probs = torch.sigmoid(test_logits)
         test_preds = (test_probs >= 0.5).float()
         test_acc = (test_preds.to(device) == y_test_t).float().mean().item()
-        #balanced accruacy calculation
-        test_ba = balanced_accuracy_score(y_test, test_preds)
+        #balanced accruacy calculation - cpu operation: move tensors back to the CPU before passing them to any scikit-learn function
+        test_ba = balanced_accuracy_score(y_test_t.cpu().numpy(), test_preds.cpu().numpy())
 
 
     #print(f"\nFinal test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}")
