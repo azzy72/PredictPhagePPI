@@ -30,6 +30,7 @@ from time import time, sleep
 from datetime import datetime
 from datetime import datetime
 import networkx as nx
+from scipy.cluster.hierarchy import linkage
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 from captum import attr 
@@ -614,41 +615,102 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
     
     return top_idx, top_vals, decoded_kmers_dict
 
-def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, sort_by_ratio: bool = False, logging : bool = False, outdir: str = None):
-    # Divide interaction score by occurrence count for matching keys
-    interaction_ratio_pairs = {}
+def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, hash_lookup: dict, sort_by_ratio: bool = False, logging : bool = False, outdir: str = None, bact_clusters: pd.DataFrame = None):
+    # Helper function to decode hash to strain name
+    def get_strain_name(hash_value, hash_lookup, default_hash=True):
+        """Decode hash value to strain name using hash_lookup."""
+        if hash_value in hash_lookup:
+            strains = hash_lookup[hash_value]
+            if isinstance(strains, list) and len(strains) > 0:
+                return strains[0]  # Return first strain name from list
+            elif isinstance(strains, str):
+                return strains
+        return str(hash_value) if default_hash else "Unknown"
+    
+    # Divide interaction score by occurrence count
+    interaction_ratio_pairs = {
+        pair: (interaction_pairs[pair] / occurence_pairs[pair] if occurence_pairs.get(pair, 0) != 0 else float("nan"))
+        for pair in interaction_pairs.keys() & occurence_pairs.keys()
+    }
 
-    for pair in interaction_pairs.keys() & occurence_pairs.keys():
-        occ = occurence_pairs[pair]
-        interaction_ratio_pairs[pair] = interaction_pairs[pair] / occ if occ != 0 else float("nan")
-
-    # Create DataFrame for plotting
+    # Create DataFrame with decoded strain names from hash_lookup
     pair_df = pd.DataFrame({
-        "Bacterium": [pair[0] for pair in interaction_ratio_pairs.keys()],
-        "Phage": [pair[1] for pair in interaction_ratio_pairs.keys()],
+        "Bacterium": ["_".join([get_strain_name(pair[0], hash_lookup), str(pair[0])]) for pair in interaction_ratio_pairs.keys()],
+        "Phage": ["_".join([get_strain_name(pair[1], hash_lookup), str(pair[1])]) for pair in interaction_ratio_pairs.keys()],
         "Interaction_Ratio": list(interaction_ratio_pairs.values())
     })
 
+    # Filter zeros and pivot
     pair_no_zero_df = pair_df[pair_df["Interaction_Ratio"] > 0]
-    
-    # Sort by interaction ratio if requested
+    pivot_df = pair_no_zero_df.pivot_table(index="Phage", columns="Bacterium", values="Interaction_Ratio", fill_value=0)
+
+    # Reorder axes if sort_by_ratio is True
     if sort_by_ratio:
-        pair_no_zero_df = pair_no_zero_df.sort_values("Interaction_Ratio", ascending=False)
-    
-    print(f"Pairs with non-zero interaction ratio: {len(pair_no_zero_df)}")
-    print(pair_no_zero_df.head())
+        # 1. Sort Phages (rows) by their average interaction score
+        phage_order = pivot_df.mean(axis=1).sort_values(ascending=False).index
+        # 2. Sort Bacteria (columns) by their average interaction score
+        bact_order = pivot_df.mean(axis=0).sort_values(ascending=False).index
+        
+        # Reindex the pivot table with these orders
+        pivot_df = pivot_df.reindex(index=phage_order, columns=bact_order)
+        print("pivot_df after sorting:\n", pivot_df.head(10))
+
+        #Alternative graph (clustermap)
+        plt.figure(figsize=(12, 8))
+        col_linkage = None
+        col_colors = None
+        if bact_clusters is not None:
+            cluster_col = None
+            for candidate in ["Cluster", "cluster", "Clusters", "clusters"]:
+                if candidate in bact_clusters.columns:
+                    cluster_col = candidate
+                    break
+
+            if cluster_col is not None:
+                bact_meta = bact_clusters.reindex(pivot_df.columns)
+                print(f"Cluster column '{cluster_col}' found in metadata. Using it for column coloring.")
+                print(f"bact_clusters: {bact_meta[cluster_col]}")
+                cluster_series = bact_meta[cluster_col].fillna("Unknown").astype(str)
+
+                # Build hierarchical linkage from cluster membership to enforce bacteria-wise grouping
+                cluster_matrix = pd.get_dummies(cluster_series, prefix="cluster")
+                if len(cluster_matrix) >= 2:
+                    col_linkage = linkage(cluster_matrix.values, method="average", metric="euclidean")
+
+                unique_clusters = pd.Index(cluster_series.unique())
+                print(f"Unique clusters found for coloring: {unique_clusters.tolist()}")
+                palette = sns.color_palette("tab20", n_colors=max(len(unique_clusters), 1))
+                cluster_to_color = {cluster: palette[i] for i, cluster in enumerate(unique_clusters)}
+                col_colors = cluster_series.map(cluster_to_color)
+
+        g = sns.clustermap(
+            pivot_df,
+            cmap="viridis",
+            standard_scale=None,
+            row_cluster=False,
+            col_cluster=True,
+            col_linkage=col_linkage,
+            col_colors=col_colors,
+        )
+        plt.savefig(os.path.join(outdir, 'interaction_pairs_clustermap.png'))
 
     # Plotting
     plt.figure(figsize=(12, 8))
-    sns.heatmap(pair_no_zero_df.pivot_table(index="Bacterium", columns="Phage", values="Interaction_Ratio", fill_value=0), cmap="viridis", cbar_kws={"label": "Interaction Ratio"})
-    plt.title("Interaction Ratio of Bacterium-Phage Pairs")
+    sns.heatmap(pivot_df, cmap="viridis", cbar_kws={"label": "Interaction Ratio"})
+    
+    title = "Interaction Ratio of Bacterium-Phage Pairs"
+    if sort_by_ratio:
+        title += " (Grouped by Intensity)"
+    
+    plt.title(title)
     plt.xlabel("Bacterium")
     plt.ylabel("Phage")
     plt.xticks(rotation=90)
     plt.tight_layout()
-    if logging: 
-        plt.savefig(outdir + 'interaction_pairs.png')
-    ###plt.show()
+
+    if logging and outdir:
+        graph_name = 'interaction_pairs_sorted.png' if sort_by_ratio else 'interaction_pairs.png'
+        plt.savefig(os.path.join(outdir, graph_name))
 
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):

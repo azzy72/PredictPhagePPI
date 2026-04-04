@@ -385,7 +385,7 @@ def construct_presence_matrix(phage_dict : dict, bact_dict : dict, TS : bool = F
 
     return phage_pres_df, bact_pres_df
 
-def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : dict, host_range_data : dict, phage_names : list, bacteria_names : list, outfile : str = None) -> [dict, dict]:
+def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : dict, host_range_data : dict, phage_names : list, bacteria_names : list, subset : int = None, outfile : str = None) -> [dict, dict]:
     """
     Construct a dictionary of interaction pairs given the minhash data for phages and bacteria and the host range data.
     The dictionary will have keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
@@ -396,18 +396,25 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
         **host_range_data** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
         **phage_names** (list): list of phage names to consider (should match keys in phage_minhash_data)
         **bacteria_names** (list): list of bacteria names to consider (should match keys in bact_minhash_data)
+        **subset** (int): number of combinations to consider (default is None, meaning all combinations)
+        **outfile** (str): path to output file (default is None, meaning no file is written)
     Returns:
         **interaction_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
         **occurence_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the number of occurrences of that pair across all phage-bacteria combinations.
         **interaction_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized interaction score for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
         **occurence_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized occurrence for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
-    """
+        **hash_lookup** (dict): dictionary with keys as hash values and values as a list of strains (phage or bacteria) that have that hash in their minhash sketch."""
     interaction_pairs = dict()
     occurence_pairs = dict()
     interaction_freq_pairs = dict()
     occurence_freq_pairs = dict()
+    hash_lookup = dict()
     c = 0
     total_combinations = len(phage_names) * len(bacteria_names)
+    # if subset is not None:
+    #     phage_names = phage_names[:subset]
+    #     bacteria_names = bacteria_names[:subset]
+    #     total_combinations = len(phage_names) * len(bacteria_names)
     for pname in phage_names:
         for bname in bacteria_names:
             # Supports nested dict format and tuple-key format
@@ -421,16 +428,50 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
                     else:
                         interaction_pairs[pair] = interaction_score
                     occurence_pairs[pair] = occurence_pairs.get(pair, 0) + 1
+
+                    # Populate hash lookup
+                    if pkmer not in hash_lookup:
+                        hash_lookup[pkmer] = [pname]
+                    else:
+                        if pname not in hash_lookup[pkmer]:
+                            hash_lookup[pkmer].append(pname)
+                    if bkmer not in hash_lookup:
+                        hash_lookup[bkmer] = [bname]
+                    else:
+                        if bname not in hash_lookup[bkmer]:
+                            hash_lookup[bkmer].append(bname)
     
             c += 1
             print(f"Int/Occ: Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
-    
+            if subset is not None and c >= subset:
+                if sum(interaction_pairs.values()) > 0: #continue if no interaction has been found
+                    print(f"\nReached subset limit of {subset} combinations, stopping pair construction.")
+                    break
+
+    print("\nCalculating interaction and occurrence frequencies...")
     c = 0
     for pair in interaction_pairs.keys():
-        interaction_freq_pairs[pair] = interaction_pairs[pair] / sum(interaction_pairs.values())
-        occurence_freq_pairs[pair] = occurence_pairs[pair] / sum(occurence_pairs.values())
+        if sum(interaction_pairs.values()) > 0:
+            interaction_freq_pairs[pair] = interaction_pairs[pair] / sum(interaction_pairs.values())
+        else:
+            interaction_freq_pairs[pair] = 0
+        
+        if sum(occurence_pairs.values()) > 0:
+            occurence_freq_pairs[pair] = occurence_pairs[pair] / sum(occurence_pairs.values())
+        else:
+            occurence_freq_pairs[pair] = 0
+        
         c += 1
         print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
+
+        if subset is not None and c >= subset:
+            print(f"\nReached subset limit of {subset} pairs, stopping frequency calculation.")
+            break
+
+    if not sum(interaction_pairs.values()) > 0:
+        print("Warning: Sum of interaction scores is 0, cannot calculate interaction frequencies.")
+    if not sum(occurence_pairs.values()) > 0:
+        print("Warning: Sum of occurrence counts is 0, cannot calculate occurrence frequencies.")
 
     if outfile is not None:
         try:
@@ -443,4 +484,4 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
             print(f"Error saving interaction pairs to {outfile}: {e}")
     
     print(f"Total phage-bacteria combinations processed: {c}")
-    return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs
+    return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, hash_lookup

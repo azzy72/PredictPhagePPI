@@ -62,6 +62,8 @@ def parse_arguments():
     parser.add_argument("--reconstruct_gene_annotation", action="store_true", help="Reconstruct gene annotations from GeneAnalysis, rather than loading them from a file from a previous run.")
     parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
     parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
+    parser.add_argument("--subset_pfi", type=int, help="Number of top features to include in pairwise feature importance analysis (set to 0 or a negative number to include all features)")
+    parser.add_argument("--force_pfi_recalculation", action="store_true", help="Force recalculation of pairwise feature importance even if the output file already exists. This can be useful if you have changed the subset_pfi parameter or made changes to the code that calculates feature importance and want to ensure that the pairwise feature importance is recalculated with the new logic.")
 
     # Exclusions
     parser.add_argument("--exclude_noninteractions", action="store_true", help="Exclude non-interacting pairs")
@@ -127,6 +129,11 @@ def parse_arguments():
     # Requirement: if --no_val is used, then --cv cannot be used because cross-validation requires a validation set for epoch-wise evaluation
     if not args.use_val and args.cv:
         parser.error("--no_val cannot be used with --cv because cross-validation requires a validation set for epoch-wise evaluation.") 
+
+    # Requirement: ignore --force_pfi_recalculation if --perform_pfi is not set, since it doesn't make sense to force recalculation of pairwise feature importance if we're not performing feature importance analysis at all
+    if args.force_pfi_recalculation and not args.perform_pfi:
+        print("WARNING: --force_pfi_recalculation will be ignored because --perform_pfi is not set. It doesn't make sense to force recalculation of pairwise feature importance if we're not performing feature importance analysis at all.", file=sys.stderr)
+        args.force_pfi_recalculation = False
 
     # # Modification: automatically set test_on_excluded to True if exclude_pairs or exclude_clusters is used, since it doesn't make sense to have a test split from the main dataset if the excluded pairs/clusters are not in the test set
     # if (args.exclude_pairs or args.exclude_clusters) and not args.test_on_excluded:
@@ -936,9 +943,14 @@ def main():
     
     ### Investigating Pairs ###
     if args.perform_pfi:
+        pfi_failed = False
+        out_pfi = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt"
         try:
+            if args.force_pfi_recalculation:
+                raise FileNotFoundError("Forced recomputation of interaction pairs as per user request.")
+            
             #load the interaction data if it's already been saved
-            with open(data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt", "r") as f:
+            with open(out_pfi, "r") as f:
                 interaction_pairs = {}
                 occurence_pairs = {}
                 next(f, None)  # skip header line
@@ -956,12 +968,13 @@ def main():
                             print(f"Line: {line.strip()}\nparts: {parts}\n")
                             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Line: {line.strip()} - parts: {parts}', file=logfile)
             if args.logging:
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded interaction pairs from {data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt"}', file=logfile)
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded interaction pairs from {out_pfi}', file=logfile)
             
         except FileNotFoundError:
-            interaction_pairs, occurence_pairs = construct_interaction_pairs(phage_minhash_data, bact_minhash_data, host_range_data, phage_names, bacteria_names, outfile = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt")
+            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, hash_lookup = construct_interaction_pairs(
+                phage_minhash_data, bact_minhash_data, host_range_data, phage_names, bacteria_names, subset=args.subset_pfi, outfile = out_pfi)
             if args.logging: 
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {outdir+"interaction_pairs.txt"}', file=logfile)
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {out_pfi}', file=logfile)
                 
         if args.logging:
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total interacting pairs found: {len(interaction_pairs)}', file=logfile)
@@ -975,8 +988,8 @@ def main():
                     break
                 # for line in interaction_pairs[:10]:
 
-        plot_interaction_pairs(interaction_pairs, occurence_pairs, logging=args.logging, outdir=outdir)
-        plot_interaction_pairs(interaction_pairs, occurence_pairs, sort_by_ratio = True, logging=args.logging, outdir=outdir)
+        #plot_interaction_pairs(interaction_pairs, occurence_pairs, hash_lookup, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
+        plot_interaction_pairs(interaction_pairs, occurence_pairs, hash_lookup, sort_by_ratio=True, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
 
         # Filter idx_to_minhash to only include the top X interaction pairs
         top_pairs = sorted(interaction_pairs.items(), key=lambda x: x[1], reverse=True)[:50] # Get top 50 pairs by interaction score
@@ -994,6 +1007,9 @@ def main():
                 idx_to_minhash=filtered_idx_to_minhash,
                 mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
                 logging=args.logging, logfile=logfile)
+            if len(top_idx) == 0: 
+                pfi_failed = True
+                raise Exception("regain_kmers() failed")
             if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers for top interaction pairs: {list(top_kmers_decoded.values())}', file=logfile)
             top_kmers_df = pd.DataFrame({
                 "feature_index": list(top_kmers_decoded.keys()),
@@ -1003,11 +1019,12 @@ def main():
             if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved decoded k-mers for top interaction pairs to {outdir+"top_interaction_pair_kmers.csv"}', file=logfile)
         except Exception as e:
             print(f"Error during k-mer regaining for top interaction pairs: {e}")
+            pfi_failed = True
         
         #Plot the top k-mers for interaction pairs
-        if top_kmers_df is not None:
+        if top_kmers_df is not None and not top_kmers_df.empty and not pfi_failed:
             plt.figure(figsize=(10, 6))
-            sns.barplot(x='feature_index', y='decoded_kmer', data=top_kmers_df.head(20), palette='viridis')
+            sns.scatterplot(x='feature_index', y='decoded_kmer', data=top_kmers_df.head(20))
             plt.title('Top k-mers for Interaction Pairs')
             plt.xlabel('Feature Index')
             plt.ylabel('Decoded k-mer')
