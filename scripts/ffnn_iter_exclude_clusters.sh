@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=IterExclClus_PredictPhage
 #SBATCH --partition=gpu
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #SBATCH --mem=50G
-#SBATCH --cpus-per-task=2
-#SBATCH --gres=gpu
+#SBATCH --cpus-per-task=1
+#SBATCH --gres=gpu:1
 #!SBATCH --time=48:00:00
 #!SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
@@ -16,6 +16,7 @@
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod/"
 RAW_DIR="$ROOT_DIR/raw_data/phagehost_KU/"
+DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl/"
 BACT_CLUSTER_FILE="$DATA_DIR/bact_clusters_with_genus.csv"
 PHAGE_FILE="$RAW_DIR/phage_cleaned.fasta"
 NK_VALS="500 12"
@@ -65,6 +66,7 @@ for cluster_num in $clusters; do
             --exclude_clusters \
             --exclude_bact_clusters "$bact_strains" \
             --exclude_phage_clusters "$phage" \
+            --test_on_excluded \
             --out "$CUSTOM_OUT" \
             --logging
     done

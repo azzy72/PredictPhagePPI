@@ -16,7 +16,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Metric Extraction Script")
     parser.add_argument("--base_dir", type=str, default=path_to_nn_runs, 
                         help="Base directory containing run folders")
-    parser.add_argument("--outdir", type=str, default=outdir_default,
+    parser.add_argument("--out_dir", type=str, default=outdir_default,
                         help="Directory to save output graphs and CSV")
     parser.add_argument("--x_col", type=str, default=None,
                         help="Column to use for x-axis in plots")
@@ -103,7 +103,7 @@ def extract_metrics_from_log(file_path):
 
 
 class PlottingUtils:
-    def __init__(self, df, x_col = None, hue_col = None, group_x_col = None, group_hue_col = None):
+    def __init__(self, df, outdir, x_col = None, hue_col = None, x_col_by_cluster = False, x_col_by_phage = False):
         # Ensure all columns are integers for proper sorting
         df['n'] = pd.to_numeric(df['n'])
         df['k'] = pd.to_numeric(df['k'])
@@ -113,6 +113,8 @@ class PlottingUtils:
         df['recall'] = pd.to_numeric(df['recall'])
         df['f1'] = pd.to_numeric(df['f1'])
         df['folder'] = df['folder'].astype(str).str.replace(r'_run\d+$', '', regex=True)
+
+        self.outdir = outdir
 
         # Automatically detect if all runs have the same 'n' and 'k' values
         self.singular_n = False
@@ -139,25 +141,35 @@ class PlottingUtils:
         # Set x and hue columns based on the presence of singular n or k
         self.x_col = x_col if not None else ('n' if not self.singular_n else 'folder')
         self.hue_col = hue_col if not None else ('k' if not self.singular_k else None)
-    
-        if group_x_col: 
-            df[group_x_col] = df[x_col].astype(str).str.replace(r'^\d+$', lambda m: f"{x_col}={m.group(0)}", regex=True)
-            self.x_col = group_x_col
-        if group_hue_col:
-            df[group_hue_col] = df[hue_col].astype(str).str.replace(r'^\d+$', lambda m: f"{hue_col}={m.group(0)}", regex=True)
-            self.hue_col = group_hue_col
-        
-        print("Recognized metrics:")
-        for col in df.columns:
-            print(f"  {col}: {df[col].dtype}")
-        print(df[['n', 'k', 'test_accuracy', 'precision', 'recall', 'f1']])
 
-    def _plot_cm_bars(self, df, outdir, title_suffix=""):
+        if x_col_by_cluster or x_col_by_phage: 
+            parts = df["folder"].str.extract(r"^cluster_(\d+)_([A-Z].+)$")
+            df["cluster_id"] = pd.to_numeric(parts[0], errors="coerce")
+            df["phage_name"] = parts[1]
+            df["cluster_group"] = "cluster=" + parts[0]
+            if x_col_by_phage:
+                df["phage_group"] = "phage=" + parts[1]
+                self.x_col = "phage_group" if x_col_by_phage else self.x_col
+                # sort by phage_name for better visualization
+                df = df.sort_values("phage_name")
+            elif x_col_by_cluster:
+                self.x_col = "cluster_group" if x_col_by_cluster else self.x_col
+                # sort by cluster_id for better visualization
+                df = df.sort_values("cluster_id")
+        
+        self.df = df
+
+        print(f"Dataframe length: {len(self.df)}. Recognized metrics:")
+        for col in self.df.columns:
+            print(f"  {col}: {self.df[col].dtype}")
+        print(self.df)
+
+    def _plot_cm_bars(self, title_suffix=""):
         # 1. Prepare the Confusion Matrix Data
         # We melt the dataframe so 'TN', 'FN', 'FP', 'TP' become categories in one column
         cm_cols = ['TN', 'FN', 'FP', 'TP']
-        cm_df = df[cm_cols + ['folder']].copy()
-        cm_melted = cm_df.melt(id_vars='folder', var_name='Metric', value_name='Count')
+        cm_df = self.df[cm_cols + [self.x_col]].copy()
+        cm_melted = cm_df.melt(id_vars=self.x_col, var_name='Metric', value_name='Count')
 
         # 2. Setup the Plot
         plt.figure(figsize=(16, 7)) # Wider figure for many bars
@@ -196,17 +208,17 @@ class PlottingUtils:
         plt.tight_layout()
         
         # 6. Save
-        plt.savefig(outdir + 'confusion_matrix_by_run.png', dpi=300)
+        plt.savefig(self.outdir + 'confusion_matrix_by_run.png', dpi=300)
         plt.close() # Close to free up memory
         print("Saved: confusion_matrix_by_run.png")
 
-    def _plot_bars(self, df, x_col, y_col, hue_col=None, title="", ylabel="", outpath=""):
+    def _plot_bars(self, x_col, y_col, hue_col=None, title="", ylabel="", outpath=""):
         plt.figure(figsize=(12, 7))
         sns.set_style("whitegrid")
         
         if hue_col:
             ax = sns.barplot(
-                data=df, 
+                data=self.df, 
                 x=x_col, 
                 y=y_col, 
                 hue=hue_col, 
@@ -215,7 +227,7 @@ class PlottingUtils:
             )
         else:
             ax = sns.barplot(
-                data=df, 
+                data=self.df, 
                 x=x_col, 
                 y=y_col, 
                 edgecolor='black'
@@ -230,42 +242,39 @@ class PlottingUtils:
         plt.savefig(outpath)
         print(f"Saved: {outpath}")
 
-    def plot_graphs(self, outdir=outdir_default):
+    def plot_graphs(self):
         # --- Graph 1: Grouped Accuracy Bar Chart (X=n, Hue=k) ---
         self._plot_bars(
-            df=self.df, 
             x_col=self.x_col,
             y_col='test_accuracy', 
             hue_col=self.hue_col, 
             title=f'FFNN Test Accuracy {self.title_suffix}', 
             ylabel='Test Accuracy',
-            outpath=outdir + 'accuracy_by_nk.png'
+            outpath=self.outdir + 'accuracy_by_nk.png'
         )
 
         # --- Graph 2: Grouped Balanced Accuracy Bar Chart (X=n, Hue=k) ---
         self._plot_bars(
-            df=self.df, 
             x_col=self.x_col, 
             y_col='test_balanced_accuracy', 
             hue_col=self.hue_col, 
             title=f'FFNN Test Balanced Accuracy {self.title_suffix}', 
             ylabel='Test Balanced Accuracy',
-            outpath=outdir + 'balanced_accuracy_by_nk.png'
+            outpath=self.outdir + 'balanced_accuracy_by_nk.png'
         )
 
         # --- Graph 3: Grouped F1 Bar Chart (X=n, Hue=k) ---
         self._plot_bars(
-            df=self.df, 
             x_col=self.x_col, 
             y_col='f1', 
             hue_col=self.hue_col, 
             title=f'FFNN F1 score {self.title_suffix}', 
             ylabel='Test F1',
-            outpath=outdir + 'f1_by_nk.png'
+            outpath=self.outdir + 'f1_by_nk.png'
         )
 
         # --- Graph 4: Confusion Matrix as bars ---
-        self._plot_cm_bars(self.df, outdir, title_suffix=self.title_suffix)
+        self._plot_cm_bars(title_suffix=self.title_suffix)
 
         # --- Graph 5: Averaged Confusion Matrix ---
         avg_cm = self.df[['TN', 'FN', 'FP', 'TP']].mean()
@@ -278,7 +287,7 @@ class PlottingUtils:
                     yticklabels=['Actual 0', 'Actual 1'])
         plt.title(f'Global Averaged Confusion Matrix\n(Across {len(self.df)} runs)', fontsize=15, pad=15)
         plt.tight_layout()
-        plt.savefig(outdir + 'averaged_confusion_matrix.png')
+        plt.savefig(self.outdir + 'averaged_confusion_matrix.png')
         print("Saved: averaged_confusion_matrix.png")
 
 def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=None, group_x_col=None, group_hue_col=None):
@@ -287,10 +296,14 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
     if not os.path.exists(base_dir):
         print(f"Directory {base_dir} not found.")
         return
+    else:
+        print(f"Scanning directory: {base_dir}")
     
     if not os.path.exists(outdir):
         os.makedirs(outdir, exist_ok=True)
         print(f"Created output directory: {outdir}")
+    else:
+        print(f"Output directory already exists: {outdir}")
 
     # Iterate through all folders in nn_runs
     for folder_name in os.listdir(base_dir):          
@@ -307,8 +320,9 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
 
     if all_data:
         df = pd.DataFrame(all_data)
-        plotting = PlottingUtils(x_col=x_col, hue_col=hue_col, group_x_col=group_x_col, group_hue_col=group_hue_col)
-        plotting.plot_graphs(df, outdir=outdir)
+        print(f"Extracted metrics from {len(df)} log files.")
+        plotting = PlottingUtils(df=df, outdir=str(outdir), x_col=x_col, hue_col=hue_col, x_col_by_cluster=(group_x_col == 'cluster'), x_col_by_phage=(group_x_col == 'phage'))
+        plotting.plot_graphs()
         # Optional: save the raw data for inspection
         df.to_csv(outdir +'all_runs_summary.csv', index=False)
         print("Summary CSV saved as all_runs_summary.csv")
@@ -317,6 +331,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
 
 if __name__ == "__main__":
     if parse_arguments().base_dir:
-        main(base_dir=parse_arguments().base_dir, outdir=parse_arguments().outdir, x_col=parse_arguments().x_col, hue_col=parse_arguments().hue_col, group_x_col=parse_arguments().group_x_col, group_hue_col=parse_arguments().group_hue_col)
+        args = parse_arguments()
+        main(base_dir=args.base_dir.strip(" "), outdir=args.out_dir.strip(" "), x_col=args.x_col, hue_col=args.hue_col, group_x_col=args.group_x_col.lower(), group_hue_col=args.group_hue_col)
     else:
         main()
