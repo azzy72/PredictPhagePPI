@@ -33,6 +33,7 @@ import networkx as nx
 from scipy.cluster.hierarchy import linkage
 from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
 from captum import attr 
 from captum.attr import IntegratedGradients
 from decompositions import KmerCodec
@@ -615,18 +616,20 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
     
     return top_idx, top_vals, decoded_kmers_dict
 
-def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, hash_lookup: dict, sort_by_ratio: bool = False, logging : bool = False, outdir: str = None, bact_clusters: pd.DataFrame = None):
-    # Helper function to decode hash to strain name
-    def get_strain_name(hash_value, hash_lookup, default_hash=True):
-        """Decode hash value to strain name using hash_lookup."""
-        if hash_value in hash_lookup:
-            strains = hash_lookup[hash_value]
-            if isinstance(strains, list) and len(strains) > 0:
-                return strains[0]  # Return first strain name from list
-            elif isinstance(strains, str):
-                return strains
-        return str(hash_value) if default_hash else "Unknown"
-    
+def get_strain_name(hash_value, hash_lookup, default_hash=True):
+    """Decode hash value to strain name using hash_lookup."""
+    if hash_value in hash_lookup:
+        strains = hash_lookup[hash_value]
+        if isinstance(strains, list) and len(strains) > 0:
+            return strains[0]  # Return first strain name from list
+        elif isinstance(strains, str):
+            return strains
+    return str(hash_value) if default_hash else "Unknown"
+
+def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expected_interactions: dict, hash_lookup: dict, 
+                           sort_by_ratio: bool = False, logging : bool = False, outdir: str = None, bact_clusters: pd.DataFrame = None):
+    kc = KmerCodec()
+
     # Divide interaction score by occurrence count
     interaction_ratio_pairs = {
         pair: (interaction_pairs[pair] / occurence_pairs[pair] if occurence_pairs.get(pair, 0) != 0 else float("nan"))
@@ -635,25 +638,34 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, hash_
 
     # Create DataFrame with decoded strain names from hash_lookup
     pair_df = pd.DataFrame({
-        "Bacterium": ["_".join([get_strain_name(pair[0], hash_lookup), str(pair[0])]) for pair in interaction_ratio_pairs.keys()],
-        "Phage": ["_".join([get_strain_name(pair[1], hash_lookup), str(pair[1])]) for pair in interaction_ratio_pairs.keys()],
+        "Bacterium": ["_".join([get_strain_name(pair[0], hash_lookup), kc.decode(int(pair[0]), k=12)]) for pair in interaction_ratio_pairs.keys()],
+        "Phage": ["_".join([get_strain_name(pair[1], hash_lookup), kc.decode(int(pair[1]), k=12)]) for pair in interaction_ratio_pairs.keys()],
         "Interaction_Ratio": list(interaction_ratio_pairs.values())
     })
 
     # Filter zeros and pivot
     pair_no_zero_df = pair_df[pair_df["Interaction_Ratio"] > 0]
     pivot_df = pair_no_zero_df.pivot_table(index="Phage", columns="Bacterium", values="Interaction_Ratio", fill_value=0)
+    print(f"pivot_df before sorting:\n", pivot_df.head(10))
 
     # Reorder axes if sort_by_ratio is True
     if sort_by_ratio:
         # 1. Sort Phages (rows) by their average interaction score
         phage_order = pivot_df.mean(axis=1).sort_values(ascending=False).index
+        #print("Phage order after sorting:\n", phage_order.tolist())
+
         # 2. Sort Bacteria (columns) by their average interaction score
         bact_order = pivot_df.mean(axis=0).sort_values(ascending=False).index
+        #print("Bacterium order after sorting:\n", bact_order.tolist())
         
         # Reindex the pivot table with these orders
         pivot_df = pivot_df.reindex(index=phage_order, columns=bact_order)
-        print("pivot_df after sorting:\n", pivot_df.head(10))
+
+        #print(f"pivot_df after sorting {pivot_df.shape}:\n", pivot_df.head(10))
+        #print("pivot_df index without kmer suffix:\n", ['_'.join(idx.split('_')[:3]) for idx in pivot_df.index])
+        #print("bact_clusters:\n", bact_clusters)
+        #print("bact_clusters reindexed:\n", bact_clusters.reindex(['_'.join(idx.split('_')[:3]) for idx in pivot_df.index]).head(10))
+        #print(f"bact_clusters {bact_clusters.shape}\n", bact_clusters.head(10))
 
         #Alternative graph (clustermap)
         plt.figure(figsize=(12, 8))
@@ -667,10 +679,22 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, hash_
                     break
 
             if cluster_col is not None:
-                bact_meta = bact_clusters.reindex(pivot_df.columns)
-                print(f"Cluster column '{cluster_col}' found in metadata. Using it for column coloring.")
-                print(f"bact_clusters: {bact_meta[cluster_col]}")
+                lookup_keys = [idx.rsplit('_', 1)[0] for idx in pivot_df.index]
+                bact_clusters_unique = bact_clusters.loc[~bact_clusters.index.duplicated(keep='first')]
+                bact_meta = bact_clusters_unique.reindex(lookup_keys)
+                #print(f"Cluster column '{cluster_col}' found in metadata. Using it for column coloring.")
+                #print(f"bact_meta {bact_meta.shape}: {bact_meta.head(10)}")
+
+                bact_meta.rename(columns={cluster_col: 'Bacteria Clusters'}, inplace=True)
+                cluster_col = 'Bacteria Clusters'
+                #print(f"bact_meta with cluster_col: {bact_meta[cluster_col]}")
+
+                # Overwrite index to contain the full bacterium names (with kmer suffix) to ensure proper alignment with pivot_df columns
+                bact_meta.index = pivot_df.index
+                #print(f"bact_meta index overwriting: {bact_meta.head(10)}")
+
                 cluster_series = bact_meta[cluster_col].fillna("Unknown").astype(str)
+                #print(f"Cluster series for coloring:\n{cluster_series.head(10)}")
 
                 # Build hierarchical linkage from cluster membership to enforce bacteria-wise grouping
                 cluster_matrix = pd.get_dummies(cluster_series, prefix="cluster")
@@ -678,13 +702,13 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, hash_
                     col_linkage = linkage(cluster_matrix.values, method="average", metric="euclidean")
 
                 unique_clusters = pd.Index(cluster_series.unique())
-                print(f"Unique clusters found for coloring: {unique_clusters.tolist()}")
+                #print(f"Unique clusters found for coloring: {unique_clusters.tolist()}")
                 palette = sns.color_palette("tab20", n_colors=max(len(unique_clusters), 1))
                 cluster_to_color = {cluster: palette[i] for i, cluster in enumerate(unique_clusters)}
                 col_colors = cluster_series.map(cluster_to_color)
 
         g = sns.clustermap(
-            pivot_df,
+            pivot_df.T,
             cmap="viridis",
             standard_scale=None,
             row_cluster=False,
@@ -692,25 +716,61 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, hash_
             col_linkage=col_linkage,
             col_colors=col_colors,
         )
-        plt.savefig(os.path.join(outdir, 'interaction_pairs_clustermap.png'))
 
-    # Plotting
+        # Color x and y labels by cluster membership
+        if col_colors is not None:
+            for label in g.ax_heatmap.get_xticklabels():
+                label_text = label.get_text()
+                if label_text in pivot_df.columns:
+                    cluster_value = cluster_series.get(label_text, "Unknown")
+                    label.set_color(cluster_to_color.get(cluster_value, "black"))
+            for label in g.ax_heatmap.get_yticklabels():
+                label.set_color("black")
+
+        if logging and outdir:
+            plt.savefig(os.path.join(outdir, 'interaction_pairs_clustermap.png'))
+
+    # Plotting raw interaction ratio heatmap
     plt.figure(figsize=(12, 8))
     sns.heatmap(pivot_df, cmap="viridis", cbar_kws={"label": "Interaction Ratio"})
     
     title = "Interaction Ratio of Bacterium-Phage Pairs"
-    if sort_by_ratio:
-        title += " (Grouped by Intensity)"
-    
     plt.title(title)
     plt.xlabel("Bacterium")
     plt.ylabel("Phage")
-    plt.xticks(rotation=90)
+    plt.xticks(rotation=90, fontsize=6)
+    plt.yticks(fontsize=6)
     plt.tight_layout()
 
     if logging and outdir:
         graph_name = 'interaction_pairs_sorted.png' if sort_by_ratio else 'interaction_pairs.png'
         plt.savefig(os.path.join(outdir, graph_name))
+    
+    # Plotting interaction ratio scaled with expected interaction
+    #divide interaction ratio by expected interaction to get a fold-change like measure
+    scaled_pivot_df = pivot_df.copy()
+    for phage in scaled_pivot_df.index:
+        for bact in scaled_pivot_df.columns:
+            expected_value = expected_interactions.get((bact, phage), 1)  # Avoid division by zero
+            if expected_value != 0:
+                scaled_pivot_df.at[phage, bact] = pivot_df.at[phage, bact] / expected_value
+            else:
+                scaled_pivot_df.at[phage, bact] = float("nan")  # Set to NaN if expected value is zero
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(scaled_pivot_df, cmap="viridis", cbar_kws={"label": "Interaction Ratio / Expected Interaction"})
+
+    title = "Interaction Ratio of Bacterium-Phage Pairs Scaled by Expected Interaction"
+    plt.title(title)
+    plt.xlabel("Bacterium")
+    plt.ylabel("Phage")
+    plt.xticks(rotation=90, fontsize=6)
+    plt.yticks(fontsize=6)
+    plt.tight_layout()
+
+    if logging and outdir:
+        graph_name = 'interaction_pairs_sorted_scaled.png' if sort_by_ratio else 'interaction_pairs_scaled.png'
+        plt.savefig(os.path.join(outdir, graph_name))
+    
 
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
@@ -1127,12 +1187,13 @@ class GeneAnalysis():
                 if "Top 10 decoded kmers:" in line:
                     return self._clean_kmer_line(line)
 
-    def search_and_annotate_kmers(self, kmer_list, summarise_by: str = None, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt", expect:int = 100):
+    def search_and_annotate_kmers(self, kmer_list, organism : str = "Unknown", summarise_by: str = None, outfile:str = None, acc_num:int = 3, tax_origin:str  = "txid38018[orgn]", ncbi_program:str = "blastn", ncbi_db:str = "core_nt", expect:int = 100):
         """
         Blasts each of the kmers against NCBI, for related species (accessions), then searches its genes for the kmer along with possible functionalities.
         
         Args:            
             kmer_list (list | pd.DataFrame): A list or DataFrame of k-mer sequences to search for.
+            organism (str): The organism given (related in output file names)
             summarise_by (str): Whether to summarise the kmer results by gene or function.
             outfile (str): The path to the output file where results will be logged. If None, defaults to "logs/NCBI_gene_search.txt" in the root directory.
             acc_num (int): The number of top BLAST hits to consider for gene annotation.
@@ -1145,7 +1206,11 @@ class GeneAnalysis():
         """
         Entrez.email = "s215045@student.dtu.dk"
         if outfile is None:
-            outfile = self.root + "logs/NCBI_gene_search.csv"
+            outfile = self.root + f"logs/{organism}_NCBI_gene_search.csv"
+        
+        if self.logging:
+            ncbi_logs = self.root + f"logs/{organism}_NCBI_search_logs.txt"
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting gene annotation for {len(kmer_list)} kmers. Output will be saved to {outfile}. NCBI logs will be saved to {ncbi_logs}', file=self.logfile)
 
         input_is_df = isinstance(kmer_list, pd.DataFrame)
         if input_is_df:
@@ -1183,80 +1248,93 @@ class GeneAnalysis():
             blast_results_raw = result_handle.read()
             result_handle.close()
 
-            if "</BlastOutput>" not in blast_results_raw:
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ERROR: NCBI returned incomplete XML (truncated). Try a smaller kmer batch.', file=self.logfile)
-                return pd.DataFrame() # Or handle as needed
+            with open(ncbi_logs, "w") as logf:
+                logf.write(f"BLAST search parameters:\nProgram: {ncbi_program}\nDatabase: {ncbi_db}\nEntrez Query: {tax_origin}\nWord Size: 10\nExpect Threshold: {expect}\nShort Query: True\nHitlist Size: {acc_num}\n\n")
+                logf.write("Raw BLAST results:\n")
+                logf.write(blast_results_raw)
 
-            from io import StringIO
-            blast_records = list(NCBIXML.parse(StringIO(blast_results_raw)))
-            
-            # Use enumerate to match records back to the original kmer_list
-            results = []
-            for i, record in enumerate(tqdm(blast_records, desc="Processing BLAST records")):
-                # Safety check: ensure we match the right kmer
-                # NCBI sometimes skips records if NO hits are found at all
-                kmer_seq = kmer_list[i] 
-                #print(f"\n--- Results for Kmer: {kmer_seq} ---")
+                if "</BlastOutput>" not in blast_results_raw:
+                    if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ERROR: NCBI returned incomplete XML (truncated). Try a smaller kmer batch.', file=self.logfile)
+                    return pd.DataFrame() # Or handle as needed
+
+                from io import StringIO
+                blast_records = list(NCBIXML.parse(StringIO(blast_results_raw)))
                 
-                if not record.alignments:
-                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} No significant hits found.', file=self.logfile)
-                    continue
-                
-                output = []
-                gene_found = []
-                function_found = []
-                results_inner = []
-                for alignment in record.alignments:
-                    accession = alignment.accession
-                    hit_def = alignment.title
-                    output.append(f"Checking Gene in Hit: {accession}")
+                # Use enumerate to match records back to the original kmer_list
+                results = []
+                logf.write(f"\nParsed {len(blast_records)} BLAST records.\n")
+                for i, record in enumerate(tqdm(blast_records, desc="Processing BLAST records")):
+                    logf.write(f"\n--- Processing Record {i+1}/{len(blast_records)} for Kmer: {kmer_list[i]} ---\n")
+                    # Safety check: ensure we match the right kmer
+                    # NCBI sometimes skips records if NO hits are found at all
+                    kmer_seq = kmer_list[i] 
+                    #print(f"\n--- Results for Kmer: {kmer_seq} ---")
                     
-                    # We use a try-block for Entrez in case one specific ID fails
-                    try:
-                        # 4. FETCH: Use small sleep to avoid 429 Too Many Requests
-                        sleep(0.5) 
-                        handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", retmode="text")
-                        genbank_rec = SeqIO.read(handle, "genbank")
-                        handle.close()
+                    if not record.alignments:
+                        if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} No significant hits found.', file=self.logfile)
+                        continue
+                    
+                    output = []
+                    gene_found = []
+                    function_found = []
+                    results_inner = []
+                    for alignment in record.alignments:
+                        logf.write(f"\nProcessing alignment: {alignment.accession} | {alignment.title}\n")
+                        accession = alignment.accession
+                        hit_def = alignment.title
+                        output.append(f"Checking Gene in Hit: {accession}")
                         
-                        hsp = alignment.hsps[0]
-                        start, end = min(hsp.sbjct_start, hsp.sbjct_end), max(hsp.sbjct_start, hsp.sbjct_end)
-                        
-                        found_gene = False
-                        for feature in genbank_rec.features:
-                            if feature.type == "CDS":
-                                if start >= feature.location.start and end <= feature.location.end:
-                                    product = feature.qualifiers.get('product', ['Unknown'])[0]
-                                    gene = feature.qualifiers.get('gene', ['N/A'])[0]
-                                    #print(f"  [MATCH] Found in Gene: {gene} | Function: {product}")
-                                    #gene_found.append(gene)
-                                    #function_found.append(product)
-                                    found_gene = True
-                                    # Populate results_inner 
-                                    results_inner.append({"Kmer": kmer_seq, "Gene": gene, "Function": product})
-                                    break
-                        if not found_gene:
-                            results_inner.append({"Kmer": kmer_seq, "Gene": "N/A", "Function": "N/A"})
-                        #     output.append("  [INFO] Hit is in an intergenic/non-coding region.")
+                        # We use a try-block for Entrez in case one specific ID fails
+                        try:
+                            # 4. FETCH: Use small sleep to avoid 429 Too Many Requests
+                            sleep(0.5) 
+                            handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", retmode="text")
+                            genbank_rec = SeqIO.read(handle, "genbank")
+                            handle.close()
                             
-                    except Exception as e:
-                        #output.append(f"  [ERROR] Could not fetch details for {accession}: {e}")
-                        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR] Could not fetch details for {accession}: {e}', file=self.logfile)
-                        results_inner.append({"Kmer": kmer_seq, "Gene": "Error Fetching", "Function": "Error Fetching"})
+                            hsp = alignment.hsps[0]
+                            start, end = min(hsp.sbjct_start, hsp.sbjct_end), max(hsp.sbjct_start, hsp.sbjct_end)
+                            
+                            found_gene = False
+                            for feature in genbank_rec.features:
+                                if feature.type == "CDS":
+                                    if start >= feature.location.start and end <= feature.location.end:
+                                        product = feature.qualifiers.get('product', ['Unknown'])[0]
+                                        gene = feature.qualifiers.get('gene', ['N/A'])[0]
+                                        #print(f"  [MATCH] Found in Gene: {gene} | Function: {product}")
+                                        #gene_found.append(gene)
+                                        #function_found.append(product)
+                                        found_gene = True
+                                        # Populate results_inner 
+                                        results_inner.append({"Kmer": kmer_seq, "Gene": gene, "Function": product})
+                                        break
+                            if not found_gene:
+                                results_inner.append({"Kmer": kmer_seq, "Gene": "N/A", "Function": "N/A"})
+                            #     output.append("  [INFO] Hit is in an intergenic/non-coding region.")
+                                
+                        except Exception as e:
+                            #output.append(f"  [ERROR] Could not fetch details for {accession}: {e}")
+                            if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR] Could not fetch details for {accession}: {e}', file=self.logfile)
+                            results_inner.append({"Kmer": kmer_seq, "Gene": "Error Fetching", "Function": "Error Fetching"})
 
-                results.extend(results_inner)
+                    results.extend(results_inner)
 
         except Exception as e:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: BLAST search failed: {e}', file=self.logfile)
-            return None
+            if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: BLAST search failed: {e}', file=self.logfile)
+            return pd.DataFrame()
+
+        # terminate if results is empty
+        if not results:
+            if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [INFO]: No results to save after BLAST search.', file=self.logfile)
+            return pd.DataFrame() 
 
         try:  # Try to convert results to DataFrame and save raw results to CSV for record-keeping
             results_df = pd.DataFrame(results)
             results_df.to_csv(outfile, index=False)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [INFO]: Results saved to {outfile}', file=self.logfile)
+            if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [INFO]: Results saved to {outfile}', file=self.logfile)
         except Exception as e:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: Failed to save results to CSV: {e}', file=self.logfile)
-            return None
+            if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: Failed to save results to CSV: {e}', file=self.logfile)
+            return pd.DataFrame()
 
         try:    
             if summarise_by == "gene":
@@ -1266,7 +1344,7 @@ class GeneAnalysis():
                 # Group by Kmer and find the most common function
                 results_df = results_df.groupby('Kmer')['Function'].agg(lambda x: x.value_counts().idxmax()).reset_index()
         except Exception as e:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: Error during summarization: {e}', file=self.logfile)
+            if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}   [ERROR]: Error during summarization: {e}', file=self.logfile)
 
         return results_df
 

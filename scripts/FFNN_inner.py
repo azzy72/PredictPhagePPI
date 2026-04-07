@@ -59,6 +59,7 @@ def parse_arguments():
     parser.add_argument("--perform_fi", action="store_true", help="Perform feature importance analysis")
     parser.add_argument("--perform_pfi", action="store_true", help="Perform pairwise feature importance analysis")
     parser.add_argument("--perform_ga", action="store_true", help="Perform gene analysis on top features")
+    parser.add_argument("--run_ga_on_pfi", action="store_true", help="Run gene analysis on top features from pairwise feature importance analysis, rather than the standard feature importance analysis")
     parser.add_argument("--reconstruct_gene_annotation", action="store_true", help="Reconstruct gene annotations from GeneAnalysis, rather than loading them from a file from a previous run.")
     parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
     parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
@@ -134,6 +135,11 @@ def parse_arguments():
     if args.force_pfi_recalculation and not args.perform_pfi:
         print("WARNING: --force_pfi_recalculation will be ignored because --perform_pfi is not set. It doesn't make sense to force recalculation of pairwise feature importance if we're not performing feature importance analysis at all.", file=sys.stderr)
         args.force_pfi_recalculation = False
+
+    # Requirement: --perform_pfi should be True if --run_ga_on_pfi is True
+    if args.run_ga_on_pfi and not args.perform_pfi:
+        print("WARNING: --run_ga_on_pfi will be ignored because --perform_pfi is not set. It doesn't make sense to run gene analysis on pairwise feature importance if we're not performing feature importance analysis at all.", file=sys.stderr)
+        args.run_ga_on_pfi = False
 
     # # Modification: automatically set test_on_excluded to True if exclude_pairs or exclude_clusters is used, since it doesn't make sense to have a test split from the main dataset if the excluded pairs/clusters are not in the test set
     # if (args.exclude_pairs or args.exclude_clusters) and not args.test_on_excluded:
@@ -892,59 +898,14 @@ def main():
         except Exception as e:
             print(f"Error during k-mer regaining: {e}")
             traceback.print_exc()
-    
-    ### Gene Annotation of Kmers ###
-    if args.perform_ga:
-        try:
-            indices, vals, all_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=10, 
-                idx_to_minhash=idx_to_minhash,
-                mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
-                logging=args.logging, logfile=logfile)
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers (subset): {[all_kmers_decoded[i] for i in range(5)]}', file=logfile)
-            kmers_entity_df = pd.DataFrame([
-                {
-                    "feature_index": idx,
-                    "entity": idx_to_entity.get(idx, "unknown"),
-                    "organism": "bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data.keys() else "unknown"),
-                    "decoded_kmer": all_kmers_decoded[i] if i < len(all_kmers_decoded) else None
-                }
-                for i, idx in enumerate(indices)
-            ])
 
-        except Exception as e:
-            print(f"Error during k-mer regaining for annotation: {e}")
-
-        try:
-            GA = GeneAnalysis(logfile=logfile, logging=args.logging)
-            phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
-            bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
-            
-            #limit dfs to 10 for testing purposes
-            phage_kmers_decoded_df = phage_kmers_decoded_df.head(10)
-            bact_kmers_decoded_df = bact_kmers_decoded_df.head(10)
-            
-            print("Phage_df - Started k-mer annotation with GeneAnalysis...")
-            ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, summarise_by="function", tax_origin="txid38018[orgn]") # Phage first
-            if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
-                number_of_blast_res_before = len(ncbi_blast_res_df)
-                sleep(10) #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
-                print("Bact_df - Started k-mer annotation with GeneAnalysis...")
-                ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, GA.search_and_annotate_kmers(bact_kmers_decoded_df, summarise_by="function", tax_origin="txid91347[orgn]", ncbi_db="refseq_select_nucleotide")], ignore_index=True) # Bact second
-                if len(ncbi_blast_res_df) > number_of_blast_res_before and ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
-                    ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
-                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
-                else:
-                    raise ValueError("No BLAST results were obtained for either phage or bacterial k-mers. Please check the input data and BLAST parameters.")
-            else:
-                raise ValueError("No BLAST results were obtained for phage k-mers. Please check the input data and BLAST parameters.")
-            
-        except Exception as e:
-            print(f"Error during GeneAnalysis: {e}")
-    
     ### Investigating Pairs ###
     if args.perform_pfi:
+        hash_lookup = None
         pfi_failed = False
-        out_pfi = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt"
+        out_pfi = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}/pfi_values.txt"
+        hash_lookup = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}/hash_lookup.csv"
+        #out_pfi = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt"
         try:
             if args.force_pfi_recalculation:
                 raise FileNotFoundError("Forced recomputation of interaction pairs as per user request.")
@@ -953,15 +914,21 @@ def main():
             with open(out_pfi, "r") as f:
                 interaction_pairs = {}
                 occurence_pairs = {}
+                interaction_freq_pairs = {}
+                occurence_freq_pairs = {}
+                expected_interactions = {}
                 next(f, None)  # skip header line
                 for line in f:
                     parts = line.strip().split("\t")
                     if len(parts) == 4:
-                        phage_hash, bact_hash, iscore, oscore = parts
+                        phage_hash, bact_hash, iscore, oscore, ifreq, ofreq, efreq = parts
                         pair = (phage_hash, bact_hash)
                         try:
                             interaction_pairs[pair] = float(iscore)
                             occurence_pairs[pair] = float(oscore)
+                            interaction_freq_pairs[pair] = float(ifreq)
+                            occurence_freq_pairs[pair] = float(ofreq)
+                            expected_interactions[pair] = float(efreq)
                         except ValueError as ve:
                             print(f"ValueError for line: {line.strip()} - {ve}")
                             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ValueError for line: {line.strip()} - {ve}', file=logfile)
@@ -971,11 +938,20 @@ def main():
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded interaction pairs from {out_pfi}', file=logfile)
             
         except FileNotFoundError:
-            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, hash_lookup = construct_interaction_pairs(
+            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = construct_interaction_pairs(
                 phage_minhash_data, bact_minhash_data, host_range_data, phage_names, bacteria_names, subset=args.subset_pfi, outfile = out_pfi)
             if args.logging: 
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {out_pfi}', file=logfile)
-                
+        
+        if hash_lookup is None:
+            try:
+                hash_lookup = pd.read_csv(hash_lookup)
+                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded hash lookup from {hash_lookup}', file=logfile)
+            except Exception as e:
+                print(f"Error loading hash lookup: {e}")
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Error loading hash lookup: {e}', file=logfile)
+
+
         if args.logging:
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total interacting pairs found: {len(interaction_pairs)}', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total pairs with shared k-mers: {len(occurence_pairs)}', file=logfile)
@@ -989,7 +965,7 @@ def main():
                 # for line in interaction_pairs[:10]:
 
         #plot_interaction_pairs(interaction_pairs, occurence_pairs, hash_lookup, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
-        plot_interaction_pairs(interaction_pairs, occurence_pairs, hash_lookup, sort_by_ratio=True, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
+        plot_interaction_pairs(interaction_pairs, occurence_pairs, expected_interactions, hash_lookup, sort_by_ratio=True, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
 
         # Filter idx_to_minhash to only include the top X interaction pairs
         top_pairs = sorted(interaction_pairs.items(), key=lambda x: x[1], reverse=True)[:50] # Get top 50 pairs by interaction score
@@ -1000,33 +976,36 @@ def main():
         filtered_idx_to_minhash = {idx: mh for idx, mh in idx_to_minhash.items() if mh in top_minhashes}
 
         # Regain k-mers for the top interaction pairs
-        top_kmers_df = None
+        pfi_top_kmers_df = None
         try:
             top_indices = [idx for idx, mh in filtered_idx_to_minhash.items()]
-            top_idx, top_vals, top_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=50, 
+            pfi_top_idx, pfi_top_vals, pfi_top_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=50, 
                 idx_to_minhash=filtered_idx_to_minhash,
                 mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
                 logging=args.logging, logfile=logfile)
-            if len(top_idx) == 0: 
+            if len(pfi_top_idx) == 0: 
                 pfi_failed = True
                 raise Exception("regain_kmers() failed")
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers for top interaction pairs: {list(top_kmers_decoded.values())}', file=logfile)
-            top_kmers_df = pd.DataFrame({
-                "feature_index": list(top_kmers_decoded.keys()),
-                "decoded_kmer": list(top_kmers_decoded.values())
+            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers for top interaction pairs: {list(pfi_top_kmers_decoded.values())}', file=logfile)
+            pfi_top_kmers_df = pd.DataFrame({
+                "feature_index": list(pfi_top_kmers_decoded.keys()),
+                "entity": [idx_to_entity.get(idx, "unknown") for idx in pfi_top_kmers_decoded.keys()],
+                "organism": ["bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data.keys() else "unknown") for idx in pfi_top_kmers_decoded.keys()],
+                "decoded_kmer": list(pfi_top_kmers_decoded.values())
             })
-            top_kmers_df.to_csv(outdir+"top_interaction_pair_kmers.csv", index=False)
+            pfi_top_kmers_df.to_csv(outdir+"top_interaction_pair_kmers.csv", index=False)
             if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved decoded k-mers for top interaction pairs to {outdir+"top_interaction_pair_kmers.csv"}', file=logfile)
         except Exception as e:
             print(f"Error during k-mer regaining for top interaction pairs: {e}")
             pfi_failed = True
         
         #Plot the top k-mers for interaction pairs
-        if top_kmers_df is not None and not top_kmers_df.empty and not pfi_failed:
+        if pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty and not pfi_failed:
             plt.figure(figsize=(10, 6))
-            sns.scatterplot(x='feature_index', y='decoded_kmer', data=top_kmers_df.head(20))
-            plt.title('Top k-mers for Interaction Pairs')
+            sns.scatterplot(x='feature_index', y='decoded_kmer', data=pfi_top_kmers_df.head(20))
+            plt.title('Top k-mers for Interaction Pairs on Feature Index')
             plt.xlabel('Feature Index')
+            plt.xlim(0, binary_matrix.shape[1]) # Set x-axis limits to the range of feature indices
             plt.ylabel('Decoded k-mer')
             plt.xticks(rotation=45)
             outname = 'top_interaction_pair_kmers.png'
@@ -1034,7 +1013,61 @@ def main():
                 plt.tight_layout()
                 plt.savefig(outdir + outname)
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved plot of top k-mers for interaction pairs to {outdir + outname}', file=logfile)
+    
+
+    ### Gene Annotation of Kmers ###
+    if args.perform_ga:
+        if args.run_ga_on_pfi and pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty and not pfi_failed:
+            kmers_entity_df = pfi_top_kmers_df
+            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Using top interaction pairs from pairwise feature importance analysis with entity annotations for GeneAnalysis.', file=logfile)
+        else:
+            try:
+                indices, vals, all_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=10, 
+                    idx_to_minhash=idx_to_minhash,
+                    mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
+                    logging=args.logging, logfile=logfile)
+                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers (subset): {[all_kmers_decoded[i] for i in range(5)]}', file=logfile)
+                kmers_entity_df = pd.DataFrame([
+                    {
+                        "feature_index": idx,
+                        "entity": idx_to_entity.get(idx, "unknown"),
+                        "organism": "bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data.keys() else "unknown"),
+                        "decoded_kmer": all_kmers_decoded[i] if i < len(all_kmers_decoded) else None
+                    }
+                    for i, idx in enumerate(indices)
+                ])
+
+            except Exception as e:
+                print(f"Error during k-mer regaining for annotation: {e}")
+
+        try:
+            GA = GeneAnalysis(logfile=logfile, logging=args.logging)
+            phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
+            bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
             
+            #limit dfs to 10 for testing purposes
+            phage_kmers_decoded_df = phage_kmers_decoded_df.head(10)
+            bact_kmers_decoded_df = bact_kmers_decoded_df.head(10)
+            
+            print("Phage_df - Started k-mer annotation with GeneAnalysis...")
+            #ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, organism="phage", summarise_by="function", tax_origin="txid38018[orgn]") # Phage first
+            ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, organism="phage", tax_origin="txid38018[orgn]") # Phage first
+            if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
+                number_of_blast_res_before = len(ncbi_blast_res_df)
+                sleep(10) #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
+                print("Bact_df - Started k-mer annotation with GeneAnalysis...")
+                ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, GA.search_and_annotate_kmers(bact_kmers_decoded_df, organism="bact", summarise_by="function", tax_origin="txid91347[orgn]", ncbi_db="refseq_select_nucleotide")], ignore_index=True) # Bact second
+                if len(ncbi_blast_res_df) > number_of_blast_res_before and ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
+                    ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
+                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
+                else:
+                    raise ValueError("No BLAST results were obtained for either phage or bacterial k-mers. Please check the input data and BLAST parameters.")
+            else:
+                raise ValueError("No BLAST results were obtained for phage k-mers. Please check the input data and BLAST parameters.")
+            
+        except Exception as e:
+            print(f"Error during GeneAnalysis: {e}")
+    
 
     ### Optional: Save the trained model for future use ###
     if args.save_model:

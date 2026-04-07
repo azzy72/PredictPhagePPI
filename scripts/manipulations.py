@@ -385,7 +385,7 @@ def construct_presence_matrix(phage_dict : dict, bact_dict : dict, TS : bool = F
 
     return phage_pres_df, bact_pres_df
 
-def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : dict, host_range_data : dict, phage_names : list, bacteria_names : list, subset : int = None, outfile : str = None) -> [dict, dict]:
+def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : dict, host_range_data : dict, phage_names : list, bacteria_names : list, subset : int = None, outfile : str = None) -> [dict, dict, dict, dict, dict, dict]:
     """
     Construct a dictionary of interaction pairs given the minhash data for phages and bacteria and the host range data.
     The dictionary will have keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
@@ -403,18 +403,28 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
         **occurence_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the number of occurrences of that pair across all phage-bacteria combinations.
         **interaction_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized interaction score for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
         **occurence_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized occurrence for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
+        **expected_interactions** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the expected interaction score for that pair across all phage-bacteria combinations.
         **hash_lookup** (dict): dictionary with keys as hash values and values as a list of strains (phage or bacteria) that have that hash in their minhash sketch."""
+    
     interaction_pairs = dict()
     occurence_pairs = dict()
     interaction_freq_pairs = dict()
     occurence_freq_pairs = dict()
+    expected_interactions = dict()
     hash_lookup = dict()
     c = 0
     total_combinations = len(phage_names) * len(bacteria_names)
-    # if subset is not None:
-    #     phage_names = phage_names[:subset]
-    #     bacteria_names = bacteria_names[:subset]
-    #     total_combinations = len(phage_names) * len(bacteria_names)
+    
+    # Create out directory if it doesn't exist
+    outdir = outfile.rsplit("/", 1)[0] if outfile is not None else None
+    if outdir is not None and not os.path.exists(outdir):
+        try:
+            os.makedirs(outdir, exist_ok=True)
+            print(f"Created output directory: {outdir}")
+        except OSError as e:
+            print(f"Could not create outdir {outdir}: {e}")
+            outdir = None  # Set to None to avoid further issues with saving
+
     for pname in phage_names:
         for bname in bacteria_names:
             # Supports nested dict format and tuple-key format
@@ -448,8 +458,16 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
                     print(f"\nReached subset limit of {subset} combinations, stopping pair construction.")
                     break
 
-    print("\nCalculating interaction and occurrence frequencies...")
+    if not sum(interaction_pairs.values()) > 0:
+        print("Warning: Sum of interaction scores is 0, cannot calculate interaction frequencies.")
+    if not sum(occurence_pairs.values()) > 0:
+        print("Warning: Sum of occurrence counts is 0, cannot calculate occurrence frequencies.")
+
+    ### Calculating frequencies (normalized by total interactions/occurrences) ###
+    print("\nCalculating interaction, occurrence & expected frequencies...")
     c = 0
+    if subset is not None:
+        keys_in_subset = []
     for pair in interaction_pairs.keys():
         if sum(interaction_pairs.values()) > 0:
             interaction_freq_pairs[pair] = interaction_pairs[pair] / sum(interaction_pairs.values())
@@ -461,27 +479,25 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
         else:
             occurence_freq_pairs[pair] = 0
         
+        expected_interactions[pair] = interaction_freq_pairs[pair] * occurence_pairs[pair]
+        
         c += 1
         print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
 
+        keys_in_subset.append(pair)
         if subset is not None and c >= subset:
             print(f"\nReached subset limit of {subset} pairs, stopping frequency calculation.")
             break
-
-    if not sum(interaction_pairs.values()) > 0:
-        print("Warning: Sum of interaction scores is 0, cannot calculate interaction frequencies.")
-    if not sum(occurence_pairs.values()) > 0:
-        print("Warning: Sum of occurrence counts is 0, cannot calculate occurrence frequencies.")
-
+    
     if outfile is not None:
         try:
             with open(outfile, "w") as f:
-                f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\n")
-                for pair in interaction_pairs.keys():
-                    f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\n")
+                f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
+                for pair in keys_in_subset if subset is not None else interaction_pairs.keys():
+                    f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")
             print(f"Interaction pairs saved to {outfile}")
         except Exception as e:
             print(f"Error saving interaction pairs to {outfile}: {e}")
     
     print(f"Total phage-bacteria combinations processed: {c}")
-    return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, hash_lookup
+    return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup
