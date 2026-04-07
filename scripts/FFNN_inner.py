@@ -28,6 +28,7 @@ from io_operations import presence_matrix, obtain_idx_to_entity_mapping, call_ho
 from paths import raw_data_path, data_prod_path, path_to_nn_runs
 from manipulations import hostrange_df_to_dict, binarize_host_range, construct_interaction_pairs
 from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, plot_interaction_pairs, FeatureImportance, GeneAnalysis
+from utils import strain_id_tax_lookup
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="FFNN Training Script")
@@ -1014,7 +1015,6 @@ def main():
                 plt.savefig(outdir + outname)
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved plot of top k-mers for interaction pairs to {outdir + outname}', file=logfile)
     
-
     ### Gene Annotation of Kmers ###
     if args.perform_ga:
         if args.run_ga_on_pfi and pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty and not pfi_failed:
@@ -1040,6 +1040,8 @@ def main():
             except Exception as e:
                 print(f"Error during k-mer regaining for annotation: {e}")
 
+        print("kmers_entity_df head:\n", kmers_entity_df.head(10))
+
         try:
             GA = GeneAnalysis(logfile=logfile, logging=args.logging)
             phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
@@ -1054,21 +1056,26 @@ def main():
             ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, organism="phage", tax_origin="txid38018[orgn]") # Phage first
             if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
                 number_of_blast_res_before = len(ncbi_blast_res_df)
-                sleep(10) #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
-                print("Bact_df - Started k-mer annotation with GeneAnalysis...")
-                ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, GA.search_and_annotate_kmers(bact_kmers_decoded_df, organism="bact", summarise_by="function", tax_origin="txid91347[orgn]", ncbi_db="refseq_select_nucleotide")], ignore_index=True) # Bact second
+                for genus in bact_clusters['genus'].unique():
+                    subset_bact_kmers_decoded_df = bact_kmers_decoded_df[bact_kmers_decoded_df["entity"].isin(bact_clusters[bact_clusters["genus"] == genus].index)]
+                    for i in tqdm(range(10), desc=f"Waiting 10 secs"): #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
+                        sleep(1)
+                    tax_str = f"txid{strain_id_tax_lookup.get(genus, 'unknown')}[orgn]" if strain_id_tax_lookup.get(genus, None) is not None else "txid2[orgn]"
+                    print(f"Bact_df - Started k-mer annotation with GeneAnalysis for genus {genus}, tax_origin={tax_str}...")
+                    ncbi_bact_df = GA.search_and_annotate_kmers(subset_bact_kmers_decoded_df, organism="bact", tax_origin=tax_str, expect=10000)
+                    ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, ncbi_bact_df], ignore_index=True) # Bact second
+                
                 if len(ncbi_blast_res_df) > number_of_blast_res_before and ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
                     ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
                     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
                 else:
-                    raise ValueError("No BLAST results were obtained for either phage or bacterial k-mers. Please check the input data and BLAST parameters.")
+                    raise ValueError("No BLAST results were obtained for bacterial k-mers. Please check the input data and BLAST parameters.")
             else:
                 raise ValueError("No BLAST results were obtained for phage k-mers. Please check the input data and BLAST parameters.")
             
         except Exception as e:
             print(f"Error during GeneAnalysis: {e}")
-    
-
+        
     ### Optional: Save the trained model for future use ###
     if args.save_model:
         model_save_path = outdir + "torchMLP_model.pth"
