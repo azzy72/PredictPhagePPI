@@ -1120,13 +1120,14 @@ class FeatureImportance():
         ##plt.show()
 
 class GeneAnalysis():
-    def __init__(self, logfile, logging : bool):
+    def __init__(self, logfile, logging : bool, outdir : str):
         self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/"
         self.raw_data_path = os.path.join(self.root, "raw_data/")
         self.data_prod_path = os.path.join(self.root, "data_prod/")
         self.path_to_nn_runs = os.path.join(self.root, "nn_runs/")
         self.logfile = logfile
         self.logging = logging
+        self.outdir = outdir
 
         # Load kmer annotations from CSV into a dictionary for quick lookup
         self.local_kmer_db = self.data_prod_path + "kmer_annotations.csv"
@@ -1400,6 +1401,62 @@ class GeneAnalysis():
             results_df = existing_annot_df
 
         return results_df
+
+    def plot_annotated_kmer_statistics(self, blast_results):
+        if self.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting plotting of annotated kmer statistics...', file=self.logfile)
+        organisms = sorted(blast_results["organism"].dropna().unique())
+        n_orgs = len(organisms)
+
+        fig, axes = plt.subplots(2, n_orgs, figsize=(7 * n_orgs, 12), sharey="row")
+
+
+        # Ensure axes is always 2D: [row][col]
+        if n_orgs == 1:
+            axes = [[axes[0]], [axes[1]]]
+
+        for i, org in enumerate(organisms):
+        # Row 1: Function
+            ax_func = axes[0][i]
+            subset_func = blast_results[(blast_results["organism"] == org) & (blast_results["Function"].notna())]
+            order_func = subset_func["Function"].value_counts().index
+
+            if subset_func.empty:
+                ax_func.text(0.5, 0.5, "No Function data", ha="center", va="center", transform=ax_func.transAxes)
+                ax_func.set_xticks([])
+            else:
+                sns.countplot(data=subset_func, x="Function", order=order_func, ax=ax_func)
+                ax_func.tick_params(axis="x", rotation=45)
+                for lbl in ax_func.get_xticklabels():
+                    lbl.set_ha("right")
+
+            ax_func.set_title(f"{org} count of annotated Kmer Functions")
+            ax_func.set_xlabel("Function")
+            ax_func.set_ylabel("Count")
+
+        # Row 2: Gene
+            ax_gene = axes[1][i]
+            subset_gene = blast_results[(blast_results["organism"] == org) & (blast_results["Gene"].notna())]
+            order_gene = subset_gene["Gene"].value_counts().index
+
+            if subset_gene.empty:
+                ax_gene.text(0.5, 0.5, "No Gene data", ha="center", va="center", transform=ax_gene.transAxes)
+                ax_gene.set_xticks([])
+            else:
+                sns.countplot(data=subset_gene, x="Gene", order=order_gene, ax=ax_gene)
+                ax_gene.tick_params(axis="x", rotation=45)
+                for lbl in ax_gene.get_xticklabels():
+                    lbl.set_ha("right")
+
+            ax_gene.set_title(f"{org} count of annotated Kmer Genes")
+            ax_gene.set_xlabel("Gene")
+            ax_gene.set_ylabel("Count")
+
+        plt.tight_layout()
+        if self.logging: 
+            outname = 'annotated_kmer_stats.png'
+            plt.savefig(self.outdir+outname)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Finished plotting of annotated kmer statistics. Plot saved to {self.outdir+outname}', file=self.logfile)
+
 
     def assign_gene_clusters(self, rank_df):
         """

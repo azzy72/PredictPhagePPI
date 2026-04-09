@@ -1043,7 +1043,7 @@ def main():
         print("kmers_entity_df head:\n", kmers_entity_df.head(10))
 
         try:
-            GA = GeneAnalysis(logfile=logfile, logging=args.logging)
+            GA = GeneAnalysis(logfile=logfile, logging=args.logging, outdir=outdir)
             phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
             bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
             
@@ -1066,6 +1066,8 @@ def main():
                     ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, ncbi_bact_df], ignore_index=True) # Bact second
                 
                 if len(ncbi_blast_res_df) > number_of_blast_res_before and ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
+                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of kmers annotated: {len(ncbi_blast_res_df)}/{len(kmers_entity_df)}', file=logfile)
+                    ncbi_blast_res_df = ncbi_blast_res_df.merge(kmers_entity_df[["feature_index", "entity", "organism", "decoded_kmer"]], left_on="Kmer", right_on="decoded_kmer", how="right")
                     ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
                     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
                 else:
@@ -1075,7 +1077,12 @@ def main():
             
         except Exception as e:
             print(f"Error during GeneAnalysis: {e}")
-        
+    
+    # Plotting the distribution of annotated Function and Genes of kmers
+    if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
+        GA.plot_annotated_kmer_statistics(ncbi_blast_res_df)
+
+
     ### Optional: Save the trained model for future use ###
     if args.save_model:
         model_save_path = outdir + "torchMLP_model.pth"
