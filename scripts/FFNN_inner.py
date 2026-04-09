@@ -1016,13 +1016,14 @@ def main():
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved plot of top k-mers for interaction pairs to {outdir + outname}', file=logfile)
     
     ### Gene Annotation of Kmers ###
+    # If PFI was performed and yielded results, use those top k-mers with annotations for GeneAnalysis. Otherwise, regain the top k-mers from the model feature importance and use those for GeneAnalysis.
     if args.perform_ga:
         if args.run_ga_on_pfi and pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty and not pfi_failed:
             kmers_entity_df = pfi_top_kmers_df
             if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Using top interaction pairs from pairwise feature importance analysis with entity annotations for GeneAnalysis.', file=logfile)
         else:
             try:
-                indices, vals, all_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=10, 
+                indices, vals, all_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=100, 
                     idx_to_minhash=idx_to_minhash,
                     mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
                     logging=args.logging, logfile=logfile)
@@ -1040,16 +1041,10 @@ def main():
             except Exception as e:
                 print(f"Error during k-mer regaining for annotation: {e}")
 
-        print("kmers_entity_df head:\n", kmers_entity_df.head(10))
-
         try:
             GA = GeneAnalysis(logfile=logfile, logging=args.logging, outdir=outdir)
             phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
             bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
-            
-            #limit dfs to 10 for testing purposes
-            phage_kmers_decoded_df = phage_kmers_decoded_df.head(10)
-            bact_kmers_decoded_df = bact_kmers_decoded_df.head(10)
             
             print("Phage_df - Started k-mer annotation with GeneAnalysis...")
             #ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, organism="phage", summarise_by="function", tax_origin="txid38018[orgn]") # Phage first
