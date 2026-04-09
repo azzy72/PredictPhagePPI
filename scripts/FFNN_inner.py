@@ -362,9 +362,11 @@ def main():
         groups = bact_clusters.loc[[m[0] for m in rows_meta], 'Cluster'].values
         val_clusters = None
         test_clusters = None
+
         if args.test_on_excluded:
             X_train_f, y_train_f = X, y
             X_test, y_test = X_excl, y_excl
+
         else:
             # Split data into train and test
             gss = GroupShuffleSplit(n_splits=1, test_size=args.test_split, random_state=42)
@@ -1060,16 +1062,21 @@ def main():
                     ncbi_bact_df = GA.search_and_annotate_kmers(subset_bact_kmers_decoded_df, organism="bact", tax_origin=tax_str, expect=10000)
                     ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, ncbi_bact_df], ignore_index=True) # Bact second
                 
-                if len(ncbi_blast_res_df) > number_of_blast_res_before and ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
-                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of kmers annotated: {len(ncbi_blast_res_df)}/{len(kmers_entity_df)}', file=logfile)
-                    ncbi_blast_res_df = ncbi_blast_res_df.merge(kmers_entity_df[["feature_index", "entity", "organism", "decoded_kmer"]], left_on="Kmer", right_on="decoded_kmer", how="right")
-                    ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
+                if len(ncbi_blast_res_df) > number_of_blast_res_before:
                     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
                 else:
                     raise ValueError("No BLAST results were obtained for bacterial k-mers. Please check the input data and BLAST parameters.")
             else:
                 raise ValueError("No BLAST results were obtained for phage k-mers. Please check the input data and BLAST parameters.")
             
+            try: 
+                if args.logging: 
+                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of kmers annotated: {len(ncbi_blast_res_df)}/{len(kmers_entity_df)}', file=logfile)
+                ncbi_blast_res_df = ncbi_blast_res_df.merge(kmers_entity_df[["feature_index", "entity", "organism", "decoded_kmer"]], left_on="Kmer", right_on="decoded_kmer", how="right")
+                ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
+            except Exception as e:
+                print(f"Error during merging BLAST results with k-mer annotations: {e}")
+
         except Exception as e:
             print(f"Error during GeneAnalysis: {e}")
     
