@@ -108,8 +108,8 @@ def parse_arguments():
         parser.error("--exclude_pairs requires both --exclude_bacts and --exclude_phages lists.")
 
     # Requirement: test_on_excluded requires exclude_noninteractions
-    if args.test_on_excluded and not args.exclude_pairs:
-        parser.error("--test_on_excluded requires --exclude_pairs to be enabled.")
+    if args.test_on_excluded and not any([args.exclude_pairs, args.exclude_clusters]):
+        parser.error("--test_on_excluded requires at least one: --exclude_pairs or --exclude_clusters")
     
     # Warning: exclude_noninteractions with exclude_pairs means that both the entities in --exclude_bacts and --exclude_phages will be excluded from the training set, as well as all entities that doesn't have a positive interaction in hostrange 
     # This may result in a very small training set if those entities are involved in many interactions. This is not an error, but should be used with caution.
