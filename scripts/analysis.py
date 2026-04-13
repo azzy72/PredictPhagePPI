@@ -1164,6 +1164,7 @@ class GeneAnalysis():
         Returns:
             pd.DataFrame: A dataframe containing the kmer sequences and their annotated functions.
         """
+        kmer_annot_df = pd.DataFrame(columns=['Kmer', 'Gene', 'Function'])  # Initialize empty DataFrame with expected columns
         try:
             kmer_annot_df = pd.read_csv(self.local_kmer_db)   
             # Filter away rows only containing "N/A" in "Gene" & "Function" columns
@@ -1180,8 +1181,8 @@ class GeneAnalysis():
                 print(f"Missing kmers in db: {missing_kmers}")
         
         except FileNotFoundError:
-            print(f"Annotation file {self.local_kmer_db} not found. Kmer annotations will be unavailable.")
-        
+            print(f"Annotation file {self.local_kmer_db} not found.")
+
         except Exception as e:
             print(f"Error loading kmer annotations: {e}")
 
@@ -1203,6 +1204,7 @@ class GeneAnalysis():
             os.path.exists(file_path)
         except FileExistsError as e:
             print("File path doesn't exist", e)
+            return []
         
         with open(file_path, "r") as logfile:
             for line in logfile:

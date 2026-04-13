@@ -3,8 +3,8 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --mem=50G
-#SBATCH --cpus-per-task=1
-#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=25
+#SBATCH --gres=gpu
 #SBATCH --time=48:00:00
 #!SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=PredictPhage
+#SBATCH --job-name=PredGA
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --mem=10G

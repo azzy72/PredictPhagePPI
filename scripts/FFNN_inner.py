@@ -180,6 +180,7 @@ def main():
     args = parse_arguments()
     time_start = time()
     h = helper(args)
+    ncbi_blast_res_df = None
 
     ### 1. Resolve N/K values ###
     if args.nk:
