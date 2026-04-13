@@ -13,7 +13,10 @@ import pandas as pd
 from Bio import SeqIO
 from tqdm import tqdm
 import numpy as np
-from paths import raw_data_path, data_prod_path
+from collections import Counter
+import matplotlib.pyplot as plt
+import seaborn as sns
+from paths import raw_data_path, data_prod_path, path_to_nn_runs
 
 ##### Functions ---------
 def fasta_to_kmerdf(fasta, k=8, quiet=False, sparse=False, relative=True) -> pd.DataFrame:
@@ -501,3 +504,75 @@ def construct_interaction_pairs(phage_minhash_data : dict, bact_minhash_data : d
     
     print(f"Total phage-bacteria combinations processed: {c}")
     return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup
+
+def aggregate_interaction_pairs(nn_runs : list, outdir : str = None, logging : bool = False):
+    """
+    Read the top_interaction_pair_kmers.csv files of directories in nn_runs, and aggregate them to unqiue decoded kmers with a count column, turning the metadata from a str column to a list of str.
+    Args:
+        **nn_runs** (list): list of directories containing the top_interaction_pair_kmers.csv files to aggregate.
+        **outdir** (str): directory to save the aggregated file (default is None, a default directory will be created in data_prod_path/pfi_interaction_kmers_analysis/)
+    """
+    # Handling outdir
+    if outdir is not None:
+        if not os.path.exists(outdir):
+            try:
+                os.makedirs(outdir, exist_ok=True)
+                if logging: print(f"Created output directory: {outdir}")
+            except OSError as e:
+                print(f"Could not create outdir {outdir}: {e}")
+                outdir = None  # Set to None to avoid further issues with saving
+    else:
+        outdir = data_prod_path+"pfi_interaction_kmers_analysis/"
+        if not os.path.exists(outdir):
+            try:
+                os.makedirs(outdir, exist_ok=True)
+                if logging: print(f"Created default output directory: {outdir}")
+            except OSError as e:
+                print(f"Could not create default outdir {outdir}: {e}")
+                return
+
+    total_interaction_pairs_df = pd.DataFrame()
+    df_length = len(total_interaction_pairs_df)
+    for run_dir in nn_runs:
+        #Check if the file exists
+        top_interaction_pairs_path = os.path.join(path_to_nn_runs, run_dir, "top_interaction_pair_kmers.csv")
+        if not os.path.exists(top_interaction_pairs_path):
+            #Check if user has given the full path to the run_dir
+            top_interaction_pairs_path = os.path.join(run_dir, "top_interaction_pair_kmers_downsized.csv")
+            if not os.path.exists(top_interaction_pairs_path):
+                print(f"File not found: {top_interaction_pairs_path}")
+                continue
+        
+        if logging: print(f"Reading file: {top_interaction_pairs_path}")
+        top_interaction_pairs_df = pd.read_csv(top_interaction_pairs_path)
+        total_interaction_pairs_df = pd.concat([total_interaction_pairs_df, top_interaction_pairs_df], ignore_index=True)
+        
+        if len(total_interaction_pairs_df) == df_length:
+            print(f"Warning: No new rows added from file: {top_interaction_pairs_path}")
+        
+        df_length = len(total_interaction_pairs_df)
+        if logging: print(f"Processed file: {top_interaction_pairs_path}, Total rows: {df_length}.\nNow aggregating...")
+
+    # Plotting
+    kmer_abundance = Counter(total_interaction_pairs_df['decoded_kmer'].tolist())
+    kmer_abundance_df = pd.DataFrame(kmer_abundance.items(), columns=['decoded_kmer', 'abundance'])
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x='decoded_kmer', y='abundance', data=kmer_abundance_df.sort_values(by='abundance', ascending=False).head(20))
+    plt.xticks(rotation=90)
+    plt.title('Top 20 Most Abundant k-mers in Top Interaction Pairs')
+    plt.xlabel('Decoded k-mer')
+    plt.ylabel('Abundance')
+    plt.tight_layout()
+    plt.savefig(outdir+"top_20_pfi_kmers_abundance.png")
+
+    #Aggregate to unique kmers, summing the counts and turning the metadata into a list of str
+    # Aggregate total_interaction_pairs_df by combining "decoded_kmer" column, and recreating the other columns into a list of unique values for each "decoded_kmer"
+    total_aggr_df = total_interaction_pairs_df.groupby('decoded_kmer').agg({
+        'feature_index': lambda x: list(set(x)),
+        'entity': lambda x: list(set(x)),
+        'organism': lambda x: list(set(x))
+    }).reset_index()
+
+    total_aggr_df.to_csv(outdir+"top_interaction_kmers_aggregated.csv", index=False)
+

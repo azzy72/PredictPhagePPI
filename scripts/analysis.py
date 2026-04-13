@@ -770,7 +770,6 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
     if logging and outdir:
         graph_name = 'interaction_pairs_sorted_scaled.png' if sort_by_ratio else 'interaction_pairs_scaled.png'
         plt.savefig(os.path.join(outdir, graph_name))
-    
 
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
