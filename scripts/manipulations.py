@@ -219,12 +219,12 @@ def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=
                 combined_host_range[host] = 0
         return combined_host_range
     
-def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, sourmash_parameters = [50000, 0], include_reverse : bool = False) -> int:
+def construct_SM_sketches(raw_in : str, k : int, outdir : str, quiet : bool = False, sourmash_parameters = [50000, 0], include_reverse : bool = False) -> int:
     """
     Construct sourmash sketches given a fasta input.
     
     Args:
-        *fasta* (str | list): List of sequences in fasta format.
+        *raw_in* (str): Path to the input fasta file or directory containing fasta files.
         *k* (int): Length of the k-mers. 
         *outdir* (str): directory for storing sketches (each signature in its own file)
         *quiet* (bool): If True, suppress progress output. Default is False.
@@ -269,42 +269,62 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
             raise ValueError("sourmash parameters must be both integers")
 
     # Handling both cases of fasta input
-    if type(fasta) == str:  # If a file path is provided, read the fasta file
+    raw_is_dir = os.path.isdir(raw_in)
+
+    if raw_is_dir:  # If a directory path is provided, read all fasta files in the directory
         try:
-            records = list(SeqIO.parse(fasta, "fasta"))
+            records = []
+            rec_names = []
+            for file in os.listdir(raw_in):
+                rec_names.append(file.split("_reoriented.fna")[0])
+                if file.endswith(".fasta") or file.endswith(".fna"):
+                    records_inner = []
+                    for rec in SeqIO.parse(os.path.join(raw_in, file), "fasta"):
+                        records_inner.append(rec)
+                    records.append(records_inner)
         except FileNotFoundError as e:
             print(f"Error: {e}. Please check the file path.")
             return 1
-    elif type(fasta) == list:  # If a list of filenames
-        records = []
-        for file in fasta:
-            try:
-                records.extend(list(SeqIO.parse(file, "fasta")))
-            except FileNotFoundError as e:
-                print(f"Error: {e}. Please check the file path.")
-                continue
+    else:
+        try:
+            records = list(SeqIO.parse(raw_in, "fasta"))
+        except FileNotFoundError as e:
+            print(f"Error: {e}. Please check the file path.")
+            return 1
 
     ### Constructing minhashes for all records ###
     if not quiet: print("------- Constructing MinHashes -------")
     minhashes = []
     for rec in tqdm(records, desc="Constructing minhashes for all records", unit="seq"):
-        #print("Record:", rec.id, len(rec.seq))
-        try:
-            mh = sourmash.MinHash(n=sourmash_parameters[0], ksize=k, scaled=sourmash_parameters[1]) #each record gets its own minhash | scaled=1000 to limit 
-            for i in range(0, len(rec.seq) - k + 1):
-                kmer = str(rec.seq[i:i+k])
-                mh.add_sequence(kmer, force=True)
-                if include_reverse:
-                    mh.add_sequence(kmer[::-1], force=True)
-            minhashes.append(mh)
-        except:
-            raise SystemError("Error in constructing minhashes")
-    
+        if raw_is_dir:
+            try:
+                mh = sourmash.MinHash(n=sourmash_parameters[0], ksize=k, scaled=sourmash_parameters[1]) #each record gets its own minhash | scaled=1000 to limit memory usage
+                for rec_inner in rec:
+                    for i in range(0, len(rec_inner.seq) - k + 1):
+                        kmer = str(rec_inner.seq[i:i+k])
+                        mh.add_sequence(kmer, force=True)
+                        if include_reverse:
+                            mh.add_sequence(kmer[::-1], force=True)
+                minhashes.append(mh)
+            except:
+                raise SystemError("Error in constructing minhashes")
+        else:
+            try:
+                mh = sourmash.MinHash(n=sourmash_parameters[0], ksize=k, scaled=sourmash_parameters[1]) #each record gets its own minhash | scaled=1000 to limit memory usage
+                for i in range(0, len(rec.seq) - k + 1):
+                    kmer = str(rec.seq[i:i+k])
+                    mh.add_sequence(kmer, force=True)
+                    if include_reverse:
+                        mh.add_sequence(kmer[::-1], force=True)
+                minhashes.append(mh)
+            except:
+                raise SystemError("Error in constructing minhashes")
+
     ### Saving sketches ###
     if not quiet: print("------- Saving Sketches -------")
-    if "bact" in fasta:
+    if "bact" in raw_in:
         outfile_prefix = "bact"
-    elif "phage" in fasta:
+    elif "phage" in raw_in:
         outfile_prefix = "phage"
     else:
         outfile_prefix = "out"
@@ -312,7 +332,10 @@ def construct_SM_sketches(fasta, k : int, outdir : str, quiet : bool = False, so
     for i in range(len(minhashes)):
         try:
             with open(outpath+f"{outfile_prefix}{i}_minhash.sig", "wt") as sigfile:
-                sig1 = sourmash.SourmashSignature(minhashes[i], name=records[i].id)
+                if raw_is_dir:
+                    sig1 = sourmash.SourmashSignature(minhashes[i], name=rec_names[i])
+                else:
+                    sig1 = sourmash.SourmashSignature(minhashes[i], name=records[i].id)
                 sourmash.save_signatures([sig1], sigfile)
         except:
             raise SystemError(f"Error in saving sourmash sketch for: {records[i].id}")
