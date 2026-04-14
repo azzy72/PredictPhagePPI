@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=PredictPhage
+#SBATCH --job-name=DownsampleBatch
 #SBATCH --partition=cpu
-#SBATCH --nodes=1
+#SBATCH --nodes=4
 #SBATCH --mem=10G
-#SBATCH --cpus-per-task=1
-#SBATCH --time=00:10:00
+#SBATCH --cpus-per-task=4
+#SBATCH --time=05:30:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=END,FAIL
