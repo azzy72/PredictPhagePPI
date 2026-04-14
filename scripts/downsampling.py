@@ -41,14 +41,14 @@ def main():
 
         try:
             ### Phage Minhash Sketch Construction ###
-            construct_SM_sketches(fasta = raw_data_path+"phagehost_KU/phage_cleaned.fasta", 
+            construct_SM_sketches(raw_in = raw_data_path+"phagehost_KU/phage_cleaned.fasta", 
                                 k = pk, 
                                 outdir = phage_outdir, 
                                 quiet = False,
                                 sourmash_parameters=[pn, 0])
 
             ### Bacteria Minhash Sketch Construction ###
-            construct_SM_sketches(fasta = raw_data_path+"phagehost_KU/bacteriaKU_cleaned.fasta", 
+            construct_SM_sketches(raw_in = raw_data_path+"phagehost_KU/bacteria_fasta/", 
                                 k = bk, 
                                 outdir = bact_outdir, 
                                 quiet = False,
@@ -66,16 +66,16 @@ def main():
             bn, bk, pn, pk = args.split_nk
             n, k = bn, bk # Reference n/k for folder naming
 
-        print("One-hot encoding downsampling method is not yet implemented.")
         try:
             codec = KmerCodec()
             with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+"encoded_sketches/", 
-                                        entity_type="phage") as decompose_phage:
-                decompose_phage.decompose(raw_data_path+"phagehost_KU/phage_cleaned.fasta")
+                                        entity_type="phage", sourmash_like=True) as decompose_phage:
+                decompose_phage.decompose(raw_in=raw_data_path+"phagehost_KU/phage_cleaned.fasta")
 
             with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+"encoded_sketches/", 
-                                    entity_type="bacteria") as decompose_bact:
-                decompose_bact.decompose(raw_data_path+"phagehost_KU/bacteriaKU_cleaned.fasta")
+                                    entity_type="bacteria", sourmash_like=True) as decompose_bact:
+                decompose_bact.decompose(raw_in=raw_data_path+"phagehost_KU/bacteria_fasta/")
+            print("One-hot encoding decomposition completed successfully.\n")
         except Exception as e:
             print(f"Error during one-hot encoding decomposition: {e}")
             sys.exit(1)

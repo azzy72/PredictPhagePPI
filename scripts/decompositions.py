@@ -5,6 +5,7 @@ import shutil
 import json
 import hashlib
 from paths import raw_data_path, data_prod_path
+import random
 
 class KmerCodec:
     def __init__(self):
@@ -75,30 +76,70 @@ class Decompose:
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def decompose(self, fasta_path):
+    def decompose(self, raw_in):
         """Main method to decompose genomes from a FASTA file."""
-        yield f"Initialized Decompose with k={self.k}, n={self.n}, entity_type='{self.entity_type}', sourmash_like={self.sourmash_like}"
+        raw_is_dir = os.path.isdir(raw_in)
+        sig = None
+        print(f"Initialized Decompose with k={self.k}, n={self.n}, entity_type='{self.entity_type}', sourmash_like={self.sourmash_like}")
+        print(f"Input path '{raw_in}' is a directory: {raw_is_dir}")
 
         #Saving like sourmash
         if self.sourmash_like:
-            try:
-                os.makedirs(self.inner_dir)
-            except FileExistsError:
-                shutil.rmtree(self.inner_dir)
-                os.makedirs(self.inner_dir)
-            for i, record in tqdm(enumerate(SeqIO.parse(fasta_path, "fasta")), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
-                record_name = record.id
-                sig = self.decompose_genome(str(record.seq).upper())
-                sig = self.prepare_sourmash_structure(sig, record_name)
-                self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}{i}_{record_name.lower()}.sig"))
+            print(f"Processing with sourmash-like output format. Output will be saved in '{self.inner_dir}'")
+            if raw_is_dir:
+                print(f"Processing directory of FASTA files for {self.entity_type} decomposition.")
+                try:
+                    os.makedirs(self.inner_dir)
+                except FileExistsError:
+                    shutil.rmtree(self.inner_dir)
+                    os.makedirs(self.inner_dir)
+                rec_names = []
+                for fasta_file in tqdm(os.listdir(raw_in), desc=f"Processing {self.entity_type} FASTA files", unit="file"):
+                    print(f"Processing file: {fasta_file}")
+                    if fasta_file.endswith(".fasta") or fasta_file.endswith(".fna"):
+                        file_path = os.path.join(raw_in, fasta_file)
+                        print(f"Reading FASTA file: {file_path}")
+                        rec_names.append(fasta_file.split("_reoriented.fna")[0])
+                        record_name = rec_names[-1]
+                        sigs_fasta = []
+                        for i, record in enumerate(SeqIO.parse(file_path, "fasta")):
+                            print(f"Processing record: {record_name}")
+                            sigs_fasta.append(self.decompose_genome(str(record.seq).upper()))
+
+                        if len(sigs_fasta) > self.n:
+                            sigs_fasta = random.sample(sigs_fasta, self.n)
+                    
+                        print(f"Preparing sourmash structure for record '{record_name}' with {len(sigs_fasta)} signatures.")
+                        sig = self.prepare_sourmash_structure(sigs_fasta, record_name)
+                        self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}{i}_{record_name.lower()}.sig"))
+                print(f"Sourmash-like decomposition completed successfully. Signatures saved in '{self.inner_dir}'.\n")
+
+            else:
+                print(f"Processing single FASTA file for {self.entity_type} decomposition.")
+                try:
+                    os.makedirs(self.inner_dir)
+                except FileExistsError:
+                    shutil.rmtree(self.inner_dir)
+                    os.makedirs(self.inner_dir)
+                for i, record in tqdm(enumerate(SeqIO.parse(raw_in, "fasta")), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
+                    record_name = record.id
+                    sig = self.decompose_genome(str(record.seq).upper())
+                    sig = self.prepare_sourmash_structure(sig, record_name)
+                    self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}{i}_{record_name.lower()}.sig"))
+                print(f"Sourmash-like decomposition completed successfully. Signatures saved in '{self.inner_dir}'.\n")
 
         #Saving customly in one file
         if not self.sourmash_like:
-            for record in tqdm(SeqIO.parse(fasta_path, "fasta"), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
+            if raw_is_dir:
+                raise NotImplementedError("Custom saving method is not implemented for directory input yet.")
+            for record in tqdm(SeqIO.parse(raw_in, "fasta"), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
                 sig = self.decompose_genome(str(record.seq).upper())
                 self.save_sketches_to_one_file(sig, os.path.join(self.temp_dir, f"signatures_{self.k}_{self.n}.txt"))
             
             self.concatenate_sketches()
+
+        if sig is None:
+            raise ValueError("No signatures were generated. Please check the input FASTA file(s) and parameters.\n")
 
     def decompose_genome(self, genome_seq):
         kmers = [genome_seq[i:i+self.k] for i in range(len(genome_seq) - self.k + 1)]
@@ -109,7 +150,6 @@ class Decompose:
         
         for i in range(0, len(kmers), sampling_interval):
             if len(kmers[i]) == self.k:
-                # Assuming your codec has this method now
                 encoded = self.codec.encode(kmers[i]) 
                 signatures.append(encoded)
         

@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=DownsampleBatch
+#SBATCH --job-name=EMPATHI
 #SBATCH --partition=cpu
-#SBATCH --nodes=4
+#SBATCH --nodes=1
 #SBATCH --mem=10G
-#SBATCH --cpus-per-task=4
-#SBATCH --time=05:30:00
+#SBATCH --cpus-per-task=1
+#SBATCH --time=01:30:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=END,FAIL
