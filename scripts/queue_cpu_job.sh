@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=EMPATHI
+#SBATCH --job-name=Downsamplen500k16
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --mem=10G

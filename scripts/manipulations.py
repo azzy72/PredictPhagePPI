@@ -226,7 +226,7 @@ def construct_SM_sketches(raw_in : str, k : int, outdir : str, quiet : bool = Fa
     Args:
         *raw_in* (str): Path to the input fasta file or directory containing fasta files.
         *k* (int): Length of the k-mers. 
-        *outdir* (str): directory for storing sketches (each signature in its own file)
+        *outdir* (str): directory for storing sketches created in data_prod_path+"SM_sketches/" (each signature in its own file)
         *quiet* (bool): If True, suppress progress output. Default is False.
         *sourmash_parameters* (list): specify sourmash.MinHash(n, scaled)
         *include_reverse* (bool): include the reverse strand to sketches
