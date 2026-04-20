@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=IterExclClus_PredictPhage
+#SBATCH --job-name=IterExclClus_n500k12
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=25
 #SBATCH --gres=gpu
-#SBATCH --time=48:00:00
+#SBATCH --time=00:30:00
 #!SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
@@ -16,33 +16,37 @@
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod/"
 RAW_DIR="$ROOT_DIR/raw_data/phagehost_KU/"
-DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl/"
+DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_clus/"
 BACT_CLUSTER_FILE="$DATA_DIR/bact_clusters_with_genus.csv"
-PHAGE_FILE="$RAW_DIR/phage_cleaned.fasta"
+PHAGE_CLUSTER_FILE="$DATA_DIR/phage_clusters.csv"
+#PHAGE_FILE="$RAW_DIR/phage_cleaned.fasta"
 NK_VALS="500 12"
 
 # 1. Collect cluster groups from CSV file
 # Extract unique cluster numbers from the CSV (skip header)
-clusters=$(tail -n +2 "$BACT_CLUSTER_FILE" | awk -F',' '{print $2}' | sort -nu)
-echo "Recognized these clusters: $clusters"
+bclusters=$(tail -n +2 "$BACT_CLUSTER_FILE" | awk -F',' '{print $2}' | sort -nu)
+echo "Recognized these bact clusters: $bclusters"
 
-phage_names=$(grep ">" "$PHAGE_FILE" | grep -v "training" | awk -F'_' '{print $NF}' | sort -u)
-echo "Recognized these phage names: $phage_names"
+pclusters=$(tail -n +2 "$PHAGE_CLUSTER_FILE" | awk -F',' '{print $2}' | sort -u)
+echo "Recognized these phage clusters: $pclusters"
 
 # Calculate totals for the progress bar
-cluster_count=$(echo "$clusters" | wc -w)
-phage_count=$(echo "$phage_names" | wc -w)
-total_tasks=$((cluster_count * phage_count))
+bcluster_count=$(echo "$bclusters" | wc -w)
+pcluster_count=$(echo "$pclusters" | wc -w)
+total_tasks=$((bcluster_count * pcluster_count))
 current_task=0
-echo "Starting training for $total_tasks pairs..."
+echo "Starting training for $total_tasks cluster pairs..."
 
 # 2. Training Loop
-for cluster_num in $clusters; do
+for bcluster_num in $bclusters; do
     # Get all strain names for this cluster (first column where second column matches cluster_num)
-    bact_strains=$(tail -n +2 "$BACT_CLUSTER_FILE" | awk -F',' -v c="$cluster_num" '$2==c {print $1}' | paste -sd ',' -)
-    echo "Cluster $cluster_num contains strains: $bact_strains"
+    bact_strains=$(tail -n +2 "$BACT_CLUSTER_FILE" | awk -F',' -v c="$bcluster_num" '$2==c {print $1}' | paste -sd ',' -)
+    bact_strains=$(echo "$bact_strains" | sed 's/_reoriented//g') # if "_reoriented" is in the strain name, remove it
+    echo "Cluster $bcluster_num contains strains: $bact_strains"
     
-    for phage in $phage_names; do
+    for pcluster_num in $pclusters; do
+        phage_strains=$(tail -n +2 "$PHAGE_CLUSTER_FILE" | awk -F',' -v c="$pcluster_num" '$2==c {print $1}' | paste -sd ',' -)
+        echo "Cluster $pcluster_num contains phages: $phage_strains"
         ((current_task++))
         
         # --- Progress Bar Logic ---
@@ -56,19 +60,30 @@ for cluster_num in $clusters; do
         
         # Print the progress bar (\r keeps it on the same line)
         printf "\rProgress: [%s%s] %d%% (%d/%d) | Current: cluster_%s/%s " \
-               "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$cluster_num" "$phage"
+               "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$bcluster_num" "$pcluster_num"
 
-        CUSTOM_OUT="iter_excl/cluster_${cluster_num}_${phage}"
+        CUSTOM_OUT="iter_excl_clus/cluster_b${bcluster_num}_p${pcluster_num}"
         python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
             --nk $NK_VALS \
             --cv \
             --kf_n_splits 4 \
             --exclude_clusters \
-            --exclude_bact_clusters "$bact_strains" \
-            --exclude_phage_clusters "$phage" \
+            --exclude_bact_clusters $bact_strains \
+            --exclude_phage_clusters $phage_strains \
             --test_on_excluded \
             --out "$CUSTOM_OUT" \
             --logging
+
+        # Extract accuracy values from all log_run*.txt files produced in this session
+        # The regex looks for 'test accuracy:' followed by the numerical value
+        accuracies=""
+        echo "Extracting accuracy for pair: $bcluster_num / $pcluster_num"
+        acc=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run*/log_run*.txt" -exec grep "Final test loss:" {} + | awk -F'test accuracy: ' '{print $2}')
+        if [[ -n "$acc" ]]; then
+            accuracies="${accuracies}"$'\n'"$acc"
+        fi
+        echo $accuracies
+
     done
 done
 
@@ -76,22 +91,6 @@ done
 echo "-------------------------------------------------------"
 echo "Calculating Average Test Accuracy..."
 echo "-------------------------------------------------------"
-
-# Extract accuracy values from all log_run*.txt files produced in this session
-# The regex looks for 'test accuracy:' followed by the numerical value
-accuracies=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run*/log_run*.txt" -exec grep "Final test loss:" {} + | awk -F'test accuracy: ' '{print $2}')
-
-for cluster_num in $cluster_names; do
-    for phage in $phage_names; do
-        echo "Extracting accuracy for pair: $cluster_num / $phage"
-        #echo "$PROJ_DIR/nn_runs/excl_${bact}_${phage}_run1/log_run1.txt"
-        acc=$(find "$PROJ_DIR/nn_runs/excl_${cluster_num}_${phage}_run1/log_run1.txt" -exec grep "Final test loss:" {} + | awk -F'test accuracy: ' '{print $2}')
-        if [[ -n "$acc" ]]; then
-            accuracies="${accuracies}"$'\n'"$acc"
-        fi
-        echo $accuracies
-    done
-done
 # Perform the average using awk
 average=$(echo "$accuracies" | awk '
     { sum += $1; count++ } 
@@ -105,4 +104,4 @@ echo "Global Average Test Accuracy: $average"
 
 # 4. Collecting results
 echo "📊 Collecting results..."
-python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUN
+python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUN"

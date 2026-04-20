@@ -2,6 +2,7 @@
 
 import os
 import sys
+import re
 import argparse
 import random
 import pickle
@@ -147,6 +148,22 @@ def parse_arguments():
     #     args.test_on_excluded = True
     #     print("INFO: --test_on_excluded has been automatically set to True because --exclude_pairs or --exclude_clusters is used. This means the model will be tested on the excluded pairs/clusters and not a test split from the main dataset.", file=sys.stderr)
 
+    # Modification: convert args.exclude_bact_clusters and args.exclude_phage_clusters from str to list if they are provided as comma-separated strings (this allows for more flexible input, e.g. --exclude_bact_clusters ["cluster1,cluster2,cluster3"] or --exclude_bact_clusters cluster1 cluster2 cluster3)
+    if args.exclude_clusters:
+        if type(args.exclude_bact_clusters) == str:
+            args.exclude_bact_clusters = re.sub(r'[\[\]]', '',args.exclude_bact_clusters)
+            args.exclude_bact_clusters = [item.strip() for item in args.exclude_bact_clusters.split(',')]
+        elif type(args.exclude_bact_clusters) == list and len(args.exclude_bact_clusters) == 1 and ',' in args.exclude_bact_clusters[0]:
+            args.exclude_bact_clusters = re.sub(r'[\[\]]', '',args.exclude_bact_clusters[0])
+            args.exclude_bact_clusters = [item.strip() for item in args.exclude_bact_clusters.split(',')]
+        
+        if type(args.exclude_phage_clusters) == str:
+            args.exclude_phage_clusters = re.sub(r'[\[\]]', '',args.exclude_phage_clusters)
+            args.exclude_phage_clusters = [item.strip() for item in args.exclude_phage_clusters.split(',')]
+        elif type(args.exclude_phage_clusters) == list and len(args.exclude_phage_clusters) == 1 and ',' in args.exclude_phage_clusters[0]:
+            args.exclude_phage_clusters = re.sub(r'[\[\]]', '',args.exclude_phage_clusters[0])
+            args.exclude_phage_clusters = [item.strip() for item in args.exclude_phage_clusters.split(',')]
+
     return args
 
 # This function maps model feature index 'idx' back to the encoded k-mer
@@ -197,8 +214,8 @@ def main():
     prefix = "encoded_sketches" if args.use_encoded else "SM_sketches"
 
     if args.use_encoded:
-        input_phage_path = f"{prefix}/phage_encode{args.bits_encoded}bit_n{pn}_k{pk}/"
-        input_bact_path = f"{prefix}/bact_encode{args.bits_encoded}bit_n{bn}_k{bk}/"
+        input_phage_path = f"{prefix}/phage_sig_n{pn}_k{pk}/"
+        input_bact_path = f"{prefix}/bact_sig_n{bn}_k{bk}/"
     else:
         input_phage_path = f"{prefix}/PhageMinhash_n{pn}_k{pk}/"
         input_bact_path = f"{prefix}/BactMinhash_n{bn}_k{bk}/"
@@ -239,6 +256,7 @@ def main():
     ### 4. Host Range Setup ###
     bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"))
     host_range_data = binarize_host_range(hostrange_df_to_dict(host_range_df), continous=False)
+    host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
 
     ### 5. Logging Setup ###
     outdir, logfile = None, None
@@ -261,8 +279,19 @@ def main():
                 outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}/")
         os.makedirs(outdir, exist_ok=True)
         logfile = open(os.path.join(outdir, f'log_run{run}.txt'), 'w')
-        logfile.write(f'Run started: {datetime.now()}\nParams: {vars(args)}\n')
+        logfile.write(f'Run started: {datetime.now()}\n')
+        logfile.write('Params:\n')
+        for key, value in vars(args).items():
+            logfile.write(f'  {key}: {value}\n')
+        logfile.write('##################\n')
         print("Logging enabled. Output directory created at:", outdir)
+    
+    # Writing host range data logs
+    if args.logging:
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Host range data loaded with {len(host_range_data)} bacteria.', file=logfile)
+        sample_bact = next(iter(host_range_data))
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample host range entry for {sample_bact}: {host_range_data[sample_bact]}', file=logfile)
+
 
     ### 6. Feature Preparation ###
     X, y, X_excl, y_excl, rows_meta = [], [], [], [], []
@@ -286,16 +315,23 @@ def main():
     idx_to_minhash = {v: k for k, v in minhash_to_index.items()}
 
     if args.logging: feature_flag = False
-    cidx = 0
+    cidx = 0 #counter for idx of all features
+    eidx = 0 #counter for idx of excluded features
     X_idx = []
     X_excl_idx = []
+    X_excl_true_unseen_idx = [] #idx of the truly unseen pairs on excluded sets runs.
     for bact in tqdm(bacteria_names, desc="Building dataset"):
         # Exclusion logic
         if args.exclude_noninteractions and not any(host_range_data.get(bact, {}).values()):
             continue
             
         for phage in phage_names:
-            if phage not in host_range_data.get(bact, {}): continue
+            # if args.logging:
+            #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Processing pair ({bact}, {phage})...', file=logfile)
+            if phage not in host_range_data.get(bact, {}): 
+                if args.logging:
+                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Skipping pair ({bact}, {phage}) - no interaction data available.', file=logfile)
+                continue
             
             # Get features and metadata for this pair
             score = host_range_data[bact][phage]
@@ -324,20 +360,38 @@ def main():
                 X_excl.append(features)
                 y_excl.append(score)    
                 X_excl_idx.append(cidx)
+                if bact in args.exclude_bacts and phage in args.exclude_phages:
+                    X_excl_true_unseen_idx.append(eidx)
                 cidx += 1
+                eidx += 1
                 continue
 
             if args.exclude_clusters:
-                #print("bact_clusters.index:", bact_clusters.index)
-                #print("bact_clusters.loc[bact, 'Cluster']:", bact_clusters.loc[bact, 'Cluster'] if bact in bact_clusters.index else "N/A")
-                #print("args.exclude_bact_clusters:", args.exclude_bact_clusters)
-                if ((bact in args.exclude_bact_clusters) or (phage in args.exclude_phage_clusters)):
+                if bact in args.exclude_bact_clusters or phage in args.exclude_phage_clusters:
+                    # if args.logging:
+                    #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Checking cluster exclusion for pair ({bact}, {phage})...', file=logfile)
+                    #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - Bact clusters to exclude: {args.exclude_bact_clusters}', file=logfile)
+                    #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - Phage clusters to exclude: {args.exclude_phage_clusters}', file=logfile)
                     X_excl.append(features)
                     y_excl.append(score)    
                     X_excl_idx.append(cidx)
+                    if args.logging:
+                        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Pair ({bact}, {phage}) added to exclusion set based on cluster criteria.', file=logfile)
+                    if bact in args.exclude_bact_clusters and phage in args.exclude_phage_clusters:
+                        X_excl_true_unseen_idx.append(eidx)
+                        if args.logging:
+                            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Pair ({bact}, {phage}) is truly unseen in test set because both entities are in the exclusion lists.', file=logfile)
+                    eidx += 1
                     cidx += 1
                     continue
-            
+                # else:
+                #     if args.logging:
+                #         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Pair ({bact}, {phage}) passed cluster exclusion criteria and will be included in main dataset.', file=logfile)
+                #         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - {bact} in exclude_bact_clusters: {bact in args.exclude_bact_clusters}', file=logfile)
+                #         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - {phage} in exclude_phage_clusters: {phage in args.exclude_phage_clusters}', file=logfile)
+                #         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - bact dtype: {type(bact)}, exclude_bact_cluster inner dtype: {type(args.exclude_bact_clusters[0])}', file=logfile)
+                #         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - phage dtype: {type(phage)}, exclude_phage_cluster inner dtype: {type(args.exclude_phage_clusters[0])}', file=logfile)
+        
             # If it passes exclusion criteria, add to main dataset
             X.append(features)
             y.append(score)
@@ -348,7 +402,7 @@ def main():
     X_excl, y_excl = np.array(X_excl), np.array(y_excl)
     if args.logging:
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} --- Finished building dataset ---', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Built dataset with {len(X)} interacting pairs and {len(X_excl)} non-interacting pairs.', file=logfile)
+        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Built dataset with {len(X)} pairs and excluded {len(X_excl)} pairs.', file=logfile)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X)} times {len(X[0])} total features for interacting pairs:', file=logfile)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X)} x {len(X[0])} = {X.shape}', file=logfile)
         print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} cidx: {cidx}', file=logfile)
@@ -367,6 +421,7 @@ def main():
         if args.test_on_excluded:
             X_train_f, y_train_f = X, y
             X_test, y_test = X_excl, y_excl
+            X_test_unseen, y_test_unseen = X_excl[X_excl_true_unseen_idx], y_excl[X_excl_true_unseen_idx]
 
         else:
             # Split data into train and test
@@ -425,6 +480,8 @@ def main():
         if args.test_on_excluded:
             X_train_f, y_train_f = X, y
             X_test, y_test = X_excl, y_excl
+            X_test_unseen, y_test_unseen = X_excl[X_excl_true_unseen_idx], y_excl[X_excl_true_unseen_idx]
+
         else:
             train_idx, test_idx = train_test_split(np.arange(len(y)), test_size=args.test_split, random_state=42, stratify=y)
             X_train_f, X_test, y_train_f, y_test = X[train_idx], X[test_idx], y[train_idx], y[test_idx]
@@ -612,9 +669,12 @@ def main():
     y_test_t = torch.from_numpy(y_test.reshape(-1, 1)).float().to(device)
     test_ds = TensorDataset(X_test_t, y_test_t)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
-
+    if args.test_on_excluded:
+        X_test_unseen_t = torch.from_numpy(X_test_unseen).float().to(device)
+        y_test_unseen_t = torch.from_numpy(y_test_unseen.reshape(-1, 1)).float().to(device)
+    
     ### 9. Accuracy and training loss ###
-    # Final evaluation on test set: loss + accuracy
+    # Evaluation on test set: loss + accuracy --------
     model.eval()
     with torch.no_grad():
         test_logits = model(X_test_t.to(device))
@@ -630,8 +690,8 @@ def main():
     if args.logging: 
         if args.test_on_excluded:
             print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Tested on excluded set', file=logfile)
-        print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}  test balanced accuracy: {test_ba:.4f}', file=logfile)
-    print(f'Final test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}  test balanced accuracy: {test_ba:.4f}')
+        print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  Standard test accuracy: {test_acc:.4f}  Standard test balanced accuracy: {test_ba:.4f}', file=logfile)
+    print(f'Final test loss: {test_loss:.4f}  Standard test accuracy: {test_acc:.4f}  Standard test balanced accuracy: {test_ba:.4f}')
         
     
     # Plotting the losses 
@@ -656,6 +716,21 @@ def main():
         if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Accuracy and train figure saved as: {outdir+outname}', file=logfile)
     else:
         if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} No validation set used, skipping loss and accuracy plotting.', file=logfile) 
+
+    # Evaluating on the truly unseen test set if applicable -------
+    if args.test_on_excluded:
+        with torch.no_grad():
+            test_unseen_logits = model(X_test_unseen_t.to(device))
+            test_unseen_loss = criterion(test_unseen_logits, y_test_unseen_t.to(device)).item()
+            test_unseen_probs = torch.sigmoid(test_unseen_logits)
+            test_unseen_preds = (test_unseen_probs >= 0.5).float()
+            test_unseen_acc = (test_unseen_preds.to(device) == y_test_unseen_t).float().mean().item()
+            test_unseen_ba = balanced_accuracy_score(y_test_unseen_t.cpu().numpy(), test_unseen_preds.cpu().numpy())
+
+        if args.logging: 
+            print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Tested on truly unseen subset of excluded set', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final truly unseen test loss: {test_unseen_loss:.4f}  truly unseen test accuracy: {test_unseen_acc:.4f}  truly unseen test balanced accuracy: {test_unseen_ba:.4f}', file=logfile)
+        print(f'\nFinal truly unseen test loss: {test_unseen_loss:.4f}  truly unseen test accuracy: {test_unseen_acc:.4f}  truly unseen test balanced accuracy: {test_unseen_ba:.4f}')
 
     ### 10. Model Evaluations ###
     model.eval() # Set the model to evaluation mode

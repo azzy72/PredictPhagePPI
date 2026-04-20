@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import argparse
+from time import time, sleep
+from datetime import datetime
 from paths import data_prod_path, path_to_nn_runs
 outdir_default = data_prod_path + "iterExclClus/"
 print(path_to_nn_runs)
@@ -43,16 +45,51 @@ def extract_metrics_from_log(file_path):
         'TN': None, 'FN': None, 'FP': None, 'TP': None
     }
     
-    # Extract Params dict from logfile
+    # Extract Params from logfile
+    params_dict = None
+
+    # Preferred (legacy) format: single-line dict
     params_match = re.search(r"^Params:\s*(\{.*\})\s*$", content, re.MULTILINE)
-    if not params_match:
-        print(f"Could not find Params line in {file_path}")
-        return None
+    if params_match:
+        params_str = params_match.group(1)
+        try:
+            params_dict = ast.literal_eval(params_str)
+        except Exception as e:
+            print(f"Error parsing single-line Params in {file_path}: {e}")
+            return None
+    else:
+        # New format: multiline key-value block after "Params:"
+        block_match = re.search(
+            r"^Params:\s*\n(.*?)(?:^\s*#+\s*$|\n\s*\n)",
+            content,
+            re.MULTILINE | re.DOTALL
+        )
 
-    params_str = params_match.group(1)
+        if not block_match:
+            print(f"Could not find Params section in {file_path}")
+            return None
+
+        params_dict = {}
+        for line in block_match.group(1).splitlines():
+            stripped = line.strip()
+            if not stripped or ':' not in stripped:
+                continue
+
+            key, value_str = stripped.split(':', 1)
+            key = key.strip()
+            value_str = value_str.strip()
+
+            if value_str == "":
+                params_dict[key] = None
+                continue
+
+            try:
+                params_dict[key] = ast.literal_eval(value_str)
+            except Exception:
+                # Keep plain (unquoted) strings as-is
+                params_dict[key] = value_str
+
     try:
-        params_dict = ast.literal_eval(params_str)
-
         # Preferred format: 'nk': [n, k]
         nk = params_dict.get('nk')
         if isinstance(nk, (list, tuple)) and len(nk) >= 2:
@@ -72,14 +109,21 @@ def extract_metrics_from_log(file_path):
         return None
 
     # Extract Accuracy 
-    acc_match = re.search(r"test accuracy:\s+([\d.]+)", content)
+    acc_match = re.search(r"Standard test accuracy:\s+([\d.]+)", content)
     if acc_match:
         metrics['test_accuracy'] = float(acc_match.group(1))
+    
+    unseen_acc_match = re.search(r"truly unseen test accuracy:\s+([\d.]+)", content)
+    if unseen_acc_match:
+        metrics['unseen_test_accuracy'] = float(unseen_acc_match.group(1))
 
     # Extract Balanced Accuracy
-    ba_match = re.search(r"test balanced accuracy:\s+([\d.]+)", content)
+    ba_match = re.search(r"Standard test balanced accuracy:\s+([\d.]+)", content)
     if ba_match:
         metrics['test_balanced_accuracy'] = float(ba_match.group(1))
+    unseen_ba_match = re.search(r"truly unseen test balanced accuracy:\s+([\d.]+)", content)
+    if unseen_ba_match:
+        metrics['unseen_test_balanced_accuracy'] = float(unseen_ba_match.group(1))
 
     # Extract Baseline Metrics (Precision, Recall, F1) [cite: 29]
     base_metrics = re.search(r"Baseline .* Precision:\s+([\d.]+),\s+Recall:\s+([\d.]+),\s+F1:\s+([\d.]+)", content)
@@ -139,8 +183,17 @@ class PlottingUtils:
         self.title_suffix = "by N and K" if not (self.singular_n and self.singular_k) else "for single N and K"
 
         # Set x and hue columns based on the presence of singular n or k
-        self.x_col = x_col if not None else ('n' if not self.singular_n else 'folder')
-        self.hue_col = hue_col if not None else ('k' if not self.singular_k else None)
+        if x_col is None:
+            self.x_col = 'folder' if self.singular_n else 'n'
+        else:
+            self.x_col = x_col
+        if hue_col is None:
+            self.hue_col = None if self.singular_k else 'k'
+        else:
+            self.hue_col = hue_col
+        #self.x_col = x_col if not None else ('n' if not self.singular_n else 'folder')
+        #self.hue_col = hue_col if not None else ('k' if not self.singular_k else None)
+        print(f"Using x_col: {self.x_col}, hue_col: {self.hue_col}")
 
         if x_col_by_cluster or x_col_by_phage: 
             parts = df["folder"].str.extract(r"^cluster_(\d+)_([A-Z].+)$")
@@ -170,37 +223,46 @@ class PlottingUtils:
         cm_cols = ['TN', 'FN', 'FP', 'TP']
         cm_df = self.df[cm_cols + [self.x_col]].copy()
         cm_melted = cm_df.melt(id_vars=self.x_col, var_name='Metric', value_name='Count')
+        cm_melted['Metric'] = cm_melted['folder'] + '_' + cm_melted['Metric'] # Combine folder and metric for unique bars
+        cm_melted = cm_melted.sort_values(by=[self.x_col, 'Metric']) # sort by folder and then by metric for consistent ordering
+        print("Prepared confusion matrix data for bar plot:")
+        print(cm_melted)
 
         # 2. Setup the Plot
         plt.figure(figsize=(16, 7)) # Wider figure for many bars
         sns.set_style("whitegrid")
         
         # 3. Create the Grouped Barplot
-        # x='folder' creates the groups, hue='Metric' creates the individual bars per group
+        # Extract the metric suffixes (TN, FN, FP, TP) and create a color mapping
+        cm_melted['MetricType'] = cm_melted['Metric'].str.extract(r'_(TN|FN|FP|TP)$')
+        metric_colors = {'TN': '#FF6B6B', 'FN': '#4ECDC4', 'FP': '#45B7D1', 'TP': '#B7FF78'}
+        cm_melted['Color'] = cm_melted['MetricType'].map(metric_colors)
+        
         ax = sns.barplot(
             data=cm_melted, 
             x=self.x_col, 
             y='Count', 
-            hue=self.hue_col, 
-            palette='muted', # 'muted' or 'Set2' works well here
-            edgecolor='black'
+            hue='MetricType', 
+            palette=metric_colors, 
+            edgecolor='black',
         )
+        plt.legend(title='Confusion Matrix Metric', bbox_to_anchor=(1.05, 1), loc='upper left')
 
         # 4. Add labels on top of bars (similar to your reference image)
         for p in ax.patches:
-            if p.get_height() > 0: # Only label bars with a value
-                ax.annotate(f'{int(p.get_height())}', 
-                            (p.get_x() + p.get_width() / 2., p.get_height()), 
-                            ha='center', va='center', 
-                            fontsize=9, color='black', 
-                            xytext=(0, 7), 
-                            textcoords='offset points')
+            ax.annotate(f'{int(p.get_height())}', 
+                        (p.get_x() + p.get_width() / 2., p.get_height()), 
+                        ha='center', va='center', 
+                        fontsize=6, color='black', 
+                        xytext=(0, 7), 
+                        textcoords='offset points')
 
         # 5. Formatting
+        ax.tick_params(axis='x', labelsize=8)
         plt.xticks(rotation=45, ha='right')
-        plt.title(f'Confusion Matrix Components by Run {title_suffix}', fontsize=16, weight='bold', pad=20)
-        plt.ylabel('Count (Number of Samples)', fontsize=12)
-        plt.xlabel('Run / Configuration', fontsize=12)
+        plt.title(f'Confusion Matrix Components by Run {title_suffix}', fontsize=14, weight='bold', pad=20)
+        plt.ylabel('Count (Number of Samples)', fontsize=10)
+        plt.xlabel('Run / Configuration', fontsize=10)
         
         # Place legend outside to the right
         plt.legend(title='Metrics', bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0.)
@@ -263,7 +325,27 @@ class PlottingUtils:
             outpath=self.outdir + 'balanced_accuracy_by_nk.png'
         )
 
-        # --- Graph 3: Grouped F1 Bar Chart (X=n, Hue=k) ---
+        # --- Graph 3: Grouped Truly Unseen Accuracy Bar Chart (X=n, Hue=k) ---
+        self._plot_bars(
+            x_col=self.x_col, 
+            y_col='unseen_test_accuracy', 
+            hue_col=self.hue_col, 
+            title=f'FFNN Truly Unseen Test Accuracy {self.title_suffix}', 
+            ylabel='Truly Unseen Test Accuracy',
+            outpath=self.outdir + 'unseen_accuracy_by_nk.png'
+        )
+
+        # --- Graph 4: Grouped Truly Unseen Balanced Accuracy Bar Chart (X=n, Hue=k) ---
+        self._plot_bars(
+            x_col=self.x_col, 
+            y_col='unseen_test_balanced_accuracy', 
+            hue_col=self.hue_col, 
+            title=f'FFNN Truly Unseen Test Balanced Accuracy {self.title_suffix}', 
+            ylabel='Truly Unseen Test Balanced Accuracy',
+            outpath=self.outdir + 'unseen_balanced_accuracy_by_nk.png'
+        )
+
+        # --- Graph 5: Grouped F1 Bar Chart (X=n, Hue=k) ---
         self._plot_bars(
             x_col=self.x_col, 
             y_col='f1', 
@@ -273,10 +355,10 @@ class PlottingUtils:
             outpath=self.outdir + 'f1_by_nk.png'
         )
 
-        # --- Graph 4: Confusion Matrix as bars ---
+        # --- Graph 6: Confusion Matrix as bars ---
         self._plot_cm_bars(title_suffix=self.title_suffix)
 
-        # --- Graph 5: Averaged Confusion Matrix ---
+        # --- Graph 7: Averaged Confusion Matrix ---
         avg_cm = self.df[['TN', 'FN', 'FP', 'TP']].mean()
         # Reshape into 2x2 matrix: [[TN, FN], [FP, TP]]
         cm_data = np.array([[avg_cm['TN'], avg_cm['FN']], 
@@ -304,6 +386,10 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         print(f"Created output directory: {outdir}")
     else:
         print(f"Output directory already exists: {outdir}")
+    
+    logfile_path = os.path.join(outdir, "collect_iterres_log.txt")
+    logfile = open(logfile_path, 'w')
+    print(f"{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} collect_iterres started. Scanning {base_dir} for log files.", file=logfile)
 
     # Iterate through all folders in nn_runs
     for folder_name in os.listdir(base_dir):          
@@ -321,6 +407,10 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
     if all_data:
         df = pd.DataFrame(all_data)
         print(f"Extracted metrics from {len(df)} log files.")
+        try:
+            group_x_col = group_x_col.lower()
+        except Exception:
+            print(f"Unable to process group_x_col: {group_x_col}")
         plotting = PlottingUtils(df=df, outdir=str(outdir), x_col=x_col, hue_col=hue_col, x_col_by_cluster=(group_x_col == 'cluster'), x_col_by_phage=(group_x_col == 'phage'))
         plotting.plot_graphs()
         # Optional: save the raw data for inspection
@@ -328,10 +418,12 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         print("Summary CSV saved as all_runs_summary.csv")
     else:
         print("No valid data found to plot.")
+    
+    logfile.close()
 
 if __name__ == "__main__":
     if parse_arguments().base_dir:
         args = parse_arguments()
-        main(base_dir=args.base_dir.strip(" "), outdir=args.out_dir.strip(" "), x_col=args.x_col, hue_col=args.hue_col, group_x_col=args.group_x_col.lower(), group_hue_col=args.group_hue_col)
+        main(base_dir=args.base_dir.strip(" "), outdir=args.out_dir.strip(" "), x_col=args.x_col, hue_col=args.hue_col, group_x_col=args.group_x_col, group_hue_col=args.group_hue_col)
     else:
         main()
