@@ -233,6 +233,14 @@ def main():
             phage_minhash_dir=os.path.join(data_prod_path, input_phage_path),
             bact_minhash_dir=os.path.join(data_prod_path, input_bact_path),
             k=[bk, pk], n=[bn, pn], reversecomp_data=False, TS=True)
+        #Write files to full_presmat_path for faster loading in the future
+        os.makedirs(full_presmat_path, exist_ok=True)
+        with open(os.path.join(full_presmat_path, "binary_matrix.pkl"), "wb") as f: pickle.dump(binary_matrix, f)
+        with open(os.path.join(full_presmat_path, "entity_to_index.pkl"), "wb") as f: pickle.dump(entity_to_index, f)
+        with open(os.path.join(full_presmat_path, "phage_minhash_data.pkl"), "wb") as f: pickle.dump(phage_minhash_data, f)
+        with open(os.path.join(full_presmat_path, "bact_minhash_data.pkl"), "wb") as f: pickle.dump(bact_minhash_data, f)
+        with open(os.path.join(full_presmat_path, "minhash_to_index.pkl"), "wb") as f: pickle.dump(minhash_to_index, f)
+
     else:
         with open(os.path.join(full_presmat_path, "binary_matrix.pkl"), "rb") as f: binary_matrix = pickle.load(f)
         with open(os.path.join(full_presmat_path, "entity_to_index.pkl"), "rb") as f: entity_to_index = pickle.load(f)
@@ -311,6 +319,15 @@ def main():
     else:
         feature_indices = list(range(binary_matrix.shape[1]))
     
+    # Save phage_names and bacteria_names to output directory for reference to order of appearance; randomization has taken place above, this order needs to be conserved in subsequent analysis.
+    if args.logging:
+        with open(os.path.join(outdir, "bacteria_names.txt"), "w") as f:
+            for bact in bacteria_names:
+                f.write(f"{bact}\n")
+        with open(os.path.join(outdir, "phage_names.txt"), "w") as f:
+            for phage in phage_names:
+                f.write(f"{phage}\n")
+
     # Create inverse mapping: column_index -> kmer_encoded_int
     idx_to_minhash = {v: k for k, v in minhash_to_index.items()}
 
