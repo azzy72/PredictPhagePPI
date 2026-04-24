@@ -27,7 +27,7 @@ from imblearn.over_sampling import SMOTE
 # Custom imports
 from io_operations import presence_matrix, obtain_idx_to_entity_mapping, call_hostrange_df, color_sheet_from_matrix
 from paths import raw_data_path, data_prod_path, path_to_nn_runs
-from manipulations import calc_PFI, hostrange_df_to_dict, binarize_host_range
+from manipulations import calc_PFI_test, hostrange_df_to_dict, binarize_host_range
 from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, plot_interaction_pairs, FeatureImportance, GeneAnalysis
 from utils import strain_id_tax_lookup
 
@@ -999,45 +999,35 @@ def main():
     if args.perform_pfi:
         hash_lookup = None
         pfi_failed = False
-        out_pfi = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}/pfi_values.txt"
-        hash_lookup = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}/hash_lookup.csv"
-        #out_pfi = data_prod_path+"kmer_pairs_for_downsamples/"+f"mlp_interaction_pairs_n{n}_k{k}.txt"
-        try:
-            if args.force_pfi_recalculation:
-                raise FileNotFoundError("Forced recomputation of interaction pairs as per user request.")
-            
-            #load the interaction data if it's already been saved
-            with open(out_pfi, "r") as f:
-                interaction_pairs = {}
-                occurence_pairs = {}
-                interaction_freq_pairs = {}
-                occurence_freq_pairs = {}
-                expected_interactions = {}
-                next(f, None)  # skip header line
-                for line in f:
-                    parts = line.strip().split("\t")
-                    if len(parts) == 4:
-                        phage_hash, bact_hash, iscore, oscore, ifreq, ofreq, efreq = parts
-                        pair = (phage_hash, bact_hash)
-                        try:
-                            interaction_pairs[pair] = float(iscore)
-                            occurence_pairs[pair] = float(oscore)
-                            interaction_freq_pairs[pair] = float(ifreq)
-                            occurence_freq_pairs[pair] = float(ofreq)
-                            expected_interactions[pair] = float(efreq)
-                        except ValueError as ve:
-                            print(f"ValueError for line: {line.strip()} - {ve}")
-                            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ValueError for line: {line.strip()} - {ve}', file=logfile)
-                            print(f"Line: {line.strip()}\nparts: {parts}\n")
-                            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Line: {line.strip()} - parts: {parts}', file=logfile)
-            if args.logging:
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded interaction pairs from {out_pfi}', file=logfile)
-            
-        except FileNotFoundError:
-            pfi_analyzer = calc_PFI(host_range_data=host_range_data, outdir=outdir, logging=args.logging)
-            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bacteria_minhash_data=bact_minhash_data, subset=args.subset_pfi)
-            if args.logging: 
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {out_pfi}', file=logfile)
+        out_pfi = outdir = "pfi_values.txt"
+        hash_lookup = outdir = "hash_lookup.csv"
+
+        ### Subset host_range_data, phage_minhash_data, and bact_minhash_data to only include the strains present in the test set metadata
+        if args.entity_order == "bact_first":
+            test_bacteria = set(metadata_test[:, 0])
+            test_phages = set(metadata_test[:, 1])
+        else:
+            test_phages = set(metadata_test[:, 0])
+            test_bacteria = set(metadata_test[:, 1])
+
+        host_range_data = {
+            bact: {phage: score for phage, score in interactions.items() if phage in test_phages}
+            for bact, interactions in host_range_data.items()
+            if bact in test_bacteria
+        }
+        phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in test_phages}
+        bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in test_bacteria}
+        if args.logging: 
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Subsetted host range and minhash data to test set strains. Remaining strains: {len(host_range_data)}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Remaining strains in host range data: {list(host_range_data.keys())}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Remaining strains in phage minhash data: {list(phage_minhash_data.keys())}', file=logfile)
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Remaining strains in bacteria minhash data: {list(bact_minhash_data.keys())}', file=logfile)
+
+        ### Running PFI analysis and plotting results
+        pfi_analyzer = calc_PFI_test(host_range_data=host_range_data, outdir=outdir, logging=args.logging)
+        interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bact_minhash_data=bact_minhash_data, subset=args.subset_pfi)
+        if args.logging: 
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {out_pfi}', file=logfile)
         
         if hash_lookup is None:
             try:

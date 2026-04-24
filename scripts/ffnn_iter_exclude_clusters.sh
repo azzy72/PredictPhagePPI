@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=IterExclClus_n500k12
+#SBATCH --job-name=IterExclClusPFI
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=25
 #SBATCH --gres=shard:1
-#SBATCH --time=00:30:00
+#SBATCH --time=72:00:00
 #!SBATCH --begin=15:20:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
@@ -16,7 +16,7 @@
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod/"
 RAW_DIR="$ROOT_DIR/raw_data/phagehost_KU/"
-DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_clus/"
+DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI/"
 BACT_CLUSTER_FILE="$DATA_DIR/bact_clusters_with_genus.csv"
 PHAGE_CLUSTER_FILE="$DATA_DIR/phage_clusters.csv"
 #PHAGE_FILE="$RAW_DIR/phage_cleaned.fasta"
@@ -62,8 +62,8 @@ for bcluster_num in $bclusters; do
         printf "\rProgress: [%s%s] %d%% (%d/%d) | Current: cluster_%s/%s " \
                "$bar_str" "$space_str" "$percent" "$current_task" "$total_tasks" "$bcluster_num" "$pcluster_num"
 
-        CUSTOM_OUT="iter_excl_clus/cluster_b${bcluster_num}_p${pcluster_num}"
-        python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
+        CUSTOM_OUT="iter_excl_PFI/cluster_b${bcluster_num}_p${pcluster_num}"
+        python3 "$ROOT_DIR/scripts/FFNN_inner2.py" \
             --nk $NK_VALS \
             --cv \
             --kf_n_splits 4 \
@@ -71,6 +71,7 @@ for bcluster_num in $bclusters; do
             --exclude_bact_clusters $bact_strains \
             --exclude_phage_clusters $phage_strains \
             --test_on_excluded \
+            --perform_pfi \
             --out "$CUSTOM_OUT" \
             --logging
 

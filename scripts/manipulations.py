@@ -484,11 +484,11 @@ def aggregate_interaction_pairs(nn_runs : list, outdir : str = None, logging : b
     total_aggr_df.to_csv(outdir+"top_interaction_kmers_aggregated.csv", index=False)
 
 
-class calc_PFI: 
+class calc_PFI_test: 
     """
     Perform Pairwise Feature Interaction (PFI) analysis given the minhash data for phages and bacteria and the host range data, by constructing interaction pairs and calculating their frequencies.
     """
-    def __init__(self, phage_names : list, bacteria_names : list, host_range_data : dict = None, outdir : str = None, logging : bool = False):
+    def __init__(self, host_range_data : dict = None, outdir : str = None, logging : bool = False):
         """
         **host_range_data** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
         **phage_names** (list): list of phage names to consider (should match keys in phage_minhash_data)
@@ -496,8 +496,9 @@ class calc_PFI:
         **outfile** (str): path to output file (default is None, meaning no file is written)
         """
         import os
-        self.phage_names = phage_names
-        self.bacteria_names = bacteria_names
+        # self.phage_names = phage_names
+        # self.bacteria_names = bacteria_names
+        self.host_range_data = host_range_data
         if not os.path.isdir(outdir):
             try:
                 os.makedirs(outdir, exist_ok=True)
@@ -534,7 +535,9 @@ class calc_PFI:
         expected_interactions = dict()
         hash_lookup = dict()
         c = 0
-        total_combinations = len(self.phage_names) * len(self.bacteria_names)
+        phage_names = list(phage_minhash_data.keys())
+        bacteria_names = list(bact_minhash_data.keys())
+        total_combinations = len(phage_names) * len(bacteria_names)
         
         # Call hostrange if None
         if self.host_range_data is None:
@@ -545,7 +548,166 @@ class calc_PFI:
 
             if self.logging: print("Host range data not provided, calling hostrange_bact to obtain host range data for bacteria names...")
             self.host_range_data = {}
-            for bact in self.bacteria_names:
+            for bact in bacteria_names:
+                self.host_range_data[bact] = hostrange_bact(host_range_data, [bact], approach="acceptive", threshold=0.5, TS = False)
+            
+            self.host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in self.host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
+
+
+        # Create out directory if it doesn't exist
+        outdir = self.outdir.rsplit("/", 1)[0] if self.outdir is not None else None
+        if outdir is not None and not os.path.exists(outdir):
+            try:
+                os.makedirs(outdir, exist_ok=True)
+                print(f"Created output directory: {outdir}")
+            except OSError as e:
+                print(f"Could not create outdir {outdir}: {e}")
+                outdir = None  # Set to None to avoid further issues with saving
+
+        for pname in phage_names:
+            for bname in bacteria_names:
+                # Supports nested dict format and tuple-key format
+                interaction_score = self.host_range_data.get(bname, {}).get(pname, self.host_range_data.get((bname, pname), 0))
+
+                for pkmer in phage_minhash_data.get(pname, []):
+                    for bkmer in bact_minhash_data.get(bname, []):
+                        pair = (pkmer, bkmer)
+                        if pair in interaction_pairs:
+                            interaction_pairs[pair] += interaction_score
+                        else:
+                            interaction_pairs[pair] = interaction_score
+                        occurence_pairs[pair] = occurence_pairs.get(pair, 0) + 1
+
+                        # Populate hash lookup
+                        if pkmer not in hash_lookup:
+                            hash_lookup[pkmer] = [pname]
+                        else:
+                            if pname not in hash_lookup[pkmer]:
+                                hash_lookup[pkmer].append(pname)
+                        if bkmer not in hash_lookup:
+                            hash_lookup[bkmer] = [bname]
+                        else:
+                            if bname not in hash_lookup[bkmer]:
+                                hash_lookup[bkmer].append(bname)
+        
+                c += 1
+                print(f"Int/Occ: Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
+                if subset is not None and c >= subset:
+                    if sum(interaction_pairs.values()) > 0: #continue if no interaction has been found
+                        print(f"\nReached subset limit of {subset} combinations, stopping pair construction.")
+                        break
+
+        if not sum(interaction_pairs.values()) > 0:
+            print("Warning: Sum of interaction scores is 0, cannot calculate interaction frequencies.")
+        if not sum(occurence_pairs.values()) > 0:
+            print("Warning: Sum of occurrence counts is 0, cannot calculate occurrence frequencies.")
+
+        ### Calculating frequencies (normalized by total interactions/occurrences) ###
+        print("\nCalculating interaction, occurrence & expected frequencies...")
+        c = 0
+        if subset is not None:
+            keys_in_subset = []
+        for pair in interaction_pairs.keys():
+            if sum(interaction_pairs.values()) > 0:
+                interaction_freq_pairs[pair] = interaction_pairs[pair] / sum(interaction_pairs.values())
+            else:
+                interaction_freq_pairs[pair] = 0
+            
+            if sum(occurence_pairs.values()) > 0:
+                occurence_freq_pairs[pair] = occurence_pairs[pair] / sum(occurence_pairs.values())
+            else:
+                occurence_freq_pairs[pair] = 0
+            
+            expected_interactions[pair] = interaction_freq_pairs[pair] * occurence_pairs[pair]
+            
+            c += 1
+            print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
+
+            if subset is not None:
+                keys_in_subset.append(pair)
+                if c >= subset:
+                    print(f"\nReached subset limit of {subset} pairs, stopping frequency calculation.")
+                    break
+        
+        if self.outdir is not None:
+            outfile = os.path.join(self.outdir, "pfi_values.txt")
+            try:
+                with open(self.outfile, "w") as f:
+                    f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
+                    for pair in keys_in_subset if subset is not None else interaction_pairs.keys():
+                        f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")
+                print(f"Interaction pairs saved to {outfile}")
+            except Exception as e:
+                print(f"Error saving interaction pairs to {outfile}: {e}")
+        
+        print(f"Total phage-bacteria combinations processed: {c}")
+        return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup
+
+
+class calc_PFI: 
+    """
+    Perform Pairwise Feature Interaction (PFI) analysis given the minhash data for phages and bacteria and the host range data, by constructing interaction pairs and calculating their frequencies.
+    """
+    def __init__(self, host_range_data : dict = None, outdir : str = None, logging : bool = False):
+        """
+        **host_range_data** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
+        **phage_names** (list): list of phage names to consider (should match keys in phage_minhash_data)
+        **bacteria_names** (list): list of bacteria names to consider (should match keys in bact_minhash_data)
+        **outfile** (str): path to output file (default is None, meaning no file is written)
+        """
+        import os
+        # self.phage_names = phage_names
+        # self.bacteria_names = bacteria_names
+        if not os.path.isdir(outdir):
+            try:
+                os.makedirs(outdir, exist_ok=True)
+                print(f"Created output directory: {outdir}")
+            except OSError as e:
+                print(f"Could not create outdir {outdir}: {e}")
+                outdir = None  # Set to None to avoid further issues with saving
+        self.outdir = outdir
+        self.logging = logging
+
+    
+    def construct_interaction_pairs(self, phage_minhash_data : dict, bact_minhash_data : dict, subset : int = None) -> [dict, dict, dict, dict, dict, dict]:
+        """
+        Construct a dictionary of interaction pairs given the minhash data for phages and bacteria and the host range data.
+        The dictionary will have keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
+
+        Args:
+            **phage_minhash_data** (dict): dictionary with keys as phage names and values as lists of minhashes.
+            **bact_minhash_data** (dict): dictionary with keys as bacteria strain IDs and values as lists of minhashes.
+            **subset** (int): number of combinations to consider (default is None, meaning all combinations)
+            
+        Returns:
+            **interaction_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
+            **occurence_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the number of occurrences of that pair across all phage-bacteria combinations.
+            **interaction_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized interaction score for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
+            **occurence_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized occurrence for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
+            **expected_interactions** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the expected interaction score for that pair across all phage-bacteria combinations.
+            **hash_lookup** (dict): dictionary with keys as hash values and values as a list of strains (phage or bacteria) that have that hash in their minhash sketch."""
+        
+        interaction_pairs = dict()
+        occurence_pairs = dict()
+        interaction_freq_pairs = dict()
+        occurence_freq_pairs = dict()
+        expected_interactions = dict()
+        hash_lookup = dict()
+        c = 0
+        phage_names = list(phage_minhash_data.keys())
+        bacteria_names = list(bact_minhash_data.keys())
+        total_combinations = len(phage_names) * len(bacteria_names)
+        
+        # Call hostrange if None
+        if self.host_range_data is None:
+            
+            from io_operations import call_hostrange_df
+            bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"))
+            host_range_data = hostrange_df_to_dict(host_range_df)
+
+            if self.logging: print("Host range data not provided, calling hostrange_bact to obtain host range data for bacteria names...")
+            self.host_range_data = {}
+            for bact in bacteria_names:
                 self.host_range_data[bact] = hostrange_bact(host_range_data, [bact], approach="acceptive", threshold=0.5, TS = False)
             
             self.host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in self.host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
@@ -561,8 +723,8 @@ class calc_PFI:
                 print(f"Could not create outdir {outdir}: {e}")
                 outdir = None  # Set to None to avoid further issues with saving
 
-        for pname in self.phage_names:
-            for bname in self.bacteria_names:
+        for pname in phage_names:
+            for bname in bacteria_names:
                 # Supports nested dict format and tuple-key format
                 interaction_score = self.host_range_data.get(bname, {}).get(pname, self.host_range_data.get((bname, pname), 0))
 
