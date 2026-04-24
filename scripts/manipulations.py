@@ -495,8 +495,16 @@ class calc_PFI:
         **bacteria_names** (list): list of bacteria names to consider (should match keys in bact_minhash_data)
         **outfile** (str): path to output file (default is None, meaning no file is written)
         """
+        import os
         self.phage_names = phage_names
         self.bacteria_names = bacteria_names
+        if not os.path.isdir(outdir):
+            try:
+                os.makedirs(outdir, exist_ok=True)
+                print(f"Created output directory: {outdir}")
+            except OSError as e:
+                print(f"Could not create outdir {outdir}: {e}")
+                outdir = None  # Set to None to avoid further issues with saving
         self.outdir = outdir
         self.logging = logging
 

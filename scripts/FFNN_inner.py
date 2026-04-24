@@ -27,7 +27,7 @@ from imblearn.over_sampling import SMOTE
 # Custom imports
 from io_operations import presence_matrix, obtain_idx_to_entity_mapping, call_hostrange_df, color_sheet_from_matrix
 from paths import raw_data_path, data_prod_path, path_to_nn_runs
-from manipulations import hostrange_df_to_dict, binarize_host_range, construct_interaction_pairs
+from manipulations import calc_PFI, hostrange_df_to_dict, binarize_host_range
 from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, plot_interaction_pairs, FeatureImportance, GeneAnalysis
 from utils import strain_id_tax_lookup
 
@@ -1034,8 +1034,8 @@ def main():
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded interaction pairs from {out_pfi}', file=logfile)
             
         except FileNotFoundError:
-            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = construct_interaction_pairs(
-                phage_minhash_data, bact_minhash_data, host_range_data, phage_names, bacteria_names, subset=args.subset_pfi, outfile = out_pfi)
+            pfi_analyzer = calc_PFI(phage_names=phage_names, bacteria_names=bacteria_names, host_range_data=host_range_data, outdir=outdir, logging=args.logging)
+            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bacteria_minhash_data=bact_minhash_data, subset=args.subset_pfi)
             if args.logging: 
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {out_pfi}', file=logfile)
         
