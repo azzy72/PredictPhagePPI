@@ -5,6 +5,7 @@ import sys
 import re
 import argparse
 import random
+import logging
 import pickle
 import traceback
 import numpy as np
@@ -286,20 +287,25 @@ def main():
                 run += 1
                 outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}/")
         os.makedirs(outdir, exist_ok=True)
-        logfile = open(os.path.join(outdir, f'log_run{run}.txt'), 'w')
-        logfile.write(f'Run started: {datetime.now()}\n')
-        logfile.write('Params:\n')
+        # Configure the logger
+        logging.basicConfig(
+            level=logging.INFO,
+            filename=os.path.join(outdir, f'log_run{run}.txt'),
+            filemode='w', # 'a' for append, 'w' for overwrite
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logging.info(f'Run started: {datetime.now()}\n')
+        logging.info('Params:')
         for key, value in vars(args).items():
-            logfile.write(f'  {key}: {value}\n')
-        logfile.write('##################\n')
+            logging.info(f'  {key}: {value}')
+        logging.info('##################')
         print("Logging enabled. Output directory created at:", outdir)
     
     # Writing host range data logs
     if args.logging:
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Host range data loaded with {len(host_range_data)} bacteria.', file=logfile)
         sample_bact = next(iter(host_range_data))
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample host range entry for {sample_bact}: {host_range_data[sample_bact]}', file=logfile)
-
+        logging.info(f'Host range data loaded with {len(host_range_data)} bacteria.')
+        logging.info(f'Sample host range entry for {sample_bact}: {host_range_data[sample_bact]}')
 
     ### 6. Feature Preparation ###
     X, y, X_excl, y_excl, rows_meta = [], [], [], [], []
@@ -347,7 +353,7 @@ def main():
             #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Processing pair ({bact}, {phage})...', file=logfile)
             if phage not in host_range_data.get(bact, {}): 
                 if args.logging:
-                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Skipping pair ({bact}, {phage}) - no interaction data available.', file=logfile)
+                    logging.warning(f'No interaction data for pair ({bact}, {phage}). This pair will be skipped.')
                 continue
             
             # Get features and metadata for this pair
@@ -368,8 +374,8 @@ def main():
 
             # Logging
             if args.logging and not feature_flag:
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample feature vector for pair ({bact}, {phage}) with score: {score}', file=logfile)
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - Number of features: {len(features.tolist())}', file=logfile)
+                logging.info(f'Sample feature vector for pair ({bact}, {phage}) with score: {score}')
+                logging.info(f'- Number of features: {len(features.tolist())}')
                 feature_flag = True
 
             # Decide what to do with this pair based on exclusion criteria
@@ -393,11 +399,11 @@ def main():
                     y_excl.append(score)    
                     X_excl_idx.append(cidx)
                     if args.logging:
-                        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Pair ({bact}, {phage}) added to exclusion set based on cluster criteria.', file=logfile)
+                        logging.info(f'Pair ({bact}, {phage}) added to exclusion set based on cluster criteria.')
                     if bact in args.exclude_bact_clusters and phage in args.exclude_phage_clusters:
                         X_excl_true_unseen_idx.append(eidx)
                         if args.logging:
-                            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Pair ({bact}, {phage}) is truly unseen in test set because both entities are in the exclusion lists.', file=logfile)
+                            logging.info(f'Pair ({bact}, {phage}) is truly unseen in test set because both entities are in the exclusion lists.')
                     eidx += 1
                     cidx += 1
                     continue
@@ -418,16 +424,15 @@ def main():
     X, y = np.array(X), np.array(y)
     X_excl, y_excl = np.array(X_excl), np.array(y_excl)
     if args.logging:
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} --- Finished building dataset ---', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Built dataset with {len(X)} pairs and excluded {len(X_excl)} pairs.', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X)} times {len(X[0])} total features for interacting pairs:', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X)} x {len(X[0])} = {X.shape}', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} cidx: {cidx}', file=logfile)
+        logging.info(f'--- Finished building dataset ---')
+        logging.info(f'Built dataset with {len(X)} pairs and excluded {len(X_excl)} pairs.')
+        logging.info(f'There should be {len(X)} times {len(X[0])} total features for interacting pairs:')
+        logging.info(f'{len(X)} x {len(X[0])} = {X.shape}')
+        logging.info(f'cidx: {cidx}')
         if args.exclude_pairs or args.exclude_clusters:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Excluded {len(X_excl)} pairs based on --exclude_bacts and --exclude_phages lists.', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} There should be {len(X_excl)} times {len(X_excl[0])} total non-unique features:', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {len(X_excl)} represen', file=logfile)
-    
+            logging.info(f'Excluded {len(X_excl)} pairs based on --exclude_bacts and --exclude_phages lists.')
+            logging.info(f'There should be {len(X_excl)} times {len(X_excl[0])} total non-unique features:')
+            logging.info(f'{len(X_excl)} represent the excluded pairs.')
     ### 7. Splitting & Scaling ###
     train_idx, test_idx = X_idx, X_excl_idx
     if args.train_by_cluster:
@@ -490,7 +495,7 @@ def main():
             if args.logging:
                 outname = 'cluster_distribution_train_val_test.png'
                 plt.savefig(outdir+outname)
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Cluster distribution figure saved as: {outdir+outname}', file=logfile)
+                logging.info(f'Cluster distribution figure saved as: {outdir+outname}')
             plt.close(fig)
         
     else:
@@ -534,19 +539,19 @@ def main():
     # Training loop
     if args.cv:
         if args.logging: 
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Train + Val size: {X_train_f.shape[0]} samples, Test size: {X_test.shape[0]} samples', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in train+val: {round(sum(y_train_f)/len(y_train_f)*100,2)}%', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%\n', file=logfile)
+            logging.debug(f'Train + Val size: {X_train_f.shape[0]} samples, Test size: {X_test.shape[0]} samples')
+            logging.debug(f'Fraction of positive interactions in train+val: {round(sum(y_train_f)/len(y_train_f)*100,2)}%')
+            logging.debug(f'Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%')
 
 
         kf = KFold(n_splits=args.kf_n_splits, shuffle=True, random_state=42)
         fold = 1
 
-        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting cross-validation with {kf.get_n_splits()} folds...', file=logfile)
+        if args.logging: logging.info(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting cross-validation with {kf.get_n_splits()} folds...')
 
         for train_idx, val_idx in kf.split(X_train_f):
             print(f"Fold {fold}:")
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fold {fold}...', file=logfile)
+            if args.logging: logging.debug(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fold {fold}...')
 
             # Split data into training and validation sets for this fold
             X_train_fold, X_val_fold = X_train_f[train_idx], X_train_f[val_idx]
@@ -605,18 +610,19 @@ def main():
                     val_accuracies.append(val_acc)
 
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
-                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}', file=logfile)
+                if args.logging: 
+                    logging.debug(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}')
 
             fold += 1
         fold -= 1 # Adjust fold count after loop to reflect actual number of folds completed
     
     else:
         if args.logging: 
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Train size: {X_train_f.shape[0]} samples, Val size: {X_val.shape[0] if X_val is not None else 0} samples, Test size: {X_test.shape[0]} samples', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in train: {round(sum(y_train_f)/len(y_train_f)*100,2)}%', file=logfile)
+            logging.debug(f'Train size: {X_train_f.shape[0]} samples, Val size: {X_val.shape[0] if X_val is not None else 0} samples, Test size: {X_test.shape[0]} samples')
+            logging.debug(f'Fraction of positive interactions in train: {round(sum(y_train_f)/len(y_train_f)*100,2)}%')
             if args.use_val:
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in val: {round(sum(y_val)/len(y_val)*100,2)}%', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%', file=logfile)
+                logging.debug(f'Fraction of positive interactions in val: {round(sum(y_val)/len(y_val)*100,2)}%')
+            logging.debug(f'Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%')
 
         fold = 1 #used for n_epochs multiplier in later code
         # Convert to torch tensors
@@ -639,7 +645,7 @@ def main():
         optimizer = optim.Adam(model.parameters(), lr=args.learning_rate) #Optimizes weights and biases
 
         # Training loop
-        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting training with epochs: {args.n_epochs}...', file=logfile)
+        if args.logging: logging.info(f'Starting training with epochs: {args.n_epochs}...')
         for epoch in range(1, args.n_epochs + 1):
             model.train()
             running_loss = 0.0
@@ -676,10 +682,10 @@ def main():
                     val_accuracies.append(val_acc)
 
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
-                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}', file=logfile)
+                if args.logging: logging.debug(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}')
             else:
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}")
-                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}', file=logfile)
+                if args.logging: logging.debug(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}')
     
     # Appropriating test and excluded sets
     X_test_t = torch.from_numpy(X_test).float().to(device)
@@ -706,8 +712,8 @@ def main():
     #print(f"\nFinal test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}")
     if args.logging: 
         if args.test_on_excluded:
-            print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Tested on excluded set', file=logfile)
-        print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  Standard test accuracy: {test_acc:.4f}  Standard test balanced accuracy: {test_ba:.4f}', file=logfile)
+            logging.info(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Tested on excluded set')
+        logging.info(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  Standard test accuracy: {test_acc:.4f}  Standard test balanced accuracy: {test_ba:.4f}')
     print(f'Final test loss: {test_loss:.4f}  Standard test accuracy: {test_acc:.4f}  Standard test balanced accuracy: {test_ba:.4f}')
         
     
@@ -729,10 +735,11 @@ def main():
         fig.suptitle(f"Torch MLP Train/Val Loss & Val Accuracy for n{n}, k{k}. Test accuracy: {test_acc:.2f}, Test balanced accuracy: {test_ba:.2f}")
 
         outname = 'torchMLP_acc_loss.png'    
-        if args.logging: plt.savefig(outdir+outname)
-        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Accuracy and train figure saved as: {outdir+outname}', file=logfile)
+        if args.logging: 
+            plt.savefig(outdir+outname)
+            logging.info(f'Accuracy and train figure saved as: {outdir+outname}')
     else:
-        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} No validation set used, skipping loss and accuracy plotting.', file=logfile) 
+        if args.logging: logging.info(f'No validation set used, skipping loss and accuracy plotting.')
 
     # Evaluating on the truly unseen test set if applicable -------
     if args.test_on_excluded:
@@ -745,8 +752,8 @@ def main():
             test_unseen_ba = balanced_accuracy_score(y_test_unseen_t.cpu().numpy(), test_unseen_preds.cpu().numpy())
 
         if args.logging: 
-            print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Tested on truly unseen subset of excluded set', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final truly unseen test loss: {test_unseen_loss:.4f}  truly unseen test accuracy: {test_unseen_acc:.4f}  truly unseen test balanced accuracy: {test_unseen_ba:.4f}', file=logfile)
+            logging.info(f'Tested on truly unseen subset of excluded set')
+            logging.info(f'Final truly unseen test loss: {test_unseen_loss:.4f}  truly unseen test accuracy: {test_unseen_acc:.4f}  truly unseen test balanced accuracy: {test_unseen_ba:.4f}')
         print(f'\nFinal truly unseen test loss: {test_unseen_loss:.4f}  truly unseen test accuracy: {test_unseen_acc:.4f}  truly unseen test balanced accuracy: {test_unseen_ba:.4f}')
 
     ### 10. Model Evaluations ###
@@ -790,7 +797,7 @@ def main():
     outname = 'torchMLP_confusion_matrix.png'
     if args.logging: 
         plt.savefig(outdir+outname)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Confusion matrix figure saved as: {outdir+outname}', file=logfile)
+        logging.info(f'Confusion matrix figure saved as: {outdir+outname}')
 
     # ROC Curve ------------------
     roc_auc = roc_auc_score(true_labels, probabilities)
@@ -814,7 +821,7 @@ def main():
     outname = 'torchMLP_ROC.png'
     if args.logging: 
         plt.savefig(outdir+outname)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ROC curve figure saved as: {outdir+outname}', file=logfile)
+        logging.info(f'ROC curve figure saved as: {outdir+outname}')
 
     # Biparte --------------------
     J = tpr - fpr # Calculate Youden's J statistic
@@ -824,10 +831,10 @@ def main():
     optimal_threshold = thresholds[optimal_idx]
 
     if args.logging:
-        print(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} --- Optimal Operating Point (Max Youdens J) ---', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Optimal Threshold: {optimal_threshold:.4f}', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Corresponding TPR: {tpr[optimal_idx]:.4f}', file=logfile)
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Corresponding FPR: {fpr[optimal_idx]:.4f}', file=logfile)
+        logging.info(f'\n--- Optimal Operating Point (Max Youdens J) ---')
+        logging.info(f'Optimal Threshold: {optimal_threshold:.4f}')
+        logging.info(f'Corresponding TPR: {tpr[optimal_idx]:.4f}')
+        logging.info(f'Corresponding FPR: {fpr[optimal_idx]:.4f}')
 
     try:
         # 1. Load lookup data
@@ -870,10 +877,10 @@ def main():
 
         # 5. Save and Plot
         if args.logging:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} \n--- Top True Positive Entries (Grouped by strain) ---')
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total True Positives found in unseen test: {len(best_tp_df)}')
+            logging.info(f'\n--- Top True Positive Entries (Grouped by strain) ---')
+            logging.info(f'Total True Positives found in unseen test: {len(best_tp_df)}')
             for line in best_tp_df.head(10):
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
+                logging.info(f'{line}')
             best_tp_df.to_csv(outdir+"best_predictions.csv", sep=";")
         
             plot_entity_counts(best_tp_df, 'Phage_Name', outdir = outdir, logging = args.logging)
@@ -882,7 +889,7 @@ def main():
 
     except Exception as e:
         if args.logging:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Error during Biparte analysis: {e}\n{traceback.print_exc()}', file=logfile)
+            logging.error(f'Error during Biparte analysis: {e}\n{traceback.print_exc()}')
 
     # F1 Analysis -----------------
     probs = test_probs.flatten().cpu().numpy() if hasattr(test_probs, "cpu") else test_probs.flatten()
@@ -934,7 +941,7 @@ def main():
         pred_df.to_csv(outpath, index=False)
 
         print(f"Saved {len(pred_df)} predictions to {outpath}")
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved {len(pred_df)} predictions to {outpath}', file=logfile)
+        logging.info(f'Saved {len(pred_df)} predictions to {outpath}')
 
     # Simply pred output matrix ---
     # create prediction matrix: rows=bacterium, cols=phage, values=prediction
@@ -959,7 +966,7 @@ def main():
 
     # save and show a quick preview
     if args.logging:
-        print(pred_matrix.head())
+        logging.debug(f"Preview of ordered prediction matrix:\n{pred_matrix.head()}")
         outname = 'torchMLP_prediction_matrix_ordered.csv'
         pred_matrix.to_csv(outdir + outname)
         print(f"Saved ordered prediction matrix to {outdir + outname}")
@@ -1003,49 +1010,38 @@ def main():
         hash_lookup = outdir = "hash_lookup.csv"
 
         ### Subset host_range_data, phage_minhash_data, and bact_minhash_data to only include the strains present in the test set metadata
-        if args.entity_order == "bact_first":
-            test_bacteria = set(metadata_test[:, 0])
-            test_phages = set(metadata_test[:, 1])
-        else:
-            test_phages = set(metadata_test[:, 0])
-            test_bacteria = set(metadata_test[:, 1])
-
-        host_range_data = {
-            bact: {phage: score for phage, score in interactions.items() if phage in test_phages}
-            for bact, interactions in host_range_data.items()
-            if bact in test_bacteria
-        }
-        phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in test_phages}
-        bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in test_bacteria}
+        if args.exclude_clusters:
+            phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in args.exclude_phage_clusters}
+            bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in args.exclude_bact_clusters}
         if args.logging: 
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Subsetted host range and minhash data to test set strains. Remaining strains: {len(host_range_data)}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Remaining strains in host range data: {list(host_range_data.keys())}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Remaining strains in phage minhash data: {list(phage_minhash_data.keys())}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Remaining strains in bacteria minhash data: {list(bact_minhash_data.keys())}', file=logfile)
+            print(f'Subsetted host range and minhash data to test set strains. Remaining bact strains: {len(host_range_data)}')
+            print(f'Remaining strains in host range data: {list(host_range_data.keys())}')
+            print(f'Remaining strains in phage minhash data: {list(phage_minhash_data.keys())}')
+            print(f'Remaining strains in bacteria minhash data: {list(bact_minhash_data.keys())}')
+            logging.info(f'Subsetted host range and minhash data to test set strains. Remaining strains: {len(host_range_data)}')
+            logging.info(f'Remaining strains in host range data: {list(host_range_data.keys())}')
+            logging.info(f'Remaining strains in phage minhash data: {list(phage_minhash_data.keys())}')
+            logging.info(f'Remaining strains in bacteria minhash data: {list(bact_minhash_data.keys())}')
 
         ### Running PFI analysis and plotting results
         pfi_analyzer = calc_PFI_test(host_range_data=host_range_data, outdir=outdir, logging=args.logging)
         interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bact_minhash_data=bact_minhash_data, subset=args.subset_pfi)
-        if args.logging: 
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {out_pfi}', file=logfile)
+        if args.logging: logging.info(f'Constructed interaction pairs and saved to {out_pfi}')
         
         if hash_lookup is None:
             try:
                 hash_lookup = pd.read_csv(hash_lookup)
-                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Successfully loaded hash lookup from {hash_lookup}', file=logfile)
+                if args.logging: logging.info(f'Successfully loaded hash lookup from {hash_lookup}')
             except Exception as e:
-                print(f"Error loading hash lookup: {e}")
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Error loading hash lookup: {e}', file=logfile)
-
-
+                logging.error(f"Error loading hash lookup: {e}")
         if args.logging:
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total interacting pairs found: {len(interaction_pairs)}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Total pairs with shared k-mers: {len(occurence_pairs)}', file=logfile)
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample of interaction pairs:', file=logfile)
+            logging.info(f'Total interacting pairs found: {len(interaction_pairs)}')
+            logging.info(f'Total pairs with shared k-mers: {len(occurence_pairs)}')
+            logging.debug(f'Sample of interaction pairs:')
             max_c = 10
             for i, (pair, iscore) in enumerate(interaction_pairs.items()):
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Interaction Score = {iscore}', file=logfile)
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {pair}: Occurrence Score = {occurence_pairs.get(pair, "N/A")}', file=logfile)
+                logging.debug(f'{pair}: Interaction Score = {iscore}')
+                logging.debug(f'{pair}: Occurrence Score = {occurence_pairs.get(pair, "N/A")}')
                 if i >= max_c - 1:
                     break
                 # for line in interaction_pairs[:10]:
@@ -1072,7 +1068,7 @@ def main():
             if len(pfi_top_idx) == 0: 
                 pfi_failed = True
                 raise Exception("regain_kmers() failed")
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers for top interaction pairs: {list(pfi_top_kmers_decoded.values())}', file=logfile)
+            if args.logging: logging.info(f'Decoded k-mers for top interaction pairs: {list(pfi_top_kmers_decoded.values())}')
             pfi_top_kmers_df = pd.DataFrame({
                 "feature_index": list(pfi_top_kmers_decoded.keys()),
                 "entity": [idx_to_entity.get(idx, "unknown") for idx in pfi_top_kmers_decoded.keys()],
@@ -1080,9 +1076,9 @@ def main():
                 "decoded_kmer": list(pfi_top_kmers_decoded.values())
             })
             pfi_top_kmers_df.to_csv(outdir+"top_interaction_pair_kmers.csv", index=False)
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved decoded k-mers for top interaction pairs to {outdir+"top_interaction_pair_kmers.csv"}', file=logfile)
+            if args.logging: logging.info(f'Saved decoded k-mers for top interaction pairs to {outdir+"top_interaction_pair_kmers.csv"}')
         except Exception as e:
-            print(f"Error during k-mer regaining for top interaction pairs: {e}")
+            logging.error(f"Error during k-mer regaining for top interaction pairs: {e}")
             pfi_failed = True
         
         #Plot the top k-mers for interaction pairs
@@ -1098,21 +1094,21 @@ def main():
             if args.logging: 
                 plt.tight_layout()
                 plt.savefig(outdir + outname)
-                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Saved plot of top k-mers for interaction pairs to {outdir + outname}', file=logfile)
+                logging.info(f'Saved plot of top k-mers for interaction pairs to {outdir + outname}')
     
     ### Gene Annotation of Kmers ###
     # If PFI was performed and yielded results, use those top k-mers with annotations for GeneAnalysis. Otherwise, regain the top k-mers from the model feature importance and use those for GeneAnalysis.
     if args.perform_ga:
         if args.run_ga_on_pfi and pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty and not pfi_failed:
             kmers_entity_df = pfi_top_kmers_df
-            if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Using top interaction pairs from pairwise feature importance analysis with entity annotations for GeneAnalysis.', file=logfile)
+            if args.logging: logging.info(f'Using top interaction pairs from pairwise feature importance analysis with entity annotations for GeneAnalysis.')
         else:
             try:
                 indices, vals, all_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=100, 
                     idx_to_minhash=idx_to_minhash,
                     mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
                     logging=args.logging, logfile=logfile)
-                if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")}Decoded k-mers (subset): {[all_kmers_decoded[i] for i in range(5)]}', file=logfile)
+                if args.logging: logging.info(f'Decoded k-mers (subset): {[all_kmers_decoded[i] for i in range(5)]}')
                 kmers_entity_df = pd.DataFrame([
                     {
                         "feature_index": idx,
@@ -1124,14 +1120,14 @@ def main():
                 ])
 
             except Exception as e:
-                print(f"Error during k-mer regaining for annotation: {e}")
+                logging.error(f"Error during k-mer regaining for annotation: {e}")
 
         try:
             GA = GeneAnalysis(logfile=logfile, logging=args.logging, outdir=outdir)
             phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
             bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
-            
-            print("Phage_df - Started k-mer annotation with GeneAnalysis...")
+
+            logging.info("Phage_df - Started k-mer annotation with GeneAnalysis...")
             #ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, organism="phage", summarise_by="function", tax_origin="txid38018[orgn]") # Phage first
             ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, organism="phage", tax_origin="txid38018[orgn]") # Phage first
             if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
@@ -1141,12 +1137,12 @@ def main():
                     for i in tqdm(range(10), desc=f"Waiting 10 secs"): #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
                         sleep(1)
                     tax_str = f"txid{strain_id_tax_lookup.get(genus, 'unknown')}[orgn]" if strain_id_tax_lookup.get(genus, None) is not None else "txid2[orgn]"
-                    print(f"Bact_df - Started k-mer annotation with GeneAnalysis for genus {genus}, tax_origin={tax_str}...")
+                    logging.info(f"Bact_df - Started k-mer annotation with GeneAnalysis for genus {genus}, tax_origin={tax_str}...")
                     ncbi_bact_df = GA.search_and_annotate_kmers(subset_bact_kmers_decoded_df, organism="bact", tax_origin=tax_str, expect=10000)
                     ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, ncbi_bact_df], ignore_index=True) # Bact second
                 
                 if len(ncbi_blast_res_df) > number_of_blast_res_before:
-                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}', file=logfile)
+                    logging.info(f'GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}')
                 else:
                     raise ValueError("No BLAST results were obtained for bacterial k-mers. Please check the input data and BLAST parameters.")
             else:
@@ -1154,14 +1150,14 @@ def main():
             
             try: 
                 if args.logging: 
-                    print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of kmers annotated: {len(ncbi_blast_res_df)}/{len(kmers_entity_df)}', file=logfile)
+                    logging.info(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fraction of kmers annotated: {len(ncbi_blast_res_df)}/{len(kmers_entity_df)}')
                 ncbi_blast_res_df = ncbi_blast_res_df.merge(kmers_entity_df[["feature_index", "entity", "organism", "decoded_kmer"]], left_on="Kmer", right_on="decoded_kmer", how="right")
                 ncbi_blast_res_df.to_csv(outdir+"GA_kmers_blast_results.csv", index=False)
             except Exception as e:
-                print(f"Error during merging BLAST results with k-mer annotations: {e}")
+                logging.error(f"Error during merging BLAST results with k-mer annotations: {e}")
 
         except Exception as e:
-            print(f"Error during GeneAnalysis: {e}")
+            logging.error(f"Error during GeneAnalysis: {e}")
     
     # Plotting the distribution of annotated Function and Genes of kmers
     if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
@@ -1172,10 +1168,11 @@ def main():
     if args.save_model:
         model_save_path = outdir + "torchMLP_model.pth"
         torch.save(model.state_dict(), model_save_path)
-        if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Trained model saved to {model_save_path}', file=logfile)
+        if args.logging: logging.info(f'Trained model saved to {model_save_path}')
 
     ### X. Closing & Terminating ###
-    print(f"Process completed in {time() - time_start:.2f} seconds.")
+    print(f"\nProcess completed in {time() - time_start:.2f} seconds.")
+    logging.info(f"Process completed in {time() - time_start:.2f} seconds.")
     if logfile: logfile.close()
 
 if __name__ == "__main__":

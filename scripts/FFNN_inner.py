@@ -1035,7 +1035,7 @@ def main():
             
         except FileNotFoundError:
             pfi_analyzer = calc_PFI(host_range_data=host_range_data, outdir=outdir, logging=args.logging)
-            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bacteria_minhash_data=bact_minhash_data, subset=args.subset_pfi)
+            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bact_minhash_data=bact_minhash_data, subset=args.subset_pfi)
             if args.logging: 
                 print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Constructed interaction pairs and saved to {out_pfi}', file=logfile)
         

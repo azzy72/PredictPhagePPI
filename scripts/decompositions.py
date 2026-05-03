@@ -159,9 +159,16 @@ class Decompose:
         """
         Wraps signatures into a sourmash-compatible dictionary structure.
         """
+        # If `signatures` is a list of signature-lists (e.g. multiple records),
+        # flatten it into a single list of ints. Otherwise use as-is.
+        if signatures and any(isinstance(s, (list, tuple)) for s in signatures):
+            flat_sigs = [val for sub in signatures for val in sub]
+        else:
+            flat_sigs = list(signatures) if signatures is not None else []
+
         # Sort signatures to emulate a MinHash 'mins' list behavior
-        sorted_sigs = sorted(signatures)
-        
+        sorted_sigs = sorted(flat_sigs)
+
         # Calculate an md5sum of the signatures to follow the format
         sig_string = ",".join(map(str, sorted_sigs))
         md5sum = hashlib.md5(sig_string.encode()).hexdigest()
