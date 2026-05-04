@@ -18,7 +18,7 @@ from manipulations import binarize_host_range, hostrange_df_to_dict, hostrange_b
 import re
 from paths import raw_data_path, data_prod_path
 
-def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool = False, sparse : bool = False) -> list:
+def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool = False, sparse : bool = False, data2 : bool = False) -> list:
     """
     Used to retrieve the hostrange data of PFU between bacterias and bacteriophages, as well as bacteria strain lookup dictionary.
 
@@ -27,28 +27,48 @@ def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool 
         *sheet_name* (str): Sheet name in excel file
         *TS* (bool): Troubleshoot on or off (like verbose)
         *sparse* (bool): Whether to return a sparse hostrange DataFrame.
-    
+        *data2* (bool): Whether to use the second dataset format.
     Returns:
         *list[0]* (dict): bacteria lookup dictionary with bacteria species and strain names (strain names are unique)
         *list[1]* (pd.DataFrame): hostrange pd.Dataframe with bacteria strain as index and phage names as row columns
 
     """
-    # Load the host range data from the Excel file
-    host_range_df = pd.read_excel(
-        file,
-        sheet_name=sheet_name,
-        header=1).drop(columns=["isolate ID", "Hostrange_analysis", "Phage"])
-
-    # Create a lookup dictionary for bacteria species based on Seq ID - dict
-    bact_lookup = host_range_df[["Seq ID", "Species"]].drop_duplicates(subset=['Seq ID']).set_index('Seq ID').to_dict()['Species']
-    if TS: 
-        print("Bacteria lookup dictionary created with", len(bact_lookup), "entries.")
-        print(bact_lookup)
-
-    # Make Seq ID to phage name mapping - pandas df
-    host_range_df = host_range_df.drop(columns=["Species"]).set_index('Seq ID').rename_axis('phage').reset_index()
-    if TS: print(host_range_df.head())
     
+    if data2:
+        # Load the host range data from the Excel file
+        host_range_df = pd.read_excel(
+            file,
+            sheet_name=sheet_name)
+
+        host_range_df.rename(columns={"Unnamed: 0": "phage"}, inplace=True)
+
+        # Creating bact species lookup dict
+        bact_lookup = {}
+        if "Species" not in host_range_df.columns: # Creating naive bact lookup due to missing species column
+            for bact in host_range_df["phage"]:
+                bact_lookup[bact] = bact
+        else:
+            for bact in host_range_df["phage"]:
+                bact_lookup[bact] = host_range_df.loc[bact, "Species"]
+        
+    
+    else:
+        # Load the host range data from the Excel file
+        host_range_df = pd.read_excel(
+            file,
+            sheet_name=sheet_name,
+            header=1).drop(columns=["isolate ID", "Hostrange_analysis", "Phage"])
+
+        # Create a lookup dictionary for bacteria species based on Seq ID - dict
+        bact_lookup = host_range_df[["Seq ID", "Species"]].drop_duplicates(subset=['Seq ID']).set_index('Seq ID').to_dict()['Species']
+        if TS: 
+            print("Bacteria lookup dictionary created with", len(bact_lookup), "entries.")
+            print(bact_lookup)
+
+        # Make Seq ID to phage name mapping - pandas df
+        host_range_df = host_range_df.drop(columns=["Species"]).set_index('Seq ID').rename_axis('phage').reset_index()
+    
+    if TS: print(host_range_df.head())
     return [bact_lookup, host_range_df]
 
 def load_minhash_sketches(in_dir : str, TS : bool = False, output_as_np : bool = False):
