@@ -17,6 +17,7 @@ def parse_arguments():
                         help="Split values for Bact (n, k) and Phage (n, k)")
 
     parser.add_argument("--method", choices=['sourmash', 'minhash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
+    parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
 
     args = parser.parse_args()
     return args
@@ -31,26 +32,35 @@ def main():
         if args.nk:
             n = bn = pn = args.nk[0]
             k = bk = pk = args.nk[1]
-            bact_outdir = f"BactMinhash_n{n}_k{k}/"
-            phage_outdir = f"PhageMinhash_n{n}_k{k}/"
+            bact_outdir = f"BactMinhash_n{n}_k{k}/" if not args.data2 else f"BactMinhash_data2_n{n}_k{k}/"
+            phage_outdir = f"PhageMinhash_n{n}_k{k}/" if not args.data2 else f"PhageMinhash_data2_n{n}_k{k}/"
         else:
             bn, bk, pn, pk = args.split_nk
             n, k = bn, bk # Reference n/k for folder naming
-            bact_outdir = f"BactMinhash_n{bn}_k{bk}/"
-            phage_outdir = f"PhageMinhash_n{pn}_k{pk}/"
+            bact_outdir = f"BactMinhash_n{bn}_k{bk}/" if not args.data2 else f"BactMinhash_data2_n{bn}_k{bk}/"
+            phage_outdir = f"PhageMinhash_n{pn}_k{pk}/" if not args.data2 else f"PhageMinhash_data2_n{pn}_k{pk}/"
+        
+        if args.data2:
+            par_outdir = "SM_sketches_data2/"
+        else:
+            par_outdir = "SM_sketches/"
 
         try:
             ### Phage Minhash Sketch Construction ###
-            construct_SM_sketches(raw_in = raw_data_path+"phagehost_KU/phage_cleaned.fasta", 
+            phage_in_path = raw_data_path+"phagehost_KU/phage_cleaned.fasta" if not args.data2 else raw_data_path+"phagehost_KU/data2_phages.fasta"
+            construct_SM_sketches(raw_in = phage_in_path, 
                                 k = pk, 
                                 outdir = phage_outdir, 
+                                parent_outdir = par_outdir,
                                 quiet = False,
                                 sourmash_parameters=[pn, 0])
 
             ### Bacteria Minhash Sketch Construction ###
-            construct_SM_sketches(raw_in = raw_data_path+"phagehost_KU/bacteria_fasta/", 
+            bact_in_path = raw_data_path+"phagehost_KU/bacteria_fasta/" if not args.data2 else raw_data_path+"phagehost_KU/data2_bacts.fasta"
+            construct_SM_sketches(raw_in = bact_in_path, 
                                 k = bk, 
                                 outdir = bact_outdir, 
+                                parent_outdir = par_outdir,
                                 quiet = False,
                                 sourmash_parameters=[bn, 0])
         except Exception as e:
@@ -68,13 +78,14 @@ def main():
 
         try:
             codec = KmerCodec()
-            with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+"encoded_sketches/", 
+            ohe_outdir = f"encoded_sketches/" if not args.data2 else f"encoded_sketches_data2/"
+            with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+ohe_outdir, 
                                         entity_type="phage", sourmash_like=True) as decompose_phage:
-                decompose_phage.decompose(raw_in=raw_data_path+"phagehost_KU/phage_cleaned.fasta")
+                decompose_phage.decompose(raw_in=phage_in_path)
 
-            with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+"encoded_sketches/", 
+            with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+ohe_outdir, 
                                     entity_type="bacteria", sourmash_like=True) as decompose_bact:
-                decompose_bact.decompose(raw_in=raw_data_path+"phagehost_KU/bacteria_fasta/")
+                decompose_bact.decompose(raw_in=bact_in_path)
             print("One-hot encoding decomposition completed successfully.\n")
         except Exception as e:
             print(f"Error during one-hot encoding decomposition: {e}")

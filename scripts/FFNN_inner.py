@@ -42,10 +42,9 @@ def parse_arguments():
                         help="Split values for Bact (n, k) and Phage (n, k)")
 
     # Data Source
-    parser.add_argument("--use_encoded", action="store_true", 
-                        help="Use encoded_sketches instead of SM_sketches")
-    parser.add_argument("--bits_encoded", type=str, default="4", 
-                        help="(Optional) specify which type of bit encoding using in encoded_sketches (e.g. 4 for phage_encode4bit_n400_k12)")
+    parser.add_argument("--use_encoded", action="store_true", help="Use encoded_sketches instead of SM_sketches")
+    parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
+    parser.add_argument("--bits_encoded", type=str, default="4", help="(Optional) specify which type of bit encoding using in encoded_sketches (e.g. 4 for phage_encode4bit_n400_k12)")
     parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
     parser.add_argument("--sbatch_id", type=str, help="(Optional) sbatch job ID to include in output directory name for easier tracking")
 

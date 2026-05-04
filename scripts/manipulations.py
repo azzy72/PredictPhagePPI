@@ -222,14 +222,15 @@ def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=
                 combined_host_range[host] = 0
         return combined_host_range
     
-def construct_SM_sketches(raw_in : str, k : int, outdir : str, quiet : bool = False, sourmash_parameters = [50000, 0], include_reverse : bool = False) -> int:
+def construct_SM_sketches(raw_in : str, k : int, outdir : str, parent_outdir : str = "SM_sketches/", quiet : bool = False, sourmash_parameters = [50000, 0], include_reverse : bool = False) -> int:
     """
     Construct sourmash sketches given a fasta input.
     
     Args:
         *raw_in* (str): Path to the input fasta file or directory containing fasta files.
         *k* (int): Length of the k-mers. 
-        *outdir* (str): directory for storing sketches created in data_prod_path+"SM_sketches/" (each signature in its own file)
+        *parent_outdir* (str): Parent directory for storing sketches.
+        *outdir* (str): Subdirectory for storing sketches created in data_prod_path+parent_outdir/ (each signature in its own file)
         *quiet* (bool): If True, suppress progress output. Default is False.
         *sourmash_parameters* (list): specify sourmash.MinHash(n, scaled)
         *include_reverse* (bool): include the reverse strand to sketches
@@ -242,25 +243,29 @@ def construct_SM_sketches(raw_in : str, k : int, outdir : str, quiet : bool = Fa
     ### Input Control ###
     if type(outdir) is not str:
         raise ValueError("outdir must be a path")
-    
-    if not os.path.exists(data_prod_path+"SM_sketches/"):
+    if type(raw_in) is not str:
+        raise ValueError("raw_in must be a path")
+    if type(parent_outdir) is not str:
+        raise ValueError("parent_outdir must be a path")
+
+    if not os.path.exists(data_prod_path+parent_outdir):
         try:
-            os.makedirs(data_prod_path+"SM_sketches/", exist_ok=True)
-            if not quiet: print(f"Created output directory: {data_prod_path}SM_sketches/")
+            os.makedirs(data_prod_path+parent_outdir, exist_ok=True)
+            if not quiet: print(f"Created output directory: {data_prod_path}{parent_outdir}")
         except OSError as e:
-            raise ValueError(f"Could not create outdir {data_prod_path}SM_sketches/: {e}")
+            raise ValueError(f"Could not create outdir {data_prod_path}{parent_outdir}/: {e}")
     
     # Ensure outdir exists (create if missing)
-    if not os.path.exists(data_prod_path+"SM_sketches/"+outdir):
+    if not os.path.exists(data_prod_path+parent_outdir+outdir):
         try:
-            os.makedirs(data_prod_path+"SM_sketches/"+outdir, exist_ok=True)
+            os.makedirs(data_prod_path+parent_outdir+outdir, exist_ok=True)
             if not quiet: print(f"Created output directory: {outdir}")
         except OSError as e:
             raise ValueError(f"Could not create outdir {outdir}: {e}")
-    elif not os.path.isdir(data_prod_path+"SM_sketches/"+outdir):
+    elif not os.path.isdir(data_prod_path+parent_outdir+outdir):
         raise ValueError(f"outdir exists but is not a directory: {outdir}")
 
-    outpath = data_prod_path+"SM_sketches/"+outdir
+    outpath = data_prod_path+parent_outdir+outdir
     if not quiet: print(f"Output path for sketches: {outpath}")
 
     # Ensuring sourmash parameters are appropriate

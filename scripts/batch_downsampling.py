@@ -16,6 +16,7 @@ def parse_arguments():
                         help="A list of k values for downsampling (e.g., --k 12 15 20)")
 
     parser.add_argument("--method", choices=['sourmash', 'minhash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
+    parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
 
     args = parser.parse_args()
     return args
@@ -30,6 +31,8 @@ def main_batch():
             try: 
                 # Call downsampling.py with the current n and k values as arguments
                 command = f"python3 {scripts_path}downsampling.py --nk {n} {k} --method {args.method}"
+                if args.data2:
+                    command += " --data2"
                 print(f"Running command: {command}")
                 os.system(command)
             except Exception as e:
