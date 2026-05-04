@@ -27,6 +27,10 @@ def main():
     args = parse_arguments()
 
     print(f"Downsampling method: {args.method}")
+
+    phage_in_path = raw_data_path+"phagehost_KU/phage_cleaned.fasta" if not args.data2 else raw_data_path+"phagehost_KU/data2_phages.fasta"
+    bact_in_path = raw_data_path+"phagehost_KU/bacteria_fasta/" if not args.data2 else raw_data_path+"phagehost_KU/data2_bacts.fasta"
+
     if args.method == 'sourmash' or args.method == 'minhash':
         ### Resolve N/K values ###
         if args.nk:
@@ -47,7 +51,6 @@ def main():
 
         try:
             ### Phage Minhash Sketch Construction ###
-            phage_in_path = raw_data_path+"phagehost_KU/phage_cleaned.fasta" if not args.data2 else raw_data_path+"phagehost_KU/data2_phages.fasta"
             construct_SM_sketches(raw_in = phage_in_path, 
                                 k = pk, 
                                 outdir = phage_outdir, 
@@ -56,7 +59,6 @@ def main():
                                 sourmash_parameters=[pn, 0])
 
             ### Bacteria Minhash Sketch Construction ###
-            bact_in_path = raw_data_path+"phagehost_KU/bacteria_fasta/" if not args.data2 else raw_data_path+"phagehost_KU/data2_bacts.fasta"
             construct_SM_sketches(raw_in = bact_in_path, 
                                 k = bk, 
                                 outdir = bact_outdir, 
