@@ -6,6 +6,8 @@ import json
 import hashlib
 from paths import raw_data_path, data_prod_path
 import random
+import mmh3
+import heapq
 
 class KmerCodec:
     def __init__(self):
@@ -51,7 +53,7 @@ class KmerCodec:
 
 
 class Decompose:
-    def __init__(self, k, n, codec, output_dir, entity_type, sourmash_like=True, custom_dir_name : str = None, random_sampling=True):
+    def __init__(self, k, n, codec, output_dir, entity_type, sourmash_like=True, custom_dir_name : str = None, random_sampling=False, hash_func="murmurhash3_32"):
         allowed_entity_types = {"phage": "phage", "bacteriophage": "phage", "bacteria": "bact", "bact": "bact"}
         if entity_type.lower() not in allowed_entity_types.keys():
             raise ValueError(f"Invalid entity_type '{entity_type}'. Allowed values are: {', '.join(allowed_entity_types.keys())}")
@@ -64,6 +66,11 @@ class Decompose:
         self.temp_dir = "../data_prod/tmp"
         self.sourmash_like = sourmash_like
         self.random_sampling = random_sampling
+
+        if hash_func not in ["md5", "murmurhash3_32", "ohe_custom"]:
+            raise ValueError(f"Invalid hash function '{hash_func}'. Allowed values are: 'md5', 'murmurhash3_32', 'ohe_custom'")
+        self.hash_func = hash_func
+
         if custom_dir_name:
             self.inner_dir = os.path.join(self.output_dir, f"{self.entity_type}_{custom_dir_name}")
             print(f"Using custom directory name: {self.inner_dir}")
@@ -85,6 +92,7 @@ class Decompose:
         """Main method to decompose genomes from a FASTA file."""
         raw_is_dir = os.path.isdir(raw_in)
         sig = None
+        hk_lookup_global = {}
         print(f"Initialized Decompose with k={self.k}, n={self.n}, entity_type='{self.entity_type}', sourmash_like={self.sourmash_like}")
         print(f"Input path '{raw_in}' is a directory: {raw_is_dir}")
 
@@ -109,7 +117,12 @@ class Decompose:
                         sigs_fasta = []
                         for i, record in enumerate(SeqIO.parse(file_path, "fasta")):
                             print(f"Processing record: {record_name}")
-                            sigs_fasta.append(self.decompose_genome(str(record.seq).upper()))
+                            sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
+                            for kmer_hash, kmer in hk_lookup.items():
+                                if kmer_hash not in hk_lookup_global:
+                                    hk_lookup_global[kmer_hash] = kmer
+                            #self.save_hk_lookup(hk_lookup, f"{record_name}_rec{i}")
+                            sigs_fasta.append(sig)
 
                         # if len(sigs_fasta) > self.n:
                         #     sigs_fasta = random.sample(sigs_fasta, self.n)
@@ -128,7 +141,11 @@ class Decompose:
                     os.makedirs(self.inner_dir)
                 for i, record in tqdm(enumerate(SeqIO.parse(raw_in, "fasta")), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
                     record_name = record.id
-                    sig = self.decompose_genome(str(record.seq).upper())
+                    sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
+                    for kmer_hash, kmer in hk_lookup.items():
+                        if kmer_hash not in hk_lookup_global:
+                            hk_lookup_global[kmer_hash] = kmer
+                    #self.save_hk_lookup(hk_lookup, f"{record_name}_rec{i}")
                     sig = self.prepare_sourmash_structure(sig, record_name)
                     self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}{i}_{record_name.lower()}.sig"))
                 print(f"Sourmash-like decomposition completed successfully. Signatures saved in '{self.inner_dir}'.\n")
@@ -138,34 +155,72 @@ class Decompose:
             if raw_is_dir:
                 raise NotImplementedError("Custom saving method is not implemented for directory input yet.")
             for record in tqdm(SeqIO.parse(raw_in, "fasta"), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
-                sig = self.decompose_genome(str(record.seq).upper())
+                sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
+                for kmer_hash, kmer in hk_lookup.items():
+                    if kmer_hash not in hk_lookup_global:
+                        hk_lookup_global[kmer_hash] = kmer
+                #self.save_hk_lookup(hk_lookup, f"{record.id}")
                 self.save_sketches_to_one_file(sig, os.path.join(self.temp_dir, f"signatures_{self.k}_{self.n}.txt"))
             
             self.concatenate_sketches()
 
         if sig is None:
             raise ValueError("No signatures were generated. Please check the input FASTA file(s) and parameters.\n")
+        
+        self.save_hk_lookup(hk_lookup_global, f"{self.entity_type}_hk_lookup_n{self.n}_k{self.k}")
 
     def decompose_genome(self, genome_seq):
         kmers = [genome_seq[i:i+self.k] for i in range(len(genome_seq) - self.k + 1)]
         if not kmers: return []
         
-        sampling_interval = max(1, len(kmers) // self.n)
+        # if "N" in kmers, remove those kmers (since they can't be encoded)
+        kmers = [kmer for kmer in kmers if "N" not in kmer]
+        if not kmers: return []
+
         signatures = []
-        
-        for i in range(0, len(kmers), sampling_interval):
-            if len(kmers[i]) == self.k:
-                encoded = self.codec.encode_with_revcomp(kmers[i]) 
-                signatures.append(encoded)
+        hk_lookup = {}  # mapping numeric_hash -> kmer
+
+        # iterate over all kmers and compute numeric hash values
+        for i in range(0, len(kmers)):
+            kmer = kmers[i]
+            if len(kmer) != self.k:
+                continue
+
+            # produce a numeric hash value for ordering
+            if self.hash_func == "ohe_custom":
+                # use the reversible integer encoding directly
+                hash_value = self.codec.encode_with_revcomp(kmer)
+            elif self.hash_func == "md5":
+                # md5 -> hex string -> numeric int for consistent numeric ordering
+                hexh = hashlib.md5(kmer.encode()).hexdigest()
+                hash_value = int(hexh, 16)
+            elif self.hash_func == "murmurhash3_32":
+                # mmh3.hash returns a signed int32; keep as int
+                hash_value = mmh3.hash(kmer)
+            else:
+                raise ValueError("Unsupported hash function")
+
+            signatures.append(hash_value)
+
+            # maintain only the n smallest hash values in hk_lookup (like mins)
+            if len(hk_lookup) < self.n:
+                hk_lookup[hash_value] = kmer
+            else:
+                # determine current worst (largest) hash in the lookup
+                if hash_value in hk_lookup: # already tracked
+                    continue
+                current_max = max(hk_lookup.keys())
+                if hash_value < current_max:
+                    # replace the current largest with the new, smaller hash
+                    del hk_lookup[current_max]
+                    hk_lookup[hash_value] = kmer
         
         if not self.random_sampling:
             signatures = signatures[:self.n]
         else: #use random sampling 
-            print("Before random sampling: ", signatures[:10], "...")
             signatures = random.sample(signatures, min(self.n, len(signatures)))
-            print("After random sampling: ", signatures[:10], "...")
 
-        return signatures
+        return signatures, hk_lookup
 
     def prepare_sourmash_structure(self, signatures, record_name):
         """
@@ -190,7 +245,7 @@ class Decompose:
             "num": len(sorted_sigs),
             "ksize": self.k,
             "seed": 42, # Default for sourmash
-            "max_hash": 0,
+            "max_hash": max(sorted_sigs) if sorted_sigs else 0,
             "mins": sorted_sigs,
             "md5sum": md5sum,
             "molecule": "dna"
@@ -210,6 +265,27 @@ class Decompose:
 
         return full_signature
     
+    def save_hk_lookup(self, hk_lookup, record_name):
+        # Read existing lookup if it exists, to avoid overwriting
+        existing_lookup = {}
+        output_path = os.path.join(self.output_dir, f"hk_lookup_{record_name}.json")
+        if os.path.exists(output_path):
+            with open(output_path, 'r') as f:
+                existing_lookup = json.load(f)
+                # Convert keys back to integers for merging
+                existing_lookup = {int(k): v for k, v in existing_lookup.items()}
+
+        # Merge the existing lookup with the new one
+        for kmer_hash, kmer in hk_lookup.items():
+            if kmer_hash not in existing_lookup:
+                existing_lookup[kmer_hash] = kmer
+
+        output_path = os.path.join(self.output_dir, f"hk_lookup_{record_name}.json")
+        with open(output_path, 'w') as f:
+            # JSON object keys must be strings; convert numeric hashes to strings for serialization
+            serializable = {str(k): v for k, v in existing_lookup.items()}
+            json.dump(serializable, f, indent=2)
+
     def save_sketches_to_one_file(self, sig, output_path):
         # Use 'a' (append) so multiple records don't overwrite each other
         with open(output_path, 'a') as f:
@@ -226,3 +302,12 @@ class Decompose:
             if os.path.exists(file_path):
                 with open(file_path) as infile:
                     shutil.copyfileobj(infile, outfile)
+
+    # def hash(self, data):
+    #     """Computes a murmurhash of the given data."""
+    #     if self.hash_func == "md5":
+    #         return hashlib.md5(data.encode()).hexdigest()
+    #     elif self.hash_func == "murmurhash3_32":
+    #         return mmh3.hash(data)
+    #     else:
+    #         raise ValueError("Unsupported hash function")
