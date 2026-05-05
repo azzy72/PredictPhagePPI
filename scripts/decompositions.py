@@ -10,9 +10,13 @@ import random
 class KmerCodec:
     def __init__(self):
         # Map bases to 4-bit values
-        self.base_to_bits = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+        #self.base_to_bits = {'A': 0, 'C': 1, 'G': 2, 'T': 3} #2bit encoding
+        self.base_to_bits = {'A': 1, 'C': 2, 'G': 4, 'T': 8} #4bit encoding
         # Map 4-bit values back to bases
-        self.bits_to_base = {0: 'A', 1: 'C', 2: 'G', 3: 'T'}
+        #self.bits_to_base = {0: 'A', 1: 'C', 2: 'G', 3: 'T'} #2bit decoding
+        self.bits_to_base = {1: 'A', 2: 'C', 4: 'G', 8: 'T'} #4bit decoding
+
+        self.complement_map = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
 
     def encode(self, kmer):
         """Converts a k-mer string into a unique integer."""
@@ -27,7 +31,7 @@ class KmerCodec:
         """Encodes a k-mer and its reverse complement, returning the smaller integer."""
         encoded_forward = self.encode(kmer)
         # Compute reverse complement
-        reverse_kmer = ''.join(self.bits_to_base[3 - self.base_to_bits[base]] for base in reversed(kmer))
+        reverse_kmer = ''.join(self.complement_map[base] for base in reversed(kmer))
         encoded_reverse = self.encode(reverse_kmer)
         # Return the smaller of the two encodings to ensure consistency
         return min(encoded_forward, encoded_reverse)
@@ -150,7 +154,7 @@ class Decompose:
         
         for i in range(0, len(kmers), sampling_interval):
             if len(kmers[i]) == self.k:
-                encoded = self.codec.encode(kmers[i]) 
+                encoded = self.codec.encode_with_revcomp(kmers[i]) 
                 signatures.append(encoded)
         
         return signatures[:self.n]
