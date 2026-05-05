@@ -1,0 +1,27 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# config.yaml  –  sourmash similarity pipeline
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Encoding/sketch directories to process.
+# Each must contain BactMinhash_n{n}_k{k}/ and PhageMinhash_n{n}_k{k}/ subdirs.
+sketch_dirs:
+  - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches
+  # - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches  # uncomment to add
+
+# Downsampling parameter sweep
+n_values: [500]
+k_values: [12]
+
+# Bacteria genus-lookup CSV (produced externally; used for label prefixing)
+bact_labels_csv: /home/projects/s215045/PredictPhagePPI/data_prod/bact_clusters_with_genus.csv
+
+# Shell script that prefixes bacteria labels with genus names
+prefix_script: /home/projects/s215045/PredictPhagePPI/scripts/annotation_scripts/prefix_bact_labels.sh
+
+# Dendrogram cut-points (passed to sourmash scripts plot2 --cut-point)
+bact_cut_point:  1.08
+phage_cut_point: 1.12
+
+# Figure dimensions (inches)
+figsize_x: 20
+figsize_y: 18
