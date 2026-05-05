@@ -80,19 +80,24 @@ def main():
         if args.nk:
             n = bn = pn = args.nk[0]
             k = bk = pk = args.nk[1]
+            bact_outdir = f"Bact{args.hash}_n{n}_k{k}/" if not args.data2 else f"Bact{args.hash}_data2_n{n}_k{k}/"
+            phage_outdir = f"Phage{args.hash}_n{n}_k{k}/" if not args.data2 else f"Phage{args.hash}_data2_n{n}_k{k}/"
         else:
             bn, bk, pn, pk = args.split_nk
+            n, k = bn, bk # Reference n/k for folder naming
+            bact_outdir = f"Bact{args.hash}_n{bn}_k{bk}/" if not args.data2 else f"Bact{args.hash}_data2_n{bn}_k{bk}/"
+            phage_outdir = f"Phage{args.hash}_n{pn}_k{pk}/" if not args.data2 else f"Phage{args.hash}_data2_n{pn}_k{pk}/"
             n, k = bn, bk # Reference n/k for folder naming
 
         try:
             codec = KmerCodec()
             ohe_outdir = f"encoded_sketches/" if not args.data2 else f"encoded_sketches_data2/"
             with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+ohe_outdir, entity_type="phage", sourmash_like=True,
-                           custom_dir_name=f"encode{args.hash}_n{n}_k{k}", hash_func=args.hash) as decompose_phage:
+                           custom_dir_name=phage_outdir, hash_func=args.hash) as decompose_phage:
                 decompose_phage.decompose(raw_in=phage_in_path)
 
             with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+ohe_outdir, entity_type="bacteria", sourmash_like=True,
-                           custom_dir_name=f"encode{args.hash}_n{n}_k{k}", hash_func=args.hash) as decompose_bact:
+                           custom_dir_name=bact_outdir, hash_func=args.hash) as decompose_bact:
                 decompose_bact.decompose(raw_in=bact_in_path)
             print(f"{approach} completed successfully.\n")
         except Exception as e:

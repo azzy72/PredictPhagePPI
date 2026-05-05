@@ -6,7 +6,7 @@
 # Each must contain BactMinhash_n{n}_k{k}/ and PhageMinhash_n{n}_k{k}/ subdirs.
 sketch_dirs:
   - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches
-  # - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches  # uncomment to add
+  - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches 
 
 # Downsampling parameter sweep
 n_values: [500]

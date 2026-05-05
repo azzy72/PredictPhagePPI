@@ -71,7 +71,7 @@ class Decompose:
         self.hash_func = hash_func
 
         if custom_dir_name:
-            self.inner_dir = os.path.join(self.output_dir, f"{self.entity_type}_{custom_dir_name}")
+            self.inner_dir = os.path.join(self.output_dir, f"{custom_dir_name}")
             print(f"Using custom directory name: {self.inner_dir}")
         else: 
             self.inner_dir = self.output_dir+f"{self.entity_type}_sig_n{self.n}_k{self.k}/"
@@ -252,7 +252,7 @@ class Decompose:
     def save_hk_lookup(self, hk_lookup, record_name):
         # Read existing lookup if it exists, to avoid overwriting
         existing_lookup = {}
-        output_path = os.path.join(self.output_dir, f"hk_lookup_{record_name}.json")
+        output_path = os.path.join(self.output_dir, f"{record_name}.json")
         if os.path.exists(output_path):
             with open(output_path, 'r') as f:
                 existing_lookup = json.load(f)
@@ -264,7 +264,7 @@ class Decompose:
             if kmer_hash not in existing_lookup:
                 existing_lookup[kmer_hash] = kmer
 
-        output_path = os.path.join(self.output_dir, f"hk_lookup_{record_name}.json")
+        output_path = os.path.join(self.output_dir, f"{record_name}.json")
         with open(output_path, 'w') as f:
             # JSON object keys must be strings; convert numeric hashes to strings for serialization
             serializable = {str(k): v for k, v in existing_lookup.items()}

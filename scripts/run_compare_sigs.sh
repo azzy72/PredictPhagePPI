@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# run_pipeline.sh  –  thin bash wrapper around run_pipeline.py
+# run_compare_sigs.sh  –  thin bash wrapper around compare_sigs.py
 #
 # Usage:
-#   bash run_pipeline.sh                   # use default config.yaml
-#   bash run_pipeline.sh --config my.yaml  # custom config
-#   bash run_pipeline.sh --dry-run         # print commands, don't run
+#   bash run_compare_sigs.sh                   # use default config.yaml
+#   bash run_compare_sigs.sh --config my.yaml  # custom config
+#   bash run_compare_sigs.sh --dry-run         # print commands, don't run
 #
 # The script resolves its own directory so it can be called from anywhere.
 
@@ -28,4 +28,4 @@ if ! "$PYTHON" -c "import yaml" &>/dev/null; then
 fi
 
 # ── Hand off to Python ────────────────────────────────────────────────────────
-exec "$PYTHON" "$SCRIPT_DIR/run_pipeline.py" "$@"
+exec "$PYTHON" "$SCRIPT_DIR/compare_sigs.py" "$@"

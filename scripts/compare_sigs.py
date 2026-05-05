@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_pipeline.py  –  Sourmash similarity pipeline (bacteria & phage)
+compare_sigs.py  –  Sourmash similarity pipeline (bacteria & phage)
 
 Steps
 -----
@@ -11,7 +11,7 @@ Steps
 
 Usage
 -----
-    python run_pipeline.py [--config config.yaml] [--dry-run]
+    python compare_sigs.py [--config config.yaml] [--dry-run]
 
 Requirements
 ------------
@@ -22,11 +22,10 @@ Requirements
 import argparse
 import itertools
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
-
+from paths import scripts_path
 import yaml
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -41,6 +40,40 @@ log = logging.getLogger(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def find_sig_dir(sketch_dir: Path, organism_prefix: str, n: int, k: int) -> Path:
+    """
+    Locate the signature directory for a given organism prefix (Bact/Phage)
+    and parameter tag, without assuming the middle encoding string.
+
+    Looks for exactly one directory matching:
+        <sketch_dir>/<organism_prefix>*_n{n}_k{k}
+
+    Examples of names this will match:
+        BactMinhash_n500_k12   (SM_sketches)
+        BactEncoded_n500_k12   (encoded_sketches)
+        PhageAnything_n500_k12
+
+    Raises RuntimeError if zero or more than one match is found.
+    """
+    tag = f"_n{n}_k{k}"
+    matches = [
+        d for d in sketch_dir.iterdir()
+        if d.is_dir()
+        and d.name.startswith(organism_prefix)
+        and d.name.endswith(tag)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) == 0:
+        raise RuntimeError(
+            f"No directory matching '{organism_prefix}*{tag}' found in {sketch_dir}"
+        )
+    raise RuntimeError(
+        f"Ambiguous match for '{organism_prefix}*{tag}' in {sketch_dir}: "
+        + ", ".join(d.name for d in sorted(matches))
+    )
+
+
 def run(cmd: list[str], *, cwd: Path | None = None, dry_run: bool = False) -> None:
     """Log and optionally execute a shell command."""
     display = " ".join(str(c) for c in cmd)
@@ -49,7 +82,7 @@ def run(cmd: list[str], *, cwd: Path | None = None, dry_run: bool = False) -> No
     else:
         log.info("  %s", display)
     if not dry_run:
-        result = subprocess.run(cmd, cwd=cwd, check=True)
+        subprocess.run(cmd, cwd=cwd, check=True)
 
 
 def already_done(path: Path, dry_run: bool) -> bool:
@@ -88,8 +121,8 @@ def step2_plot_standard(mat: Path, dry_run: bool) -> None:
 
 
 def step3_prefix_labels(labels_to: Path, genus_csv: Path,
-                         prefix_script: Path, out_prefixed: Path,
-                         dry_run: bool) -> None:
+                        prefix_script: Path, out_prefixed: Path,
+                        dry_run: bool) -> None:
     """Prefix bacteria sample labels with their genus names."""
     log.info("── Step 3: prefix labels     →  %s", out_prefixed.name)
     if already_done(out_prefixed, dry_run):
@@ -128,20 +161,22 @@ def step4_dendrogram(mat: Path, labels: Path, out_png: Path,
 # ── Per-parameter-combination entry point ────────────────────────────────────
 
 def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
-                         dry_run: bool) -> None:
+                        dry_run: bool) -> None:
     sim_dir = sketch_dir / "sim_matrices"
+    tag = f"n{n}_k{k}"
 
     # ── Bacteria ──────────────────────────────────────────────────────────────
-    tag       = f"n{n}_k{k}"
-    bact_dir  = sketch_dir / f"BactMinhash_{tag}"
-    bact_mat  = sim_dir / f"BactSim_{tag}.mat"
-    bact_lbl  = sim_dir / f"BactSim_{tag}.mat.labels_to.csv"
-    bact_pre  = sim_dir / f"BactSim_{tag}.mat.labels_prefixed.csv"
-    bact_den  = sim_dir / f"BactDendro_{tag}.png"
-
     log.info("═" * 60)
     log.info("BACTERIA  |  sketch_dir=%s  n=%s  k=%s", sketch_dir.name, n, k)
     log.info("═" * 60)
+
+    bact_dir = find_sig_dir(sketch_dir, "Bact", n, k)
+    log.info("  Found sig dir: %s", bact_dir.name)
+
+    bact_mat = sim_dir / f"BactSim_{tag}.mat"
+    bact_lbl = sim_dir / f"BactSim_{tag}.mat.labels_to.csv"
+    bact_pre = sim_dir / f"BactSim_{tag}.mat.labels_prefixed.csv"
+    bact_den = sim_dir / f"BactDendro_{tag}.png"
 
     step1_compare(bact_dir, bact_mat, bact_lbl, dry_run)
     step2_plot_standard(bact_mat, dry_run)
@@ -159,14 +194,16 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
     )
 
     # ── Phage ─────────────────────────────────────────────────────────────────
-    phage_dir = sketch_dir / f"PhageMinhash_{tag}"
-    phage_mat = sim_dir / f"PhageSim_{tag}.mat"
-    phage_lbl = sim_dir / f"PhageSim_{tag}.mat.labels_to.csv"
-    phage_den = sim_dir / f"PhageDendro_{tag}.png"
-
     log.info("═" * 60)
     log.info("PHAGE     |  sketch_dir=%s  n=%s  k=%s", sketch_dir.name, n, k)
     log.info("═" * 60)
+
+    phage_dir = find_sig_dir(sketch_dir, "Phage", n, k)
+    log.info("  Found sig dir: %s", phage_dir.name)
+
+    phage_mat = sim_dir / f"PhageSim_{tag}.mat"
+    phage_lbl = sim_dir / f"PhageSim_{tag}.mat.labels_to.csv"
+    phage_den = sim_dir / f"PhageDendro_{tag}.png"
 
     step1_compare(phage_dir, phage_mat, phage_lbl, dry_run)
     step2_plot_standard(phage_mat, dry_run)
@@ -183,8 +220,8 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", default="config.yaml",
-                        help="Path to config YAML (default: config.yaml)")
+    parser.add_argument("--config", default=f"{scripts_path}config_compare_sigs.yaml",
+                        help=f"Path to config YAML (default: {scripts_path}config_compare_sigs.yaml)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print commands without executing them")
     args = parser.parse_args()
