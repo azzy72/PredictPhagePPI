@@ -35,7 +35,7 @@ def main():
     print(f"Downsampling method: {args.method}")
 
     phage_in_path = raw_data_path+"phagehost_KU/phage_cleaned.fasta" if not args.data2 else raw_data_path+"phagehost_KU/data2_phages.fasta"
-    bact_in_path = raw_data_path+"phagehost_KU/bacteria_fasta/" if not args.data2 else raw_data_path+"phagehost_KU/data2_bacts.fasta"
+    bact_in_path = raw_data_path+"phagehost_KU/concatenated_bacteria/" if not args.data2 else raw_data_path+"phagehost_KU/data2_bacts.fasta"
 
     if args.method == 'sourmash' or args.method == 'minhash':
         ### Resolve N/K values ###

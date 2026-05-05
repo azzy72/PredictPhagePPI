@@ -6,8 +6,7 @@ import json
 import hashlib
 from paths import raw_data_path, data_prod_path
 import random
-import mmh3
-import heapq
+import mmh3, hashlib, heapq
 
 class KmerCodec:
     def __init__(self):
@@ -96,129 +95,114 @@ class Decompose:
         print(f"Initialized Decompose with k={self.k}, n={self.n}, entity_type='{self.entity_type}', sourmash_like={self.sourmash_like}")
         print(f"Input path '{raw_in}' is a directory: {raw_is_dir}")
 
-        #Saving like sourmash
+        # Saving like sourmash
         if self.sourmash_like:
             print(f"Processing with sourmash-like output format. Output will be saved in '{self.inner_dir}'")
+            # Consolidated directory setup (one pass instead of repeated checks)
+            if os.path.exists(self.inner_dir):
+                shutil.rmtree(self.inner_dir)
+            os.makedirs(self.inner_dir)
+            
             if raw_is_dir:
                 print(f"Processing directory of FASTA files for {self.entity_type} decomposition.")
-                try:
-                    os.makedirs(self.inner_dir)
-                except FileExistsError:
-                    shutil.rmtree(self.inner_dir)
-                    os.makedirs(self.inner_dir)
-                rec_names = []
-                for fasta_file in tqdm(os.listdir(raw_in), desc=f"Processing {self.entity_type} FASTA files", unit="file"):
-                    print(f"Processing file: {fasta_file}")
-                    if fasta_file.endswith(".fasta") or fasta_file.endswith(".fna"):
-                        file_path = os.path.join(raw_in, fasta_file)
-                        print(f"Reading FASTA file: {file_path}")
-                        rec_names.append(fasta_file.split("_reoriented.fna")[0])
-                        record_name = rec_names[-1]
-                        sigs_fasta = []
-                        for i, record in enumerate(SeqIO.parse(file_path, "fasta")):
-                            print(f"Processing record: {record_name}")
-                            sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
-                            for kmer_hash, kmer in hk_lookup.items():
-                                if kmer_hash not in hk_lookup_global:
-                                    hk_lookup_global[kmer_hash] = kmer
-                            #self.save_hk_lookup(hk_lookup, f"{record_name}_rec{i}")
-                            sigs_fasta.append(sig)
-
-                        # if len(sigs_fasta) > self.n:
-                        #     sigs_fasta = random.sample(sigs_fasta, self.n)
-                    
-                        print(f"Preparing sourmash structure for record '{record_name}' with {len(sigs_fasta)} signatures.")
-                        sig = self.prepare_sourmash_structure(sigs_fasta, record_name)
-                        self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}{i}_{record_name.lower()}.sig"))
-                print(f"Sourmash-like decomposition completed successfully. Signatures saved in '{self.inner_dir}'.\n")
-
+                self._process_directory(raw_in, hk_lookup_global)
             else:
                 print(f"Processing single FASTA file for {self.entity_type} decomposition.")
-                try:
-                    os.makedirs(self.inner_dir)
-                except FileExistsError:
-                    shutil.rmtree(self.inner_dir)
-                    os.makedirs(self.inner_dir)
-                for i, record in tqdm(enumerate(SeqIO.parse(raw_in, "fasta")), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
-                    record_name = record.id
-                    sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
-                    for kmer_hash, kmer in hk_lookup.items():
-                        if kmer_hash not in hk_lookup_global:
-                            hk_lookup_global[kmer_hash] = kmer
-                    #self.save_hk_lookup(hk_lookup, f"{record_name}_rec{i}")
-                    sig = self.prepare_sourmash_structure(sig, record_name)
-                    self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}{i}_{record_name.lower()}.sig"))
-                print(f"Sourmash-like decomposition completed successfully. Signatures saved in '{self.inner_dir}'.\n")
+                self._process_single_file(raw_in, hk_lookup_global)
+            
+            print(f"Sourmash-like decomposition completed successfully. Signatures saved in '{self.inner_dir}'.\n")
 
-        #Saving customly in one file
-        if not self.sourmash_like:
+        # Saving customly in one file
+        elif not self.sourmash_like:
             if raw_is_dir:
                 raise NotImplementedError("Custom saving method is not implemented for directory input yet.")
-            for record in tqdm(SeqIO.parse(raw_in, "fasta"), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
-                sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
-                for kmer_hash, kmer in hk_lookup.items():
-                    if kmer_hash not in hk_lookup_global:
-                        hk_lookup_global[kmer_hash] = kmer
-                #self.save_hk_lookup(hk_lookup, f"{record.id}")
-                self.save_sketches_to_one_file(sig, os.path.join(self.temp_dir, f"signatures_{self.k}_{self.n}.txt"))
-            
+            self._process_single_file_custom(raw_in, hk_lookup_global)
             self.concatenate_sketches()
 
-        if sig is None:
+        if sig is None and not hk_lookup_global:
             raise ValueError("No signatures were generated. Please check the input FASTA file(s) and parameters.\n")
         
         self.save_hk_lookup(hk_lookup_global, f"hk_lookup_n{self.n}_k{self.k}")
 
+    def _process_directory(self, raw_in, hk_lookup_global):
+        """Helper to process directory of FASTA files."""
+        for fasta_file in tqdm(os.listdir(raw_in), desc=f"Processing {self.entity_type} FASTA files", unit="file"):
+            if not (fasta_file.endswith(".fasta") or fasta_file.endswith(".fna")):
+                continue
+            
+            file_path = os.path.join(raw_in, fasta_file)
+            record_name = fasta_file.split("_reoriented.fna")[0]
+            sigs_fasta = []
+            
+            for i, record in enumerate(SeqIO.parse(file_path, "fasta")):
+                sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
+                hk_lookup_global.update(hk_lookup)
+                sigs_fasta.append(sig)
+            
+            sig = self.prepare_sourmash_structure(sigs_fasta, record_name)
+            self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}_{record_name.lower()}.sig"))
+
+    def _process_single_file(self, raw_in, hk_lookup_global):
+        """Helper to process single FASTA file."""
+        for i, record in tqdm(enumerate(SeqIO.parse(raw_in, "fasta")), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
+            sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
+            hk_lookup_global.update(hk_lookup)
+            sig = self.prepare_sourmash_structure(sig, record.id)
+            self.save_sketches_to_one_file(sig, os.path.join(self.inner_dir, f"{self.entity_type}{i}_{record.id.lower()}.sig"))
+
+    def _process_single_file_custom(self, raw_in, hk_lookup_global):
+        """Helper for custom single-file output."""
+        for record in tqdm(SeqIO.parse(raw_in, "fasta"), desc=f"Processing {self.entity_type} FASTA", unit="rec"):
+            sig, hk_lookup = self.decompose_genome(str(record.seq).upper())
+            hk_lookup_global.update(hk_lookup)
+            self.save_sketches_to_one_file(sig, os.path.join(self.temp_dir, f"signatures_{self.k}_{self.n}.txt"))
+
     def decompose_genome(self, genome_seq):
-        kmers = [genome_seq[i:i+self.k] for i in range(len(genome_seq) - self.k + 1)]
-        if not kmers: return []
-        
-        # if "N" in kmers, remove those kmers (since they can't be encoded)
-        kmers = [kmer for kmer in kmers if "N" not in kmer]
-        if not kmers: return []
+        """
+        Corrected k-mer decomposition to return the N lowest hash values 
+        and their corresponding k-mer strings.
+        """
+        n_target = self.n  # Assuming this is 500
+        hk_lookup = {}     # Mapping: numeric_hash -> kmer
+        max_heap = []      # Max-heap to track the smallest N values
 
-        signatures = []
-        hk_lookup = {}  # mapping numeric_hash -> kmer
-
-        # iterate over all kmers and compute numeric hash values
-        for i in range(0, len(kmers)):
-            kmer = kmers[i]
-            if len(kmer) != self.k:
+        # 1. Slide over the genome without pre-creating a massive list (Saves RAM)
+        for i in range(len(genome_seq) - self.k + 1):
+            kmer = genome_seq[i:i+self.k]
+            
+            # Skip k-mers with N
+            if "N" in kmer:
                 continue
 
-            # produce a numeric hash value for ordering
+            # 2. Compute Hash Value
             if self.hash_func == "ohe_custom":
-                # use the reversible integer encoding directly
                 hash_value = self.codec.encode_with_revcomp(kmer)
             elif self.hash_func == "md5":
-                # md5 -> hex string -> numeric int for consistent numeric ordering
-                hexh = hashlib.md5(kmer.encode()).hexdigest()
-                hash_value = int(hexh, 16)
+                hash_value = int(hashlib.md5(kmer.encode()).hexdigest(), 16)
             elif self.hash_func == "mmh3":
-                # mmh3.hash returns a signed int32; keep as int
+                import mmh3
                 hash_value = mmh3.hash(kmer)
             else:
                 raise ValueError("Unsupported hash function")
 
-            signatures.append(hash_value)
-
-            # maintain only the n smallest hash values in hk_lookup (like mins)
-            if len(hk_lookup) < self.n:
-                hk_lookup[hash_value] = kmer
-            else:
-                # determine current worst (largest) hash in the lookup
-                if hash_value in hk_lookup: # already tracked
-                    continue
-                current_max = max(hk_lookup.keys())
-                if hash_value < current_max:
-                    # replace the current largest with the new, smaller hash
-                    del hk_lookup[current_max]
+            # 3. Heap Logic for Min-Hash (Lowest 500)
+            # Only process if this hash is unique to our current set
+            if hash_value not in hk_lookup:
+                if len(hk_lookup) < n_target:
                     hk_lookup[hash_value] = kmer
-        
-        if not self.random_sampling:
-            signatures = signatures[:self.n]
-        else: #use random sampling 
-            signatures = random.sample(signatures, min(self.n, len(signatures)))
+                    heapq.heappush(max_heap, (-hash_value, hash_value))
+                else:
+                    # Check if the current hash is smaller than the largest in our "small set"
+                    current_max_val = max_heap[0][1]
+                    if hash_value < current_max_val:
+                        # Remove the old maximum
+                        del hk_lookup[current_max_val]
+                        # Add the new smaller hash
+                        hk_lookup[hash_value] = kmer
+                        heapq.heapreplace(max_heap, (-hash_value, hash_value))
+
+        # 4. Final Signatures (The actual lowest 500 hashes, sorted)
+        signatures = sorted(hk_lookup.keys())
 
         return signatures, hk_lookup
 
@@ -302,12 +286,3 @@ class Decompose:
             if os.path.exists(file_path):
                 with open(file_path) as infile:
                     shutil.copyfileobj(infile, outfile)
-
-    # def hash(self, data):
-    #     """Computes a murmurhash of the given data."""
-    #     if self.hash_func == "md5":
-    #         return hashlib.md5(data.encode()).hexdigest()
-    #     elif self.hash_func == "mmh3":
-    #         return mmh3.hash(data)
-    #     else:
-    #         raise ValueError("Unsupported hash function")
