@@ -53,7 +53,7 @@ class KmerCodec:
 
 
 class Decompose:
-    def __init__(self, k, n, codec, output_dir, entity_type, sourmash_like=True, custom_dir_name : str = None, random_sampling=False, hash_func="murmurhash3_32"):
+    def __init__(self, k, n, codec, output_dir, entity_type, sourmash_like=True, custom_dir_name : str = None, random_sampling=False, hash_func="mmh3"):
         allowed_entity_types = {"phage": "phage", "bacteriophage": "phage", "bacteria": "bact", "bact": "bact"}
         if entity_type.lower() not in allowed_entity_types.keys():
             raise ValueError(f"Invalid entity_type '{entity_type}'. Allowed values are: {', '.join(allowed_entity_types.keys())}")
@@ -67,8 +67,8 @@ class Decompose:
         self.sourmash_like = sourmash_like
         self.random_sampling = random_sampling
 
-        if hash_func not in ["md5", "murmurhash3_32", "ohe_custom"]:
-            raise ValueError(f"Invalid hash function '{hash_func}'. Allowed values are: 'md5', 'murmurhash3_32', 'ohe_custom'")
+        if hash_func not in ["md5", "mmh3", "ohe_custom"]:
+            raise ValueError(f"Invalid hash function '{hash_func}'. Allowed values are: 'md5', 'mmh3', 'ohe_custom'")
         self.hash_func = hash_func
 
         if custom_dir_name:
@@ -167,7 +167,7 @@ class Decompose:
         if sig is None:
             raise ValueError("No signatures were generated. Please check the input FASTA file(s) and parameters.\n")
         
-        self.save_hk_lookup(hk_lookup_global, f"{self.entity_type}_hk_lookup_n{self.n}_k{self.k}")
+        self.save_hk_lookup(hk_lookup_global, f"hk_lookup_n{self.n}_k{self.k}")
 
     def decompose_genome(self, genome_seq):
         kmers = [genome_seq[i:i+self.k] for i in range(len(genome_seq) - self.k + 1)]
@@ -194,7 +194,7 @@ class Decompose:
                 # md5 -> hex string -> numeric int for consistent numeric ordering
                 hexh = hashlib.md5(kmer.encode()).hexdigest()
                 hash_value = int(hexh, 16)
-            elif self.hash_func == "murmurhash3_32":
+            elif self.hash_func == "mmh3":
                 # mmh3.hash returns a signed int32; keep as int
                 hash_value = mmh3.hash(kmer)
             else:
@@ -307,7 +307,7 @@ class Decompose:
     #     """Computes a murmurhash of the given data."""
     #     if self.hash_func == "md5":
     #         return hashlib.md5(data.encode()).hexdigest()
-    #     elif self.hash_func == "murmurhash3_32":
+    #     elif self.hash_func == "mmh3":
     #         return mmh3.hash(data)
     #     else:
     #         raise ValueError("Unsupported hash function")

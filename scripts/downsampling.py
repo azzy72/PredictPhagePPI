@@ -17,6 +17,7 @@ def parse_arguments():
                         help="Split values for Bact (n, k) and Phage (n, k)")
 
     parser.add_argument("--method", choices=['sourmash', 'minhash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
+    parser.add_argument("--hash", choices=["md5", "mmh3", "ohe_custom"], default='mmh3', help="Hash function to use for OHE method (default: mmh3)")
     parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
 
     args = parser.parse_args()
@@ -25,6 +26,11 @@ def parse_arguments():
 def main():
     print("Starting downsampling script...")
     args = parse_arguments()
+    if args.hash == "ohe_custom":
+        approach = "One-hot encoding with custom hash function"
+    else:
+        approach = f"{args.method.capitalize()} with hash function: {args.hash}"
+    print(f"Selected downsampling approach: {approach}")
 
     print(f"Downsampling method: {args.method}")
 
@@ -81,16 +87,16 @@ def main():
         try:
             codec = KmerCodec()
             ohe_outdir = f"encoded_sketches/" if not args.data2 else f"encoded_sketches_data2/"
-            with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+ohe_outdir, 
-                                        entity_type="phage", sourmash_like=True) as decompose_phage:
+            with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+ohe_outdir, entity_type="phage", sourmash_like=True,
+                           custom_dir_name=f"encode{args.hash}_n{n}_k{k}", hash_func=args.hash) as decompose_phage:
                 decompose_phage.decompose(raw_in=phage_in_path)
 
-            with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+ohe_outdir, 
-                                    entity_type="bacteria", sourmash_like=True) as decompose_bact:
+            with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+ohe_outdir, entity_type="bacteria", sourmash_like=True,
+                           custom_dir_name=f"encode{args.hash}_n{n}_k{k}", hash_func=args.hash) as decompose_bact:
                 decompose_bact.decompose(raw_in=bact_in_path)
-            print("One-hot encoding decomposition completed successfully.\n")
+            print(f"{approach} completed successfully.\n")
         except Exception as e:
-            print(f"Error during one-hot encoding decomposition: {e}")
+            print(f"Error during {approach}: {e}")
             sys.exit(1)
 
 if __name__ == "__main__":
