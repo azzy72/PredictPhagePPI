@@ -5,8 +5,10 @@
 # Encoding/sketch directories to process.
 # Each must contain BactMinhash_n{n}_k{k}/ and PhageMinhash_n{n}_k{k}/ subdirs.
 sketch_dirs:
-  - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches
-  - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches 
+  #- /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches
+  #- /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches
+  #- /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches_data2
+  - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches_data2 
 
 # Downsampling parameter sweep
 n_values: [500]
@@ -20,8 +22,8 @@ prefix_script: /home/projects/s215045/PredictPhagePPI/scripts/annotation_scripts
 
 # Dendrogram cut-points (passed to sourmash scripts plot2 --cut-point)
 bact_cut_point:  1.08
-phage_cut_point: 1.12
+phage_cut_point: 0.078
 
-# Figure dimensions (inches)
+# Figure dimensions
 figsize_x: 20
 figsize_y: 18

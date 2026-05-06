@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=Downsamplen500k16
+#SBATCH --job-name=CompareSigs
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
-#SBATCH --mem=10G
+#SBATCH --mem=20G
 #SBATCH --cpus-per-task=1
-#SBATCH --time=01:30:00
+#SBATCH --time=08:00:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=END,FAIL

@@ -76,6 +76,8 @@ BEGIN {
     } else {
         # Check the label column (e.g., J45_21) against our map
         key = $label_idx
+        sub(/_reoriented.*$/, "", key)   # strip _reoriented and everything after
+        sub(/_KMC.*$/, "", key)          # or strip _KMC and everything after
         if (key in map) {
             $label_idx = map[key] $label_idx
             $name_idx = map[key] $name_idx

@@ -6,7 +6,7 @@ import json
 import hashlib
 from paths import raw_data_path, data_prod_path
 import random
-import mmh3, hashlib, heapq
+import mmh3, hashlib, heapq, xxhash
 
 class KmerCodec:
     def __init__(self):
@@ -66,8 +66,8 @@ class Decompose:
         self.sourmash_like = sourmash_like
         self.random_sampling = random_sampling
 
-        if hash_func not in ["md5", "mmh3", "ohe_custom"]:
-            raise ValueError(f"Invalid hash function '{hash_func}'. Allowed values are: 'md5', 'mmh3', 'ohe_custom'")
+        if hash_func not in ["xxhash", "mmh3", "ohe_custom"]:
+            raise ValueError(f"Invalid hash function '{hash_func}'. Allowed values are: 'xxhash', 'mmh3', 'ohe_custom'")
         self.hash_func = hash_func
 
         if custom_dir_name:
@@ -177,11 +177,11 @@ class Decompose:
             # 2. Compute Hash Value
             if self.hash_func == "ohe_custom":
                 hash_value = self.codec.encode_with_revcomp(kmer)
-            elif self.hash_func == "md5":
-                hash_value = int(hashlib.md5(kmer.encode()).hexdigest(), 16)
+            elif self.hash_func == "xxhash":
+                hash_value = xxhash.xxh64(kmer, 42).intdigest()
             elif self.hash_func == "mmh3":
                 import mmh3
-                hash_value = mmh3.hash(kmer)
+                hash_value = mmh3.hash64(kmer, 42, signed=False)[0] 
             else:
                 raise ValueError("Unsupported hash function")
 
@@ -229,17 +229,18 @@ class Decompose:
             "num": len(sorted_sigs),
             "ksize": self.k,
             "seed": 42, # Default for sourmash
-            "max_hash": max(sorted_sigs) if sorted_sigs else 0,
+            "max_hash": 0 , # For using num
+            #"max_hash": max(sorted_sigs) if sorted_sigs else 0,
             "mins": sorted_sigs,
             "md5sum": md5sum,
-            "molecule": "dna"
+            "molecule": "DNA"
         }
 
         # Create the outer wrapper (as a list containing one dictionary)
         full_signature = [{
             "class": "sourmash_signature",
             "email": "",
-            "hash_function": "0.bit_encoding", # Custom label for your reversible method
+            "hash_function": f"0.{self.hash_func}", # Custom label for your reversible method
             "filename": None,
             "name": record_name,
             "license": "CC0",

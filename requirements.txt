@@ -21,3 +21,4 @@ torch==2.10.0
 torchmetrics==1.8.2
 torchvision==0.25.0
 tqdm==4.67.3
+xxhash==3.7.0

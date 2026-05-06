@@ -23,10 +23,12 @@ import argparse
 import itertools
 import logging
 import subprocess
-import sys
+import sys, os, re
 from pathlib import Path
 from paths import scripts_path
 import yaml
+import shutil
+import pandas as pd
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -154,8 +156,88 @@ def step4_dendrogram(mat: Path, labels: Path, out_png: Path,
          "--cluster-out",
          "--figsize-x", str(figsize_x),
          "--figsize-y", str(figsize_y)],
+         cwd=mat.parent,
         dry_run=dry_run,
     )
+
+def step5_collect_clusters(sim_mat_dir: Path, n: int, k: int, dry_run: bool) -> None:
+    """
+    Aggregates .mat.[num].csv files and removes individual files after processing.
+    """
+    log.info("── Step 5: collect & cleanup clusters in %s", sim_mat_dir.name)
+    
+    out_bact = sim_mat_dir / f"combined_bact_clusters_n{n}_k{k}.csv"
+    out_phage = sim_mat_dir / f"combined_phage_clusters_n{n}_k{k}.csv"
+
+    if not dry_run and out_bact.exists() and out_phage.exists():
+        log.info("  SKIP – summary files already exist.")
+        return
+
+    combined_bact = pd.DataFrame()
+    combined_phage = pd.DataFrame()
+    processed_files = []
+    
+    bact_clust_count = 0
+    phage_clust_count = 0
+    n_string = f"n{n}"
+    k_string = f"k{k}"
+    pattern = re.compile(r'.*\.mat\.\d+\.csv$')
+
+    # Identify and aggregate files[cite: 2]
+    for file_name in os.listdir(sim_mat_dir):
+        if not pattern.match(file_name):
+            continue
+        if n_string not in file_name or k_string not in file_name:
+            continue
+
+        file_path = sim_mat_dir / file_name
+        try:
+            sim_mat = pd.read_csv(file_path, index_col=0)
+        except Exception as e:
+            log.error("  Failed to load %s: %s", file_name, e)
+            continue
+
+        if "Phage" in file_name:
+            sim_mat = sim_mat[["label"]].copy()
+            sim_mat["host"] = sim_mat["label"].str.split("_").str[0]
+            sim_mat["label"] = sim_mat["label"].str.split("_").str[-1]
+            sim_mat["Cluster"] = phage_clust_count
+            sim_mat.set_index("label", inplace=True)
+            combined_phage = pd.concat([combined_phage, sim_mat], axis=0)
+            phage_clust_count += 1
+            processed_files.append(file_path)
+
+        elif "Bact" in file_name:
+            sim_mat = sim_mat[["label"]].copy()
+            sim_mat["label"] = sim_mat["label"].str.replace("_bp=", "", regex=False)
+            sim_mat["label"] = sim_mat["label"].str.lstrip("_")
+            sim_mat["Cluster"] = bact_clust_count
+            sim_mat.set_index("label", inplace=True)
+            combined_bact = pd.concat([combined_bact, sim_mat], axis=0)
+            bact_clust_count += 1
+            processed_files.append(file_path)
+
+    if dry_run:
+        log.info("  [dry-run] Would save aggregated CSVs and remove %d individual files", len(processed_files))
+        return
+
+    # Save aggregated results
+    if not combined_bact.empty:
+        combined_bact.to_csv(out_bact)
+        log.info("  Saved: %s", out_bact.name)
+    if not combined_phage.empty:
+        combined_phage.to_csv(out_phage)
+        log.info("  Saved: %s", out_phage.name)
+
+    # Cleanup: Delete individual files only if aggregation was successful
+    for f in processed_files:
+        try:
+            f.unlink()
+        except Exception as e:
+            log.warning("  Failed to delete %s: %s", f.name, e)
+    
+    if processed_files:
+        log.info("  Cleanup complete: removed %d individual cluster files.", len(processed_files))
 
 
 # ── Per-parameter-combination entry point ────────────────────────────────────
@@ -214,8 +296,17 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
         dry_run,
     )
 
+    # ── Aggregation & Cleanup ─────────────────────────────────────────────────
+    step5_collect_clusters(sim_dir, n, k, dry_run)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+def check_dependencies() -> None:
+    """Verify that required external tools are available on PATH."""
+    missing = [tool for tool in ("sourmash",) if not shutil.which(tool)]
+    if missing:
+        log.error("Required tool(s) not found in PATH: %s", ", ".join(missing))
+        sys.exit(1)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
@@ -225,6 +316,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print commands without executing them")
     args = parser.parse_args()
+    check_dependencies()
 
     config_path = Path(args.config)
     if not config_path.exists():

@@ -17,7 +17,7 @@ def parse_arguments():
                         help="Split values for Bact (n, k) and Phage (n, k)")
 
     parser.add_argument("--method", choices=['sourmash', 'minhash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
-    parser.add_argument("--hash", choices=["md5", "mmh3", "ohe_custom"], default='mmh3', help="Hash function to use for OHE method (default: mmh3)")
+    parser.add_argument("--hash", choices=["xxhash", "mmh3", "ohe_custom"], default='mmh3', help="Hash function to use for OHE method (default: mmh3)")
     parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
 
     args = parser.parse_args()

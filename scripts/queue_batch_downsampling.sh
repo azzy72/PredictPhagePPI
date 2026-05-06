@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=BD_SM
+#SBATCH --job-name=BD_OHE
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --mem=40G
