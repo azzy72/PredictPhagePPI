@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=BD_OHE
+#SBATCH --job-name=BD_OHE_51
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --mem=40G
 #SBATCH --cpus-per-task=1
-#SBATCH --time=24:00:00
+#SBATCH --time=15:00:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=END,FAIL

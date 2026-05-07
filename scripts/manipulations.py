@@ -13,7 +13,8 @@ import pandas as pd
 from Bio import SeqIO
 from tqdm import tqdm
 import numpy as np
-from collections import Counter
+from itertools import product
+from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import seaborn as sns
 import dask
@@ -909,12 +910,16 @@ class calc_PFI:
             **expected_interactions** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the expected interaction score for that pair across all phage-bacteria combinations.
             **hash_lookup** (dict): dictionary with keys as hash values and values as a list of strains (phage or bacteria) that have that hash in their minhash sketch."""
         
-        interaction_pairs = dict()
-        occurence_pairs = dict()
+        #interaction_pairs = dict()
+        #occurence_pairs = dict()
+        #hash_lookup = dict()
+        interaction_pairs = defaultdict(float)
+        occurence_pairs = Counter()
+        hash_lookup = defaultdict(set)
         interaction_freq_pairs = dict()
         occurence_freq_pairs = dict()
         expected_interactions = dict()
-        hash_lookup = dict()
+        
         c = 0
         phage_names = list(phage_minhash_data.keys())
         bacteria_names = list(bact_minhash_data.keys())
@@ -946,30 +951,31 @@ class calc_PFI:
                 self.outdir = None  # Set to None to avoid further issues with saving
 
         for pname in phage_names:
+            pkmer_list = phage_minhash_data.get(pname, [])
+            if not pkmer_list:
+                continue
+
             for bname in bacteria_names:
-                # Supports nested dict format and tuple-key format
-                interaction_score = self.host_range_data.get(bname, {}).get(pname, self.host_range_data.get((bname, pname), 0))
+                bkmer_list = bact_minhash_data.get(bname, [])
+                if not bkmer_list:
+                    continue
 
-                for pkmer in phage_minhash_data.get(pname, []):
-                    for bkmer in bact_minhash_data.get(bname, []):
-                        pair = (pkmer, bkmer)
-                        if pair in interaction_pairs:
-                            interaction_pairs[pair] += interaction_score
-                        else:
-                            interaction_pairs[pair] = interaction_score
-                        occurence_pairs[pair] = occurence_pairs.get(pair, 0) + 1
+                interaction_score = (
+                    self.host_range_data.get(bname, {}).get(pname)
+                    or self.host_range_data.get((bname, pname), 0)
+                )
 
-                        # Populate hash lookup
-                        if pkmer not in hash_lookup:
-                            hash_lookup[pkmer] = [pname]
-                        else:
-                            if pname not in hash_lookup[pkmer]:
-                                hash_lookup[pkmer].append(pname)
-                        if bkmer not in hash_lookup:
-                            hash_lookup[bkmer] = [bname]
-                        else:
-                            if bname not in hash_lookup[bkmer]:
-                                hash_lookup[bkmer].append(bname)
+                # Hoist hash_lookup population — once per (pname, bname), not per pair
+                for pkmer in pkmer_list:
+                    hash_lookup[pkmer].add(pname)
+                for bkmer in bkmer_list:
+                    hash_lookup[bkmer].add(bname)
+
+                # Vectorized pair generation
+                pairs = list(product(pkmer_list, bkmer_list))
+                occurence_pairs.update(pairs)
+                for pair in pairs:
+                    interaction_pairs[pair] += interaction_score
         
                 c += 1
                 print(f"Int/Occ: Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
