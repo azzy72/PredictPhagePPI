@@ -215,11 +215,11 @@ def main():
     #use regex to find directories with n{bn}_k{bk} and n{pn}_k{pk} in their names, since dir prefix depends on method
     files_prefix_dirs = os.listdir(os.path.join(data_prod_path, prefix))
     phage_dir_pattern = re.compile(f".*n{pn}_k{pk}.*")
-    input_bact_path = [file for file in files_prefix_dirs if phage_dir_pattern.match(file) and "phage" in file.lower()]
-    if len(input_bact_path) == 0:
+    input_phage_path = [file for file in files_prefix_dirs if phage_dir_pattern.match(file) and "phage" in file.lower()]
+    if len(input_phage_path) == 0:
         raise FileNotFoundError(f"No directory found for phage minhash data with n={pn} and k={pk} in {os.path.join(data_prod_path, prefix)}")
-    elif len(input_bact_path) > 1:
-        raise ValueError(f"Multiple directories found for phage minhash data with n={pn} and k={pk} in {os.path.join(data_prod_path, prefix)}: {input_bact_path}")
+    elif len(input_phage_path) > 1:
+        raise ValueError(f"Multiple directories found for phage minhash data with n={pn} and k={pk} in {os.path.join(data_prod_path, prefix)}: {input_phage_path}")
     bact_dir_pattern = re.compile(f".*n{bn}_k{bk}.*")
     input_bact_path = [file for file in files_prefix_dirs if bact_dir_pattern.match(file) and "bact" in file.lower()]
     if len(input_bact_path) == 0:
@@ -233,8 +233,9 @@ def main():
     # else:
     #     input_phage_path = f"{prefix}/PhageMinhash_n{pn}_k{pk}/"
     #     input_bact_path = f"{prefix}/BactMinhash_n{bn}_k{bk}/"
-    # presmat_path = f"{prefix}/PresMat_{presmat_suffix}/"
-    # print(f"Recognized data paths\ninput_phage_path:\t{input_phage_path}\ninput_bact_path:\t{input_bact_path}\npresmat_path:\t{presmat_path}")
+
+    presmat_path = f"{prefix}/PresMat_{presmat_suffix}/"
+    print(f"Recognized data paths\ninput_phage_path:\t{input_phage_path}\ninput_bact_path:\t{input_bact_path}\npresmat_path:\t{presmat_path}")
 
     ### 3. Load Data ###
     bact_clusters = pd.read_csv(os.path.join(data_prod_path, "bact_clusters_with_genus.csv"), index_col=0)
