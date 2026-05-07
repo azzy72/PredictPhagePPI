@@ -21,8 +21,8 @@ bact_labels_csv: /home/projects/s215045/PredictPhagePPI/data_prod/bact_clusters_
 prefix_script: /home/projects/s215045/PredictPhagePPI/scripts/annotation_scripts/prefix_bact_labels.sh
 
 # Dendrogram cut-points (passed to sourmash scripts plot2 --cut-point)
-bact_cut_point:  1.08
-phage_cut_point: 0.078
+bact_cut_point:  1.35
+phage_cut_point: 1.15
 
 # Figure dimensions
 figsize_x: 20

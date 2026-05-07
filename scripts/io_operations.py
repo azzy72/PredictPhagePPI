@@ -13,7 +13,7 @@ from Bio import SeqIO
 from tqdm import tqdm
 import numpy as np
 import shutil
-from manipulations import construct_presence_matrix, short_species_name, clean_dict_keys
+from manipulations import construct_presence_matrix, short_species_name, clean_dict_keys, clean_bact_names
 from manipulations import binarize_host_range, hostrange_df_to_dict, hostrange_bact
 import re
 from paths import raw_data_path, data_prod_path
@@ -110,7 +110,7 @@ def load_minhash_sketches(in_dir : str, TS : bool = False, output_as_np : bool =
 
     return minhash_data
 
-def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = None, n = 0, k = 0, reversecomp_data : bool = True, subset_features : list = None, TS : bool = False):
+def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = None, n = 0, k = 0, data2 : bool = False, reversecomp_data : bool = True, subset_features : list = None, TS : bool = False):
     """
     Create a binary presence matrix from minhash sketches.
     Combines the workflows of loading minhash sketches (load_minhash_sketches()) and generating a binary presence matrix (manipulations.construct_presence_matrix()).
@@ -123,6 +123,7 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
         **bact_minhash_dir** (str): Directory containing bacteria minhash sketches for a specific run (n & kmer size)
         **n** (int | list): Number of minhashes used in the sketches
         **k** (int | list): Kmer size used in the sketches
+        **data2** (bool): Whether to use the second dataset format (default: False, uses original dataset format)
         **reversecomp_data** (bool): Whether reverse complements were used in the minhash sketches
         **subset_features** (list): List of minhashes to subset the presence matrix to (default: None, uses all minhashes)
         **TS** (bool): Troubleshoot on or off
@@ -143,7 +144,7 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
         differential_nk = True
     except:
         if type(n) != int or type(k) != int:
-            raise ValueError("Please provide n and k arguments as either lists of size 2, or")
+            raise ValueError("Please provide n and k arguments as either lists of size 2, or as integers")
 
     ### Load minhash sketches
     if phage_minhash_dir is None:
@@ -176,7 +177,18 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
         return None, None, None, None, None
     
     phage_minhash_data = clean_dict_keys(phage_minhash_data)
-    
+    bact_minhash_copy = bact_minhash_data.copy()
+    for key in bact_minhash_copy.keys():
+        if key.endswith("_reoriented_merged.fasta"):
+            new_key = key.replace("_reoriented_merged.fasta", "")
+            bact_minhash_data[new_key] = bact_minhash_data.pop(key)
+        elif key.endswith("_merged.fasta"):
+            new_key = key.replace("_merged.fasta", "")
+            bact_minhash_data[new_key] = bact_minhash_data.pop(key)
+        else:
+            new_key_list = clean_bact_names([key], data2=data2)
+            bact_minhash_data[new_key_list[0]] = bact_minhash_data.pop(key)
+
     ### Extract unique minhashes
     unique_minhashes = set() #for both phage and bacteria combined
 

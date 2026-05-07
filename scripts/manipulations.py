@@ -8,7 +8,7 @@
 
 
 ##### Imports -----------
-import os, sys
+import os, sys, re
 import pandas as pd
 from Bio import SeqIO
 from tqdm import tqdm
@@ -187,6 +187,13 @@ def short_species_name(full_name):
     else:
         return full_name.split(" ")[0][0] + ". " + full_name.split(" ")[1]
     
+def clean_bact_names(bact_name : list, data2 : bool = False) -> list:
+    """
+    Clean bacteria names in a list to match hostrange short name (e.g. J2_21, or "Host 9" if data2)
+    """
+    J_pattern = r"(J\d+_\d+)_" if not data2 else r"(Host \d+)_"
+    return [re.search(J_pattern, f).group(1) for f in bact_name if re.search(J_pattern, f)]
+
 def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=0.5, TS = False) -> dict:
     """
     Used to obtain the host range given bacteria. Can handle multiple bacteria IDs (as mulitple IDs can be from the same family).
@@ -864,7 +871,6 @@ class calc_PFI_test:
         
     #     print(f"Total phage-bacteria combinations processed: {c}")
     #     return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup
-
 
 class calc_PFI: 
     """
