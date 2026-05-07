@@ -214,19 +214,22 @@ def main():
 
     #use regex to find directories with n{bn}_k{bk} and n{pn}_k{pk} in their names, since dir prefix depends on method
     files_prefix_dirs = os.listdir(os.path.join(data_prod_path, prefix))
+    
     phage_dir_pattern = re.compile(f".*n{pn}_k{pk}.*")
     input_phage_path = [file for file in files_prefix_dirs if phage_dir_pattern.match(file) and "phage" in file.lower()]
     if len(input_phage_path) == 0:
         raise FileNotFoundError(f"No directory found for phage minhash data with n={pn} and k={pk} in {os.path.join(data_prod_path, prefix)}")
     elif len(input_phage_path) > 1:
         raise ValueError(f"Multiple directories found for phage minhash data with n={pn} and k={pk} in {os.path.join(data_prod_path, prefix)}: {input_phage_path}")
+    input_phage_path = f"{prefix}/{input_phage_path[0]}/"
+
     bact_dir_pattern = re.compile(f".*n{bn}_k{bk}.*")
     input_bact_path = [file for file in files_prefix_dirs if bact_dir_pattern.match(file) and "bact" in file.lower()]
     if len(input_bact_path) == 0:
         raise FileNotFoundError(f"No directory found for bacteria minhash data with n={bn} and k={bk} in {os.path.join(data_prod_path, prefix)}")
     elif len(input_bact_path) > 1:
         raise ValueError(f"Multiple directories found for bacteria minhash data with n={bn} and k={bk} in {os.path.join(data_prod_path, prefix)}: {input_bact_path}")
-
+    input_bact_path = f"{prefix}/{input_bact_path[0]}/"
     # if args.use_encoded:
     #     input_phage_path = f"{prefix}/phage_sig_n{pn}_k{pk}/"
     #     input_bact_path = f"{prefix}/bact_sig_n{bn}_k{bk}/"
@@ -257,6 +260,7 @@ def main():
         with open(os.path.join(full_presmat_path, "minhash_to_index.pkl"), "wb") as f: pickle.dump(minhash_to_index, f)
 
     else:
+        print("Loading presence matrix from pre-saved files...")
         with open(os.path.join(full_presmat_path, "binary_matrix.pkl"), "rb") as f: binary_matrix = pickle.load(f)
         with open(os.path.join(full_presmat_path, "entity_to_index.pkl"), "rb") as f: entity_to_index = pickle.load(f)
         with open(os.path.join(full_presmat_path, "phage_minhash_data.pkl"), "rb") as f: phage_minhash_data = pickle.load(f)
