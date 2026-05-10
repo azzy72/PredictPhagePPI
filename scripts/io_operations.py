@@ -68,6 +68,11 @@ def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool 
         # Make Seq ID to phage name mapping - pandas df
         host_range_df = host_range_df.drop(columns=["Species"]).set_index('Seq ID').rename_axis('phage').reset_index()
     
+    # Shorten bacteria names from "J14_21_reoriented_merged.fasta" to "J14_21" for easier handling and matching with minhash sketch names
+    # Use clean_bact_names function that takes a list of bacteria names as input
+    host_range_df["phage"] = host_range_df["phage"].apply(lambda x: clean_bact_names(x))  # Keep only the first word of the phage name
+
+
     if TS: print(host_range_df.head())
     return [bact_lookup, host_range_df]
 

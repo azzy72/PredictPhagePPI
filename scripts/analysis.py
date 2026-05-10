@@ -7,6 +7,7 @@
 import pandas as pd
 from pathlib import Path
 import os
+import json
 from Bio.Blast import NCBIWWW, NCBIXML
 from Bio import Entrez, SeqIO
 from io import StringIO
@@ -557,7 +558,7 @@ def model_idx_to_kmer(idx, num_features_per_entity, feature_indices, idx_to_minh
     original_col_idx = feature_indices[idx % num_features_per_entity]
     return idx_to_minhash[original_col_idx]
 
-def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict = None, 
+def regain_kmers(k: int, n: int, prefix : str, sourmash: bool, top_n: int = 20, idx_to_minhash: dict = None, 
                  mapping_func=None, mapping_args=None, attributions=None, 
                  TS: bool = False, logging: bool = False, logfile=None):
     """
@@ -597,13 +598,25 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
             raise ValueError("If no mapping_func is provided, mapping_args must be provided.")
         mapping_func = model_idx_to_kmer
 
-    # 3. Decode
+    # 3. Load hk_translation_dict to translate hash to kmer
+    hash_kmer_dict_path = os.path.join(data_prod_path, f"{prefix}/hk_lookup_n{n}_k{k}.json")
+    if os.path.exists(hash_kmer_dict_path):
+        with open(hash_kmer_dict_path, "r") as f:
+            hk_translation_dict = json.load(f)
+            try:
+                hk_translation_dict = {int(k): v for k, v in hk_translation_dict.items()} # convert keys back to int after loading from json
+            except Exception as e:
+                raise ValueError(f"Error converting hk_translation_dict keys to int: {e}")
+
+    else:
+        print(f"Hash k-mer lookup dictionary not found at {hash_kmer_dict_path}. Please ensure the file exists or run the script to generate it.")
+        hk_translation_dict = None
+
+    # 4. Decode
     decoded_kmers_dict = {}  # Changed from list to dict
-    codec = KmerCodec()
-    
     for idx in top_idx:
         kmer_hash_val = mapping_func(idx, *mapping_args)
-        decoded_kmers_dict[int(idx)] = codec.decode(kmer_hash_val, k=k)
+        decoded_kmers_dict[int(idx)] = hk_translation_dict[kmer_hash_val]
     
     if idx_to_minhash is not None:
         pass
@@ -616,7 +629,7 @@ def regain_kmers(k: int, sourmash: bool, top_n: int = 20, idx_to_minhash: dict =
     
     return top_idx, top_vals, decoded_kmers_dict
 
-def get_strain_name(hash_value, hash_lookup, default_hash=True):
+def get_strain_name(hash_value, hash_lookup):
     """Decode hash value to strain name using hash_lookup."""
     if hash_value in hash_lookup:
         strains = hash_lookup[hash_value]
@@ -624,11 +637,10 @@ def get_strain_name(hash_value, hash_lookup, default_hash=True):
             return strains[0]  # Return first strain name from list
         elif isinstance(strains, str):
             return strains
-    return str(hash_value) if default_hash else "Unknown"
+    return str(hash_value)
 
-def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expected_interactions: dict, hash_lookup: dict, 
+def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expected_interactions: dict, hash_lookup: dict, hk_translation_dict: dict,
                            sort_by_ratio: bool = False, logging : bool = False, outdir: str = None, bact_clusters: pd.DataFrame = None):
-    kc = KmerCodec()
 
     # Divide interaction score by occurrence count
     interaction_ratio_pairs = {
@@ -638,10 +650,12 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
 
     # Create DataFrame with decoded strain names from hash_lookup
     pair_df = pd.DataFrame({
-        "Bacterium": ["_".join([get_strain_name(pair[0], hash_lookup), kc.decode(int(pair[0]), k=12)]) for pair in interaction_ratio_pairs.keys()],
-        "Phage": ["_".join([get_strain_name(pair[1], hash_lookup), kc.decode(int(pair[1]), k=12)]) for pair in interaction_ratio_pairs.keys()],
+        "Bacterium": ["_".join([hash_lookup[pair[0]][0], hk_translation_dict.get(hash_lookup[pair[0]][0], "Unknown")]) for pair in interaction_ratio_pairs.keys()],
+        "Phage": ["_".join([hash_lookup[pair[1]][0], hk_translation_dict.get(hash_lookup[pair[1]][0], "Unknown")]) for pair in interaction_ratio_pairs.keys()],
         "Interaction_Ratio": list(interaction_ratio_pairs.values())
     })
+
+    print(pair_df.head(10))
 
     # Filter zeros and pivot
     pair_no_zero_df = pair_df[pair_df["Interaction_Ratio"] > 0]

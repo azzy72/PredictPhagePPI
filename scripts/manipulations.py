@@ -20,6 +20,7 @@ import seaborn as sns
 import dask
 from dask_jobqueue import SLURMCluster
 from dask.distributed import Client
+import joblib
 from paths import raw_data_path, data_prod_path, path_to_nn_runs, root
 
 ##### Functions ---------
@@ -187,12 +188,22 @@ def short_species_name(full_name):
     else:
         return full_name.split(" ")[0][0] + ". " + full_name.split(" ")[1]
     
-def clean_bact_names(bact_name : list, data2 : bool = False) -> list:
+def clean_bact_names(bact_name, data2 : bool = False):
     """
     Clean bacteria names in a list to match hostrange short name (e.g. J2_21, or "Host 9" if data2)
     """
-    J_pattern = r"(J\d+_\d+)_" if not data2 else r"(Host \d+)_"
-    return [re.search(J_pattern, f).group(1) for f in bact_name if re.search(J_pattern, f)]
+    J_pattern = r"((?:J|FO)\d+[A-Z]*_\d+)" if not data2 else r"(Host \d+)"
+    #fallback_J_pattern = r"(J\d+[A-Z]*_\d+)" if not data2 else r"(Host \d+)"
+    if type(bact_name) == list:
+        return [re.search(J_pattern, f).group(1) for f in bact_name if re.search(J_pattern, f)]
+    elif type(bact_name) == str:
+        match = re.search(J_pattern, bact_name)
+        if match:
+            return match.group(1)
+        else:
+            raise ValueError(f"Could not extract bacteria name from: {bact_name}")
+    else:
+        raise ValueError(f"bact_name must be a string or list of strings, got {type(bact_name)}")
 
 def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=0.5, TS = False) -> dict:
     """
@@ -200,10 +211,11 @@ def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=
     As such, an approach for obtaining proper hostrange must be considered.
     """
     combined_host_range = {}
+    binarized_host_range = binarize_host_range(host_range_data)
     # Acceptive approach: if any seqID has a non-zero value for a host, set to 1
     if approach == "acceptive":
         for seqID in seqID_list:
-            curr_host_range = binarize_host_range(host_range_data[seqID])
+            curr_host_range = binarized_host_range[seqID]
             for host, val in curr_host_range.items():
                 if host not in combined_host_range:
                     combined_host_range[host] = val
@@ -216,7 +228,7 @@ def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=
     elif approach == "consensus":
         host_counts = {}
         for seqID in seqID_list:
-            curr_host_range = binarize_host_range(host_range_data[seqID])
+            curr_host_range = binarized_host_range[seqID]
             for host, val in curr_host_range.items():
                 if host not in host_counts:
                     host_counts[host] = 0
@@ -876,7 +888,7 @@ class calc_PFI:
     """
     Perform Pairwise Feature Interaction (PFI) analysis given the minhash data for phages and bacteria and the host range data, by constructing interaction pairs and calculating their frequencies.
     """
-    def __init__(self, host_range_data : dict = None, outdir : str = None, logging : bool = False):
+    def __init__(self, host_range_data : dict = None, outdir : str = None, outname_pfi : str = None, pfi_objects_dir : str = None, logging : bool = False):
         """
         **host_range_data** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
         **phage_names** (list): list of phage names to consider (should match keys in phage_minhash_data)
@@ -895,6 +907,11 @@ class calc_PFI:
                 outdir = None  # Set to None to avoid further issues with saving
         self.host_range_data = host_range_data
         self.outdir = outdir
+        if "/" in outname_pfi:
+            raise ValueError("outname_pfi should not contain directory paths, it should be just the filename (e.g., 'pfi_values.txt'). Please provide the directory path separately in outdir.")
+        else:
+            self.outfile_pfi = os.path.join(outdir, outname_pfi) if outdir else None
+        self.pfi_objects_dir = self.outdir + pfi_objects_dir
         self.logging = logging
 
     
@@ -958,18 +975,17 @@ class calc_PFI:
 
         for pname in phage_names:
             pkmer_list = phage_minhash_data.get(pname, [])
-            if not pkmer_list:
-                continue
+            # if not pkmer_list: #skip if no kmers for this phage
+            #     continue
 
             for bname in bacteria_names:
                 bkmer_list = bact_minhash_data.get(bname, [])
-                if not bkmer_list:
-                    continue
+                # if not bkmer_list: #skip if no kmers for this bacteria
+                #     continue
 
-                interaction_score = (
-                    self.host_range_data.get(bname, {}).get(pname)
-                    or self.host_range_data.get((bname, pname), 0)
-                )
+                interaction_score = self.host_range_data[bname][pname]
+                #if type(interaction_score) != (int, float, np.integer, np.floating, np.float64, np.float32, np.int64, np.int32):
+                #    raise ValueError(f"Interaction score for bacteria {bname} and phage {pname} is not a number: {interaction_score}")
 
                 # Hoist hash_lookup population — once per (pname, bname), not per pair
                 for pkmer in pkmer_list:
@@ -991,9 +1007,11 @@ class calc_PFI:
                         break
 
         if not sum(interaction_pairs.values()) > 0:
-            print("Warning: Sum of interaction scores is 0, cannot calculate interaction frequencies.")
+            print(f"Warning: Sum of interaction scores is 0, cannot calculate interaction frequencies: {sum(interaction_pairs.values())}\nCheck if test species interact.")
+            return [None]*6
         if not sum(occurence_pairs.values()) > 0:
-            print("Warning: Sum of occurrence counts is 0, cannot calculate occurrence frequencies.")
+            print(f"Warning: Sum of occurrence counts is 0, cannot calculate occurrence frequencies: {sum(occurence_pairs.values())}\nCheck if test species interact.")
+            return [None]*6
 
         ### Calculating frequencies (normalized by total interactions/occurrences) ###
         print("\nCalculating interaction, occurrence & expected frequencies...")
@@ -1024,15 +1042,34 @@ class calc_PFI:
                     break
         
         if self.outdir is not None:
-            outfile = os.path.join(self.outdir, "pfi_values.txt")
             try:
-                with open(self.outfile, "w") as f:
+                with open(self.outfile_pfi, "w") as f:
                     f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
                     for pair in keys_in_subset if subset is not None else interaction_pairs.keys():
                         f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")
-                print(f"Interaction pairs saved to {outfile}")
+                print(f"Interaction pairs saved to {self.outfile_pfi}")
             except Exception as e:
-                print(f"Error saving interaction pairs to {outfile}: {e}")
+                print(f"Error saving interaction pairs to {self.outfile_pfi}: {e}")
+            
+            #dump interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup in subdir
+            try:
+                if not os.path.exists(self.pfi_objects_dir):
+                    os.makedirs(self.pfi_objects_dir, exist_ok=True)
+                with open(os.path.join(self.pfi_objects_dir, "interaction_pairs.jbl"), "wb") as f:
+                    joblib.dump(interaction_pairs, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "occurence_pairs.jbl"), "wb") as f:
+                    joblib.dump(occurence_pairs, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "interaction_freq_pairs.jbl"), "wb") as f:
+                    joblib.dump(interaction_freq_pairs, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "occurence_freq_pairs.jbl"), "wb") as f:
+                    joblib.dump(occurence_freq_pairs, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "expected_interactions.jbl"), "wb") as f:
+                    joblib.dump(expected_interactions, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "hash_lookup.jbl"), "wb") as f:
+                    joblib.dump(hash_lookup, f, compress=3)
+                print(f"Interaction data pickled successfully in {self.outdir}")
+            except Exception as e:
+                print(f"Error pickling interaction data: {e}")
         
         print(f"Total phage-bacteria combinations processed: {c}")
         return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup

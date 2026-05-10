@@ -27,7 +27,7 @@ from imblearn.over_sampling import SMOTE
 # Custom imports
 from io_operations import presence_matrix, obtain_idx_to_entity_mapping, call_hostrange_df, color_sheet_from_matrix
 from paths import raw_data_path, data_prod_path, path_to_nn_runs
-from manipulations import calc_PFI, hostrange_df_to_dict, binarize_host_range
+from manipulations import calc_PFI, hostrange_df_to_dict, binarize_host_range, clean_bact_names
 from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, plot_interaction_pairs, FeatureImportance, GeneAnalysis
 from utils import strain_id_tax_lookup
 
@@ -149,8 +149,10 @@ def parse_arguments():
     #     args.test_on_excluded = True
     #     print("INFO: --test_on_excluded has been automatically set to True because --exclude_pairs or --exclude_clusters is used. This means the model will be tested on the excluded pairs/clusters and not a test split from the main dataset.", file=sys.stderr)
 
-    # Modification: convert args.exclude_bact_clusters and args.exclude_phage_clusters from str to list if they are provided as comma-separated strings (this allows for more flexible input, e.g. --exclude_bact_clusters ["cluster1,cluster2,cluster3"] or --exclude_bact_clusters cluster1 cluster2 cluster3)
+    #Standardize args.exclude_cluster arguments
     if args.exclude_clusters:
+        # Modification: convert args.exclude_bact_clusters and args.exclude_phage_clusters from str to list if they are provided as comma-separated strings 
+        # (this allows for more flexible input, e.g. --exclude_bact_clusters ["cluster1,cluster2,cluster3"] or --exclude_bact_clusters cluster1 cluster2 cluster3)
         if type(args.exclude_bact_clusters) == str:
             args.exclude_bact_clusters = re.sub(r'[\[\]]', '',args.exclude_bact_clusters)
             args.exclude_bact_clusters = [item.strip() for item in args.exclude_bact_clusters.split(',')]
@@ -164,6 +166,9 @@ def parse_arguments():
         elif type(args.exclude_phage_clusters) == list and len(args.exclude_phage_clusters) == 1 and ',' in args.exclude_phage_clusters[0]:
             args.exclude_phage_clusters = re.sub(r'[\[\]]', '',args.exclude_phage_clusters[0])
             args.exclude_phage_clusters = [item.strip() for item in args.exclude_phage_clusters.split(',')]
+        
+        # Make args.exclude_bact_clusters short names (e.g. J2_21) - phages stays the same
+        args.exclude_bact_clusters = clean_bact_names(args.exclude_bact_clusters, data2=args.data2)
 
     return args
 
@@ -232,12 +237,6 @@ def main():
     elif len(input_bact_path) > 1:
         raise ValueError(f"Multiple directories found for bacteria minhash data with n={bn} and k={bk} in {os.path.join(data_prod_path, prefix)}: {input_bact_path}")
     input_bact_path = f"{prefix}/{input_bact_path[0]}/"
-    # if args.use_encoded:
-    #     input_phage_path = f"{prefix}/phage_sig_n{pn}_k{pk}/"
-    #     input_bact_path = f"{prefix}/bact_sig_n{bn}_k{bk}/"
-    # else:
-    #     input_phage_path = f"{prefix}/PhageMinhash_n{pn}_k{pk}/"
-    #     input_bact_path = f"{prefix}/BactMinhash_n{bn}_k{bk}/"
 
     presmat_path = f"{prefix}/PresMat_{presmat_suffix}/"
     print(f"Recognized data paths\ninput_phage_path:\t{input_phage_path}\ninput_bact_path:\t{input_bact_path}\npresmat_path:\t{presmat_path}")
