@@ -30,7 +30,7 @@ from imblearn.over_sampling import SMOTE
 from io_operations import presence_matrix, obtain_idx_to_entity_mapping, call_hostrange_df, color_sheet_from_matrix
 from paths import raw_data_path, data_prod_path, path_to_nn_runs
 from manipulations import calc_PFI, hostrange_df_to_dict, binarize_host_range, clean_bact_names
-from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, plot_interaction_pairs, FeatureImportance, GeneAnalysis
+from analysis import f1_analysis, plot_entity_counts, plot_bipartite_network, regain_kmers, plot_interaction_pairs, FeatureImportance, GeneAnalysis, GeneAnalysisNCBI
 from utils import strain_id_tax_lookup
 import json
 
@@ -64,7 +64,7 @@ def parse_arguments():
     parser.add_argument("--perform_pfi", action="store_true", help="Perform pairwise feature importance analysis")
     parser.add_argument("--perform_ga", action="store_true", help="Perform gene analysis on top features")
     parser.add_argument("--run_ga_on_pfi", action="store_true", help="Run gene analysis on top features from pairwise feature importance analysis, rather than the standard feature importance analysis")
-    parser.add_argument("--reconstruct_gene_annotation", action="store_true", help="Reconstruct gene annotations from GeneAnalysis, rather than loading them from a file from a previous run.")
+    parser.add_argument("--reconstruct_gene_annotation", action="store_true", help="Reconstruct gene annotations from GeneAnalysisNCBI, rather than loading them from a file from a previous run.")
     parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
     parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
     parser.add_argument("--subset_pfi", type=int, help="Number of top features to include in pairwise feature importance analysis (set to 0 or a negative number to include all features)")
@@ -90,6 +90,8 @@ def parse_arguments():
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--test_split", type=float, default=0.2)
     parser.add_argument("--val_split", type=float, default=0.2)
+
+    parser.add_argument("--top_kmers_num", type=int, default=50, help="Number of top k-mers to retrieve from feature importance (pfi)")
 
     args = parser.parse_args()
 
@@ -1062,12 +1064,14 @@ def main():
         hash_lookup = "hash_lookup.csv"
 
         ### Subset host_range_data, phage_minhash_data, and bact_minhash_data to only include the strains present in the test set metadata
+        phage_minhash_data_full = phage_minhash_data.copy()
+        bact_minhash_data_full = bact_minhash_data.copy()
         if args.exclude_clusters:
             phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in args.exclude_phage_clusters}
             bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in args.exclude_bact_clusters}
         if args.logging: 
             print(f'Subsetted host range and minhash data to test set strains. Remaining bact strains: {len(host_range_data)}')
-            print(f'Remaining strains in host range data: {list(host_range_data.keys())}')
+            print(f'Subsetted host range data: [{len(host_range_data)}x{len(next(iter(host_range_data.values())))}]')
             print(f'Remaining strains in phage minhash data: {list(phage_minhash_data.keys())}')
             print(f'Remaining strains in bacteria minhash data: {list(bact_minhash_data.keys())}')
             logging.info(f'Subsetted host range and minhash data to test set strains. Remaining strains: {len(host_range_data)}')
@@ -1077,19 +1081,27 @@ def main():
 
         ### Running PFI analysis and plotting results
         loaded_pfi = False # Flag for whehter the pfi results were loaded from memory or newly constructed
-        if os.path.isdir(outdir + pfi_objects_dir):
-            try:
-                interaction_pairs = joblib.load(outdir + pfi_objects_dir + "interaction_pairs.jbl")
-                occurence_pairs = joblib.load(outdir + pfi_objects_dir + "occurence_pairs.jbl")
-                interaction_freq_pairs = joblib.load(outdir + pfi_objects_dir + "interaction_freq_pairs.jbl")
-                occurence_freq_pairs = joblib.load(outdir + pfi_objects_dir + "occurence_freq_pairs.jbl")
-                expected_interactions = joblib.load(outdir + pfi_objects_dir + "expected_interactions.jbl")
-                hash_lookup = joblib.load(outdir + pfi_objects_dir + "hash_lookup.jbl")
-                loaded_pfi = True
-                if args.logging: logging.info(f'Successfully loaded existing PFI results from {outdir + pfi_objects_dir}')
-            except Exception as e:
-                logging.error(f"Error loading existing PFI results: {e}")
-                interaction_pairs = None
+        run_match = re.search(r'run(\d+)', os.path.dirname(outdir.rstrip('/')))
+        run_number = int(run_match.group(1)) if run_match else 0
+        for i in range(1, run_number + 1):
+            potential_parent = os.path.dirname(outdir.rstrip('/')).replace(f'run{run_number}', f'run{i}')
+            potential_dir = f"{potential_parent}/{pfi_objects_dir}"
+            logging.info(f'Checking for existing PFI results in potential directory: {potential_dir}')
+            if os.path.isdir(potential_dir):
+                logging.info(f'Found potential existing PFI results in {potential_dir}, attempting to load...')
+                try:
+                    interaction_pairs = joblib.load(potential_dir + "interaction_pairs.jbl")
+                    occurence_pairs = joblib.load(potential_dir + "occurence_pairs.jbl")
+                    interaction_freq_pairs = joblib.load(potential_dir + "interaction_freq_pairs.jbl")
+                    occurence_freq_pairs = joblib.load(potential_dir + "occurence_freq_pairs.jbl")
+                    expected_interactions = joblib.load(potential_dir + "expected_interactions.jbl")
+                    hash_lookup = joblib.load(potential_dir + "hash_lookup.jbl")
+                    loaded_pfi = True
+                    if args.logging: logging.info(f'Successfully loaded existing PFI results from {outdir + pfi_objects_dir}')
+                    break
+                except Exception as e:
+                    logging.error(f"Error loading existing PFI results: {e}")
+                    interaction_pairs = None
         else:
             pfi_analyzer = calc_PFI(host_range_data=host_range_data, outdir=outdir, outname_pfi=out_pfi, pfi_objects_dir=pfi_objects_dir, logging=args.logging)
             interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bact_minhash_data=bact_minhash_data, subset=args.subset_pfi)
@@ -1121,7 +1133,7 @@ def main():
             plot_interaction_pairs(interaction_pairs, occurence_pairs, expected_interactions, hash_lookup, hk_translation_dict, sort_by_ratio=True, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
 
             # Filter idx_to_minhash to only include the top X interaction pairs
-            top_pairs = sorted(interaction_pairs.items(), key=lambda x: x[1], reverse=True)[:50] # Get top 50 pairs by interaction score
+            top_pairs = sorted(interaction_pairs.items(), key=lambda x: x[1], reverse=True)[:args.top_kmers_num] # Get top {args.top_kmers_num} pairs by interaction score
             top_minhashes = set()
             for (phage_hash, bact_hash), score in top_pairs:
                 top_minhashes.add(phage_hash)
@@ -1132,7 +1144,7 @@ def main():
             pfi_top_kmers_df = None
             try:
                 top_indices = [idx for idx, mh in filtered_idx_to_minhash.items()]
-                regain_kmers_out = regain_kmers(k=k, n=n, prefix=prefix, sourmash=sourmash_used, top_n=50, 
+                regain_kmers_out = regain_kmers(k=k, n=n, prefix=prefix, sourmash=sourmash_used, top_n=args.top_kmers_num, 
                                                 idx_to_minhash=filtered_idx_to_minhash, mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
                                                 logging=args.logging, logfile=logfile)
                 pfi_top_idx, pfi_top_vals, pfi_top_kmers_decoded = regain_kmers_out
@@ -1143,7 +1155,7 @@ def main():
                 pfi_top_kmers_df = pd.DataFrame({
                     "feature_index": list(pfi_top_kmers_decoded.keys()),
                     "entity": [idx_to_entity.get(idx, "unknown") for idx in pfi_top_kmers_decoded.keys()],
-                    "organism": ["bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data.keys() else "unknown") for idx in pfi_top_kmers_decoded.keys()],
+                    "organism": ["bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data_full.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data_full.keys() else "unknown") for idx in pfi_top_kmers_decoded.keys()],
                     "decoded_kmer": list(pfi_top_kmers_decoded.values())
                 })
                 pfi_top_kmers_df.to_csv(outdir+"top_interaction_pair_kmers.csv", index=False)
@@ -1153,26 +1165,26 @@ def main():
                 pfi_failed = True
             
             #Plot the top k-mers for interaction pairs
-            if pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty and not pfi_failed:
+            if pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty:
                 plt.figure(figsize=(10, 6))
                 sns.scatterplot(x='feature_index', y='decoded_kmer', data=pfi_top_kmers_df.head(20))
-                plt.title('Top k-mers for Interaction Pairs on Feature Index')
+                plt.title('Top 20 k-mers for Interaction Pairs on Feature Index')
                 plt.xlabel('Feature Index')
                 plt.xlim(0, binary_matrix.shape[1]) # Set x-axis limits to the range of feature indices
                 plt.ylabel('Decoded k-mer')
                 plt.xticks(rotation=45)
-                outname = 'top_interaction_pair_kmers.png'
+                outname = 'top_20_interaction_pair_kmers.png'
                 if args.logging: 
                     plt.tight_layout()
                     plt.savefig(outdir + outname)
                     logging.info(f'Saved plot of top k-mers for interaction pairs to {outdir + outname}')
     
     ### Gene Annotation of Kmers ###
-    # If PFI was performed and yielded results, use those top k-mers with annotations for GeneAnalysis. Otherwise, regain the top k-mers from the model feature importance and use those for GeneAnalysis.
+    # If PFI was performed and yielded results, use those top k-mers with annotations for GeneAnalysisNCBI. Otherwise, regain the top k-mers from the model feature importance and use those for GeneAnalysisNCBI.
     if args.perform_ga:
         if args.run_ga_on_pfi and pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty and not pfi_failed:
             kmers_entity_df = pfi_top_kmers_df
-            if args.logging: logging.info(f'Using top interaction pairs from pairwise feature importance analysis with entity annotations for GeneAnalysis.')
+            if args.logging: logging.info(f'Using top interaction pairs from pairwise feature importance analysis with entity annotations for GeneAnalysisNCBI.')
         else:
             try:
                 indices, vals, all_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=100, 
@@ -1184,7 +1196,7 @@ def main():
                     {
                         "feature_index": idx,
                         "entity": idx_to_entity.get(idx, "unknown"),
-                        "organism": "bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data.keys() else "unknown"),
+                        "organism": "bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data_full.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data_full.keys() else "unknown"),
                         "decoded_kmer": all_kmers_decoded[i] if i < len(all_kmers_decoded) else None
                     }
                     for i, idx in enumerate(indices)
@@ -1194,11 +1206,11 @@ def main():
                 logging.error(f"Error during k-mer regaining for annotation: {e}")
 
         try:
-            GA = GeneAnalysis(logfile=logfile, logging=args.logging, outdir=outdir)
+            GA = GeneAnalysisNCBI(logfile=logfile, logging=args.logging, outdir=outdir)
             phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
             bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
 
-            logging.info("Phage_df - Started k-mer annotation with GeneAnalysis...")
+            logging.info("Phage_df - Started k-mer annotation with GeneAnalysisNCBI...")
             #ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, organism="phage", summarise_by="function", tax_origin="txid38018[orgn]") # Phage first
             ncbi_blast_res_df = GA.search_and_annotate_kmers(phage_kmers_decoded_df, organism="phage", tax_origin="txid38018[orgn]") # Phage first
             if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:
@@ -1208,12 +1220,12 @@ def main():
                     for i in tqdm(range(10), desc=f"Waiting 10 secs"): #sleep for 10 seconds to avoid overwhelming NCBI with back-to-back requests
                         sleep(1)
                     tax_str = f"txid{strain_id_tax_lookup.get(genus, 'unknown')}[orgn]" if strain_id_tax_lookup.get(genus, None) is not None else "txid2[orgn]"
-                    logging.info(f"Bact_df - Started k-mer annotation with GeneAnalysis for genus {genus}, tax_origin={tax_str}...")
+                    logging.info(f"Bact_df - Started k-mer annotation with GeneAnalysisNCBI for genus {genus}, tax_origin={tax_str}...")
                     ncbi_bact_df = GA.search_and_annotate_kmers(subset_bact_kmers_decoded_df, organism="bact", tax_origin=tax_str, expect=10000)
                     ncbi_blast_res_df = pd.concat([ncbi_blast_res_df, ncbi_bact_df], ignore_index=True) # Bact second
                 
                 if len(ncbi_blast_res_df) > number_of_blast_res_before:
-                    logging.info(f'GeneAnalysis completed and results saved to {outdir+"GA_kmers_blast_results.csv"}')
+                    logging.info(f'GeneAnalysisNCBI completed and results saved to {outdir+"GA_kmers_blast_results.csv"}')
                 else:
                     raise ValueError("No BLAST results were obtained for bacterial k-mers. Please check the input data and BLAST parameters.")
             else:
@@ -1228,7 +1240,7 @@ def main():
                 logging.error(f"Error during merging BLAST results with k-mer annotations: {e}")
 
         except Exception as e:
-            logging.error(f"Error during GeneAnalysis: {e}")
+            logging.error(f"Error during GeneAnalysisNCBI: {e}")
     
     # Plotting the distribution of annotated Function and Genes of kmers
     if ncbi_blast_res_df is not None and not ncbi_blast_res_df.empty:

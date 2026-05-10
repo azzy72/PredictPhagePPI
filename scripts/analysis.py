@@ -39,6 +39,7 @@ from captum import attr
 from captum.attr import IntegratedGradients
 from decompositions import KmerCodec
 from paths import raw_data_path, data_prod_path
+from manipulations import clean_bact_names
 
 
 def perform_pca(data: pd.DataFrame, n_components=2):
@@ -240,8 +241,8 @@ def plot_residuals(x_vals, y_vals, tile=None):
     # --- 3. Label and Title the Plot ---
 
     plt.title('Residuals Plot for Random Forest Regressor')
-    plt.xlabel('Predicted Scores ($\hat{y}$)')
-    plt.ylabel('Residuals ($y - \hat{y}$)')
+    plt.xlabel('Predicted Scores')
+    plt.ylabel('Residuals')
     plt.grid(True, linestyle=':', alpha=0.6)
 
     ##plt.show()
@@ -650,8 +651,8 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
 
     # Create DataFrame with decoded strain names from hash_lookup
     pair_df = pd.DataFrame({
-        "Bacterium": ["_".join([hash_lookup[pair[0]][0], hk_translation_dict.get(hash_lookup[pair[0]][0], "Unknown")]) for pair in interaction_ratio_pairs.keys()],
-        "Phage": ["_".join([hash_lookup[pair[1]][0], hk_translation_dict.get(hash_lookup[pair[1]][0], "Unknown")]) for pair in interaction_ratio_pairs.keys()],
+        "Bacterium": ["_".join([next(iter(hash_lookup[pair[0]])), hk_translation_dict.get(pair[0], "Unknown")]) for pair in interaction_ratio_pairs.keys()],
+        "Phage": ["_".join([next(iter(hash_lookup[pair[1]])), hk_translation_dict.get(pair[1], "Unknown")]) for pair in interaction_ratio_pairs.keys()],
         "Interaction_Ratio": list(interaction_ratio_pairs.values())
     })
 
@@ -682,108 +683,124 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
         #print(f"bact_clusters {bact_clusters.shape}\n", bact_clusters.head(10))
 
         #Alternative graph (clustermap)
+        print("Attempting to plot clustermap of interaction ratios with bacterial clusters...")
+        try:
+            plt.figure(figsize=(12, 8))
+            col_linkage = None
+            col_colors = None
+            if bact_clusters is not None:
+                cluster_col = None
+                for candidate in ["Cluster", "cluster", "Clusters", "clusters"]:
+                    if candidate in bact_clusters.columns:
+                        cluster_col = candidate
+                        break
+
+                if cluster_col is not None:
+                    lookup_keys = [idx.rsplit('_', 1)[0] for idx in pivot_df.index]
+                    bact_clusters_unique = bact_clusters.loc[~bact_clusters.index.duplicated(keep='first')]
+                    bact_meta = bact_clusters_unique.reindex(lookup_keys)
+                    #print(f"Cluster column '{cluster_col}' found in metadata. Using it for column coloring.")
+                    #print(f"bact_meta {bact_meta.shape}: {bact_meta.head(10)}")
+
+                    bact_meta.rename(columns={cluster_col: 'Bacteria Clusters'}, inplace=True)
+                    cluster_col = 'Bacteria Clusters'
+                    #print(f"bact_meta with cluster_col: {bact_meta[cluster_col]}")
+
+                    # Overwrite index to contain the full bacterium names (with kmer suffix) to ensure proper alignment with pivot_df columns
+                    bact_meta.index = pivot_df.index
+                    #print(f"bact_meta index overwriting: {bact_meta.head(10)}")
+
+                    cluster_series = bact_meta[cluster_col].fillna("Unknown").astype(str)
+                    #print(f"Cluster series for coloring:\n{cluster_series.head(10)}")
+
+                    # Build hierarchical linkage from cluster membership to enforce bacteria-wise grouping
+                    cluster_matrix = pd.get_dummies(cluster_series, prefix="cluster")
+                    if len(cluster_matrix) >= 2:
+                        col_linkage = linkage(cluster_matrix.values, method="average", metric="euclidean")
+
+                    unique_clusters = pd.Index(cluster_series.unique())
+                    #print(f"Unique clusters found for coloring: {unique_clusters.tolist()}")
+                    palette = sns.color_palette("tab20", n_colors=max(len(unique_clusters), 1))
+                    cluster_to_color = {cluster: palette[i] for i, cluster in enumerate(unique_clusters)}
+                    col_colors = cluster_series.map(cluster_to_color)
+
+            g = sns.clustermap(
+                pivot_df.T,
+                cmap="viridis",
+                standard_scale=None,
+                row_cluster=False,
+                col_cluster=True,
+                col_linkage=col_linkage,
+                col_colors=col_colors,
+            )
+
+            # Color x and y labels by cluster membership
+            if col_colors is not None:
+                for label in g.ax_heatmap.get_xticklabels():
+                    label_text = label.get_text()
+                    if label_text in pivot_df.columns:
+                        cluster_value = cluster_series.get(label_text, "Unknown")
+                        label.set_color(cluster_to_color.get(cluster_value, "black"))
+                for label in g.ax_heatmap.get_yticklabels():
+                    label.set_color("black")
+
+            if logging and outdir:
+                plt.savefig(os.path.join(outdir, 'interaction_pairs_clustermap.png'))
+            print("Clustermap plotted successfully: interaction_pairs_clustermap.png")
+
+        except Exception as e:
+            print(f"Error creating clustermap: {e}")
+    
+    # Plotting raw interaction ratio heatmap
+    print("Attempting to plot heatmap of interaction ratios...")
+    try:
         plt.figure(figsize=(12, 8))
-        col_linkage = None
-        col_colors = None
-        if bact_clusters is not None:
-            cluster_col = None
-            for candidate in ["Cluster", "cluster", "Clusters", "clusters"]:
-                if candidate in bact_clusters.columns:
-                    cluster_col = candidate
-                    break
-
-            if cluster_col is not None:
-                lookup_keys = [idx.rsplit('_', 1)[0] for idx in pivot_df.index]
-                bact_clusters_unique = bact_clusters.loc[~bact_clusters.index.duplicated(keep='first')]
-                bact_meta = bact_clusters_unique.reindex(lookup_keys)
-                #print(f"Cluster column '{cluster_col}' found in metadata. Using it for column coloring.")
-                #print(f"bact_meta {bact_meta.shape}: {bact_meta.head(10)}")
-
-                bact_meta.rename(columns={cluster_col: 'Bacteria Clusters'}, inplace=True)
-                cluster_col = 'Bacteria Clusters'
-                #print(f"bact_meta with cluster_col: {bact_meta[cluster_col]}")
-
-                # Overwrite index to contain the full bacterium names (with kmer suffix) to ensure proper alignment with pivot_df columns
-                bact_meta.index = pivot_df.index
-                #print(f"bact_meta index overwriting: {bact_meta.head(10)}")
-
-                cluster_series = bact_meta[cluster_col].fillna("Unknown").astype(str)
-                #print(f"Cluster series for coloring:\n{cluster_series.head(10)}")
-
-                # Build hierarchical linkage from cluster membership to enforce bacteria-wise grouping
-                cluster_matrix = pd.get_dummies(cluster_series, prefix="cluster")
-                if len(cluster_matrix) >= 2:
-                    col_linkage = linkage(cluster_matrix.values, method="average", metric="euclidean")
-
-                unique_clusters = pd.Index(cluster_series.unique())
-                #print(f"Unique clusters found for coloring: {unique_clusters.tolist()}")
-                palette = sns.color_palette("tab20", n_colors=max(len(unique_clusters), 1))
-                cluster_to_color = {cluster: palette[i] for i, cluster in enumerate(unique_clusters)}
-                col_colors = cluster_series.map(cluster_to_color)
-
-        g = sns.clustermap(
-            pivot_df.T,
-            cmap="viridis",
-            standard_scale=None,
-            row_cluster=False,
-            col_cluster=True,
-            col_linkage=col_linkage,
-            col_colors=col_colors,
-        )
-
-        # Color x and y labels by cluster membership
-        if col_colors is not None:
-            for label in g.ax_heatmap.get_xticklabels():
-                label_text = label.get_text()
-                if label_text in pivot_df.columns:
-                    cluster_value = cluster_series.get(label_text, "Unknown")
-                    label.set_color(cluster_to_color.get(cluster_value, "black"))
-            for label in g.ax_heatmap.get_yticklabels():
-                label.set_color("black")
+        sns.heatmap(pivot_df, cmap="viridis", cbar_kws={"label": "Interaction Ratio"})
+        
+        title = "Interaction Ratio of Bacterium-Phage Pairs"
+        plt.title(title)
+        plt.xlabel("Bacterium")
+        plt.ylabel("Phage")
+        plt.xticks(rotation=90, fontsize=6)
+        plt.yticks(fontsize=6)
+        plt.tight_layout()
 
         if logging and outdir:
-            plt.savefig(os.path.join(outdir, 'interaction_pairs_clustermap.png'))
-
-    # Plotting raw interaction ratio heatmap
-    plt.figure(figsize=(12, 8))
-    sns.heatmap(pivot_df, cmap="viridis", cbar_kws={"label": "Interaction Ratio"})
-    
-    title = "Interaction Ratio of Bacterium-Phage Pairs"
-    plt.title(title)
-    plt.xlabel("Bacterium")
-    plt.ylabel("Phage")
-    plt.xticks(rotation=90, fontsize=6)
-    plt.yticks(fontsize=6)
-    plt.tight_layout()
-
-    if logging and outdir:
-        graph_name = 'interaction_pairs_sorted.png' if sort_by_ratio else 'interaction_pairs.png'
-        plt.savefig(os.path.join(outdir, graph_name))
+            graph_name = 'interaction_pairs_sorted.png' if sort_by_ratio else 'interaction_pairs.png'
+            plt.savefig(os.path.join(outdir, graph_name))
+        print(f"Heatmap plotted successfully: {graph_name}")
+    except Exception as e:
+        print(f"Error creating heatmap: {e}")
     
     # Plotting interaction ratio scaled with expected interaction
     #divide interaction ratio by expected interaction to get a fold-change like measure
-    scaled_pivot_df = pivot_df.copy()
-    for phage in scaled_pivot_df.index:
-        for bact in scaled_pivot_df.columns:
-            expected_value = expected_interactions.get((bact, phage), 1)  # Avoid division by zero
-            if expected_value != 0:
-                scaled_pivot_df.at[phage, bact] = pivot_df.at[phage, bact] / expected_value
-            else:
-                scaled_pivot_df.at[phage, bact] = float("nan")  # Set to NaN if expected value is zero
-    plt.figure(figsize=(12, 8))
-    sns.heatmap(scaled_pivot_df, cmap="viridis", cbar_kws={"label": "Interaction Ratio / Expected Interaction"})
+    print("Attempting to plot heatmap of interaction ratios scaled by expected interactions...")
+    try:
+        scaled_pivot_df = pivot_df.copy()
+        for phage in scaled_pivot_df.index:
+            for bact in scaled_pivot_df.columns:
+                expected_value = expected_interactions.get((bact, phage), 1)  # Avoid division by zero
+                if expected_value != 0:
+                    scaled_pivot_df.at[phage, bact] = pivot_df.at[phage, bact] / expected_value
+                else:
+                    scaled_pivot_df.at[phage, bact] = float("nan")  # Set to NaN if expected value is zero
+        plt.figure(figsize=(12, 8))
+        sns.heatmap(scaled_pivot_df, cmap="viridis", cbar_kws={"label": "Interaction Ratio / Expected Interaction"})
 
-    title = "Interaction Ratio of Bacterium-Phage Pairs Scaled by Expected Interaction"
-    plt.title(title)
-    plt.xlabel("Bacterium")
-    plt.ylabel("Phage")
-    plt.xticks(rotation=90, fontsize=6)
-    plt.yticks(fontsize=6)
-    plt.tight_layout()
+        title = "Interaction Ratio of Bacterium-Phage Pairs Scaled by Expected Interaction"
+        plt.title(title)
+        plt.xlabel("Bacterium")
+        plt.ylabel("Phage")
+        plt.xticks(rotation=90, fontsize=6)
+        plt.yticks(fontsize=6)
+        plt.tight_layout()
 
-    if logging and outdir:
-        graph_name = 'interaction_pairs_sorted_scaled.png' if sort_by_ratio else 'interaction_pairs_scaled.png'
-        plt.savefig(os.path.join(outdir, graph_name))
+        if logging and outdir:
+            graph_name = 'interaction_pairs_sorted_scaled.png' if sort_by_ratio else 'interaction_pairs_scaled.png'
+            plt.savefig(os.path.join(outdir, graph_name))
+        print(f"Scaled heatmap plotted successfully: {graph_name}")
+    except Exception as e:
+        print(f"Error creating scaled heatmap: {e}")
 
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
@@ -1133,6 +1150,154 @@ class FeatureImportance():
         ##plt.show()
 
 class GeneAnalysis():
+    def __init__(self, TS : bool = False):
+        self.TS = TS
+
+    def _normalize_kmer(self, kmer: str) -> str:
+        return str(kmer).strip().upper()
+
+
+    def extract_bacteria_genes_for_kmer(self, kmer: str, strain_name: str, root_dir: str) -> pd.DataFrame:
+        """Return bacterial gene annotations for records whose sequence contains `kmer`.
+
+        Searches for:
+        - a file ending in `_merged.ffn`
+        - a companion file ending in `_merged.tsv`
+
+        The matching record IDs from the FASTA headers are matched against the
+        `locus_tag` column in the TSV file.
+        """
+        root_dir = Path(root_dir)
+        kmer = self._normalize_kmer(kmer)
+
+        strain_dirs = [p for p in (root_dir / "prokka_bacts").rglob("*") if p.is_dir() and strain_name in p.name]
+        if not strain_dirs:
+            raise FileNotFoundError(f"No bacteria directory found for strain '{strain_name}' under {root_dir / 'prokka_bacts'}")
+
+        strain_dir = strain_dirs[0]
+        ffn_files = sorted(strain_dir.glob("*_merged.ffn"))
+        tsv_files = sorted(strain_dir.glob("*_merged.tsv"))
+        if not ffn_files:
+            raise FileNotFoundError(f"No *_merged.ffn file found in {strain_dir}")
+        if not tsv_files:
+            raise FileNotFoundError(f"No *_merged.tsv file found in {strain_dir}")
+
+        matching_locus_tags = []
+        for record in SeqIO.parse(str(ffn_files[0]), "fasta"):
+            if kmer in str(record.seq).upper():
+                matching_locus_tags.append(record.id)
+
+        cols = ["bact", "locus_tag", "kmer_in_seq", "length_bp", "gene", "product"]
+        if not matching_locus_tags:
+            return pd.DataFrame(columns=cols)
+
+        ann_df = pd.read_csv(tsv_files[0], sep="\t")
+        ann_df["kmer_in_seq"] = kmer
+        ann_df["bact"] = clean_bact_names(strain_name)
+        missing = [c for c in cols if c not in ann_df.columns]
+        if missing:
+            raise KeyError(f"Missing expected columns in {tsv_files[0]}: {missing}")
+
+        result = ann_df[ann_df["locus_tag"].astype(str).isin(matching_locus_tags)][cols].copy()
+        return result.reset_index(drop=True)
+    
+    def extract_phage_genes_for_kmer(self, kmer: str, strain_name: str, root_dir: str) -> pd.DataFrame:
+        """Return phage gene annotations for records whose sequence contains `kmer`.
+
+        Searches for:
+        - a `phanotate.ffn` file under the pharokka results for the strain
+        - a `*_per_cds_predictions.tsv` file under the phold results for the strain
+
+        The matching FASTA record IDs are matched against the `cds_id` column in the
+        PHOLD table.
+        """
+        root_dir = Path(root_dir)
+        kmer = self._normalize_kmer(kmer)
+
+        pharokka_root = root_dir / "pharokka"
+        phold_root = root_dir / "phold"
+
+        pharokka_dirs = [p for p in pharokka_root.rglob("*") if p.is_dir() and strain_name in p.name]
+        phold_dirs = [p for p in phold_root.rglob("*") if p.is_dir() and strain_name in p.name]
+        if not pharokka_dirs:
+            raise FileNotFoundError(f"No pharokka directory found for strain '{strain_name}' under {pharokka_root}")
+        if not phold_dirs:
+            raise FileNotFoundError(f"No phold directory found for strain '{strain_name}' under {phold_root}")
+
+        pharokka_dir = pharokka_dirs[0]
+        phold_dir = phold_dirs[0]
+
+        ffn_files = sorted(pharokka_dir.glob("**/phanotate.ffn"))
+        if not ffn_files:
+            raise FileNotFoundError(f"No phanotate.ffn file found in {pharokka_dir}")
+
+        tsv_files = sorted(phold_dir.glob("**/*_per_cds_predictions.tsv"))
+        if not tsv_files:
+            raise FileNotFoundError(f"No *_per_cds_predictions.tsv file found in {phold_dir}")
+
+        matching_cds_ids = []
+        for record in SeqIO.parse(str(ffn_files[0]), "fasta"):
+            if kmer in str(record.seq).upper():
+                matching_cds_ids.append(record.id)
+
+        cols = [
+            "contig_id", "cds_id", "kmer_in_seq", "start", "end", "phrog", "function", "product",
+            "annotation_method", "annotation_confidence", "tophit_protein",
+            "function_with_highest_bitscore_proportion", "prostt5_confidence"
+        ]
+
+        if not matching_cds_ids:
+            return pd.DataFrame(columns=cols)
+
+        ann_df = pd.read_csv(tsv_files[0], sep="\t")
+        ann_df["kmer_in_seq"] = kmer
+        missing = [c for c in cols if c not in ann_df.columns]
+        if missing:
+            raise KeyError(f"Missing expected columns in {tsv_files[0]}: {missing}")
+
+        result = ann_df[ann_df["cds_id"].astype(str).isin(matching_cds_ids)][cols].copy()
+        return result.reset_index(drop=True)
+
+    def batch_bact_annotate(self, bkmers : list, bact_names : list, data_prod_path : str) -> pd.DataFrame:
+        bact_annotations = pd.DataFrame(columns=["bact", "locus_tag", "kmer_in_seq", "length_bp", "gene", "product"])
+        with tqdm(total=len(bact_names)*len(bkmers), desc="Annotating bacteria-kmer pairs") as pbar:
+            for bact in bact_names:
+                for kmer in bkmers:
+                    try:
+                        bact_genes = self.extract_bacteria_genes_for_kmer(kmer, bact, data_prod_path)
+                        if bact_genes.empty:
+                            if self.TS: print("No bacterial genes found containing this kmer.")
+                        else:
+                            bact_annotations = pd.concat([bact_annotations, bact_genes], ignore_index=True)
+                    except Exception as e:
+                        if self.TS: print(f"Error extracting bacterial genes for kmer '{kmer}': {e}")
+                    pbar.update(1)
+
+        return bact_annotations
+
+    def batch_phage_annotate(self, pkmers : list, phage_names : list, data_prod_path : str) -> pd.DataFrame:
+        phage_annotations = pd.DataFrame(columns=[
+                "contig_id", "cds_id", "kmer_in_seq", "start", "end", "phrog", "function", "product",
+                "annotation_method", "annotation_confidence", "tophit_protein",
+                "function_with_highest_bitscore_proportion", "prostt5_confidence"
+            ])
+        with tqdm(total=len(phage_names)*len(pkmers), desc="Annotating phage-kmer pairs") as pbar:
+            for phage in phage_names:
+                for kmer in pkmers:
+                    try:
+                        phage_genes = self.extract_phage_genes_for_kmer(kmer, phage, data_prod_path)
+                        if phage_genes.empty:
+                            if self.TS: print("No phage genes found containing this kmer.")
+                        else:
+                            phage_annotations = pd.concat([phage_annotations, phage_genes], ignore_index=True)
+                    except Exception as e:
+                        if self.TS: print(f"Error extracting phage genes for kmer '{kmer}': {e}")
+                    pbar.update(1)
+
+        return phage_annotations
+
+
+class GeneAnalysisNCBI():
     def __init__(self, logfile, logging : bool, outdir : str):
         self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/"
         self.raw_data_path = os.path.join(self.root, "raw_data/")

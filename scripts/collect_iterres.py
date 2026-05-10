@@ -11,6 +11,7 @@ import argparse
 from time import time, sleep
 from datetime import datetime
 from paths import data_prod_path, path_to_nn_runs
+from analysis import GeneAnalysis
 outdir_default = data_prod_path + "iterExclClus/"
 print(path_to_nn_runs)
 
@@ -145,8 +146,46 @@ def extract_metrics_from_log(file_path):
 
     return metrics
 
+class GAPlottingUtils:
+    def __init__(self, df, outdir):
+        self.df = df
+        self.outdir = outdir
+    
+    def plot_top_genes(self, df: pd.DataFrame, entity_type : str, title_suffix: str = ""):
+        """
+        Plot the annotated genes found in the entity specific dataframe (df)
+        """
+        if entity_type == "bacterium":
+            gene_counts = df['gene'].value_counts()
+        elif entity_type == "phage":
+            gene_counts = df['product'].value_counts()
 
-class PlottingUtils:
+        plt.figure(figsize=(10, 6))
+        sns.barplot(x=gene_counts.index, y=gene_counts.values, palette='viridis')
+        plt.title(f'Top {entity_type.capitalize()} Kmers Annotated Genes {title_suffix}')
+        plt.xlabel('Gene')
+        plt.ylabel('Count')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(self.outdir + f'top_genes_{entity_type}.png')
+        plt.close()
+    
+    def plot_kmer_distribution(self, df : pd.DataFrame, entity_type : str, title_suffix: str = ""):
+        """
+        Plot the distribution of k-mers across different genes for the given entity type
+        """
+        gene_kmer_counts = df['kmer_in_seq'].value_counts()
+        plt.figure(figsize=(10, 6))
+        sns.barplot(x=gene_kmer_counts.index, y=gene_kmer_counts.values, palette='magma')
+        plt.title(f'Distribution of Top {entity_type.capitalize() }Kmers {title_suffix}')
+        plt.xlabel('Kmers')
+        plt.ylabel('Kmer Count')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(self.outdir + f'kmer_distribution_{entity_type}.png')
+        plt.close()
+
+class MetricPlottingUtils:
     def __init__(self, df, outdir, x_col = None, hue_col = None, x_col_by_cluster = False, x_col_by_phage = False):
         # Ensure all columns are integers for proper sorting
         df['n'] = pd.to_numeric(df['n'])
@@ -374,6 +413,7 @@ class PlottingUtils:
 
 def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=None, group_x_col=None, group_hue_col=None):
     all_data = []
+    top_kmers_df = pd.DataFrame() # Placeholder top_kmers_csv file
     
     if not os.path.exists(base_dir):
         print(f"Directory {base_dir} not found.")
@@ -397,6 +437,8 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         if os.path.isdir(folder_path):
             # Search for log files in this specific run folder
             for file in os.listdir(folder_path):
+
+                # Extract metrics from log files 
                 if file.endswith(".txt") or file.endswith(".log"):
                     log_path = os.path.join(folder_path, file)
                     metrics = extract_metrics_from_log(log_path)
@@ -404,6 +446,17 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                         metrics['folder'] = folder_name
                         all_data.append(metrics)
 
+                # Extract top kmers from pair_kmers.csv files
+                elif file.endswith("pair_kmers.csv"):
+                    top_kmers_path = os.path.join(folder_path, file)
+                    try:
+                        df_kmers = pd.read_csv(top_kmers_path)
+                        df_kmers['folder'] = folder_name
+                        top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
+                    except Exception as e:
+                        print(f"Error reading {top_kmers_path}: {e}")
+
+    ### Metrics Extraction Summary and Plotting ###
     if all_data:
         df = pd.DataFrame(all_data)
         print(f"Extracted metrics from {len(df)} log files.")
@@ -411,7 +464,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             group_x_col = group_x_col.lower()
         except Exception:
             print(f"Unable to process group_x_col: {group_x_col}")
-        plotting = PlottingUtils(df=df, outdir=str(outdir), x_col=x_col, hue_col=hue_col, x_col_by_cluster=(group_x_col == 'cluster'), x_col_by_phage=(group_x_col == 'phage'))
+        plotting = MetricPlottingUtils(df=df, outdir=str(outdir), x_col=x_col, hue_col=hue_col, x_col_by_cluster=(group_x_col == 'cluster'), x_col_by_phage=(group_x_col == 'phage'))
         plotting.plot_graphs()
         # Optional: save the raw data for inspection
         df.to_csv(outdir +'all_runs_summary.csv', index=False)
@@ -419,6 +472,60 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
     else:
         print("No valid data found to plot.")
     
+    ### Top Kmers Annotation Summary and Plotting ###
+    if not top_kmers_df.empty:
+        print(f"Extracted top k-mers from {len(top_kmers_df['folder'].unique())} files.")
+
+        # Split by "entity" column 
+        bact_kmers_df = top_kmers_df[top_kmers_df['entity'] == 'bacterium']
+        phage_kmers_df = top_kmers_df[top_kmers_df['entity'] == 'phage' or top_kmers_df['entity'] == 'bacteriophage']
+
+        # Gene analysis
+        try:
+            GA = GeneAnalysis()
+            if not bact_kmers_df.empty:
+                bact_annot_df = GA.batch_bact_annotate(bkmers=bact_kmers_df['decoded_kmer'].tolist(), bact_names=bact_kmers_df['entity'].tolist(), data_prod_path=data_prod_path)
+            else:
+                print("No valid bacterium k-mers data found for annotation.")
+
+            if not phage_kmers_df.empty:
+                phage_annot_df = GA.batch_phage_annotate(pkmers=phage_kmers_df['decoded_kmer'].tolist(), phage_names=phage_kmers_df['entity'].tolist(), data_prod_path=data_prod_path)
+            else:
+                print("No valid phage k-mers data found for annotation.")
+        except Exception as e:
+            raise ValueError(f"Error during gene annotation: {e}")
+
+        # Gene Annot Plotting
+        try:
+            plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir))
+            if not bact_kmers_df.empty:
+                plotting_utils.plot_top_genes(bact_annot_df, entity_type="bacterium", title_suffix="(PFI)")
+                plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix="(PFI)")
+            if not phage_kmers_df.empty:
+                plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix="(PFI)")
+                plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix="(PFI)")
+        except Exception as e:
+            raise ValueError(f"Error during gene annotation plotting: {e}")
+
+        # Concatenate annotation results and save
+        try: 
+            if not bact_kmers_df.empty and not phage_kmers_df.empty:
+                combined_annot_df = pd.concat([bact_annot_df, phage_annot_df], ignore_index=True)
+                combined_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
+                print("Top Kmers Annotations CSV saved as top_kmers_annotations.csv")
+            
+            elif not bact_kmers_df.empty:
+                bact_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
+                print("Bacterium Kmers Annotations CSV saved as top_kmers_annotations.csv")
+            elif not phage_kmers_df.empty:
+                phage_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
+                print("Phage Kmers Annotations CSV saved as top_kmers_annotations.csv")
+        except Exception as e:
+            raise ValueError(f"Error saving top k-mers annotations: {e}")
+
+    else:
+        print("No valid top k-mers data found.")
+
     logfile.close()
 
 if __name__ == "__main__":

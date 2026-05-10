@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=IterExclClusPFI
+#SBATCH --job-name=IterECn500k12
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --mem=50G

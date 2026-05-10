@@ -255,10 +255,18 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
     bact_dir = find_sig_dir(sketch_dir, "Bact", n, k)
     log.info("  Found sig dir: %s", bact_dir.name)
 
-    bact_mat = sim_dir / f"BactSim_{tag}.mat"
-    bact_lbl = sim_dir / f"BactSim_{tag}.mat.labels_to.csv"
-    bact_pre = sim_dir / f"BactSim_{tag}.mat.labels_prefixed.csv"
-    bact_den = sim_dir / f"BactDendro_{tag}.png"
+    if "_data2" in sketch_dir.name:
+        bact_mat = sim_dir / f"BactSim_{tag}_data2.mat"
+        bact_lbl = sim_dir / f"BactSim_{tag}_data2.mat.labels_to.csv"
+        bact_pre = sim_dir / f"BactSim_{tag}_data2.mat.labels_prefixed.csv"
+        bact_den = sim_dir / f"BactDendro_{tag}_data2.png"
+    else:
+        bact_mat = sim_dir / f"BactSim_{tag}.mat"
+        bact_lbl = sim_dir / f"BactSim_{tag}.mat.labels_to.csv"
+        bact_pre = sim_dir / f"BactSim_{tag}.mat.labels_prefixed.csv"
+        bact_den = sim_dir / f"BactDendro_{tag}.png"
+
+    
 
     step1_compare(bact_dir, bact_mat, bact_lbl, dry_run)
     step2_plot_standard(bact_mat, dry_run)
@@ -283,9 +291,14 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
     phage_dir = find_sig_dir(sketch_dir, "Phage", n, k)
     log.info("  Found sig dir: %s", phage_dir.name)
 
-    phage_mat = sim_dir / f"PhageSim_{tag}.mat"
-    phage_lbl = sim_dir / f"PhageSim_{tag}.mat.labels_to.csv"
-    phage_den = sim_dir / f"PhageDendro_{tag}.png"
+    if "_data2" in sketch_dir.name:
+        phage_mat = sim_dir / f"PhageSim_{tag}_data2.mat"
+        phage_lbl = sim_dir / f"PhageSim_{tag}_data2.mat.labels_to.csv"
+        phage_den = sim_dir / f"PhageDendro_{tag}_data2.png"
+    else:
+        phage_mat = sim_dir / f"PhageSim_{tag}.mat"
+        phage_lbl = sim_dir / f"PhageSim_{tag}.mat.labels_to.csv"
+        phage_den = sim_dir / f"PhageDendro_{tag}.png"
 
     step1_compare(phage_dir, phage_mat, phage_lbl, dry_run)
     step2_plot_standard(phage_mat, dry_run)

@@ -1,0 +1,2 @@
+Task map written: 25 pairs → /net/node07/home/projects/s215045/PredictPhagePPI/tmp/iter_excl_task_map.txt
+sbatch: error: Unable to open file /net/node07/home/projects/s215045/PredictPhagePPI/scripts/slurm/ffnn_train_task.sh
