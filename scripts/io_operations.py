@@ -184,15 +184,8 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
     phage_minhash_data = clean_dict_keys(phage_minhash_data)
     bact_minhash_copy = bact_minhash_data.copy()
     for key in bact_minhash_copy.keys():
-        if key.endswith("_reoriented_merged.fasta"):
-            new_key = key.replace("_reoriented_merged.fasta", "")
-            bact_minhash_data[new_key] = bact_minhash_data.pop(key)
-        elif key.endswith("_merged.fasta"):
-            new_key = key.replace("_merged.fasta", "")
-            bact_minhash_data[new_key] = bact_minhash_data.pop(key)
-        else:
-            new_key_list = clean_bact_names([key], data2=data2)
-            bact_minhash_data[new_key_list[0]] = bact_minhash_data.pop(key)
+        new_key_list = clean_bact_names([key], data2=data2)
+        bact_minhash_data[new_key_list[0]] = bact_minhash_data.pop(key)
 
     ### Extract unique minhashes
     unique_minhashes = set() #for both phage and bacteria combined

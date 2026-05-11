@@ -256,7 +256,7 @@ def main():
         binary_matrix, entity_to_index, minhash_to_index, phage_minhash_data, bact_minhash_data = presence_matrix(
             phage_minhash_dir=os.path.join(data_prod_path, input_phage_path),
             bact_minhash_dir=os.path.join(data_prod_path, input_bact_path),
-            k=[bk, pk], n=[bn, pn], reversecomp_data=False, TS=True)
+            k=[bk, pk], n=[bn, pn], reversecomp_data=False, TS=True, data2=args.data2)
         #Write files to full_presmat_path for faster loading in the future
         os.makedirs(full_presmat_path, exist_ok=True)
         with open(os.path.join(full_presmat_path, "binary_matrix.pkl"), "wb") as f: pickle.dump(binary_matrix, f)
@@ -302,7 +302,7 @@ def main():
             hk_translation_dict = None
 
     ### 4. Host Range Setup ###
-    bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"))
+    bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"), data2=args.data2)
     host_range_data = binarize_host_range(hostrange_df_to_dict(host_range_df), continous=False)
     host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
 
