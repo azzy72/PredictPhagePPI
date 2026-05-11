@@ -1,7 +1,7 @@
-#!/usr/bin/python3
-# =============================================================================
-# OPTIMIZED VERSION — changes from original FFNN_inner.py
-# =============================================================================
+#!/usr/bin/python3  
+# =========================================================================================
+# NON-OPTIMIZED VERSION — FOLLOWING CHANGES WERE MADE TO THE ORIGINAL FFNN_inner.py SCRIPT
+# =========================================================================================
 # BUG FIX
 #   [1] X_val was never passed through StandardScaler.transform() before being
 #       used in the validation DataLoader, meaning the model validated on raw
@@ -29,7 +29,8 @@
 #   [9] type(x) == str/list → isinstance(x, str/list) throughout.
 #  [10] outdir + "/" + filename → os.path.join(outdir, filename) throughout
 #       the logging/output-directory setup to avoid double-slash paths.
-# =============================================================================
+# =========================================================================================
+
 
 import os
 import sys
@@ -187,17 +188,17 @@ def parse_arguments():
     if args.exclude_clusters:
         # Modification: convert args.exclude_bact_clusters and args.exclude_phage_clusters from str to list if they are provided as comma-separated strings 
         # (this allows for more flexible input, e.g. --exclude_bact_clusters ["cluster1,cluster2,cluster3"] or --exclude_bact_clusters cluster1 cluster2 cluster3)
-        if isinstance(args.exclude_bact_clusters, str):
+        if type(args.exclude_bact_clusters) == str:
             args.exclude_bact_clusters = re.sub(r'[\[\]]', '',args.exclude_bact_clusters)
             args.exclude_bact_clusters = [item.strip() for item in args.exclude_bact_clusters.split(',')]
-        elif isinstance(args.exclude_bact_clusters, list) and len(args.exclude_bact_clusters) == 1 and ',' in args.exclude_bact_clusters[0]:
+        elif type(args.exclude_bact_clusters) == list and len(args.exclude_bact_clusters) == 1 and ',' in args.exclude_bact_clusters[0]:
             args.exclude_bact_clusters = re.sub(r'[\[\]]', '',args.exclude_bact_clusters[0])
             args.exclude_bact_clusters = [item.strip() for item in args.exclude_bact_clusters.split(',')]
         
-        if isinstance(args.exclude_phage_clusters, str):
+        if type(args.exclude_phage_clusters) == str:
             args.exclude_phage_clusters = re.sub(r'[\[\]]', '',args.exclude_phage_clusters)
             args.exclude_phage_clusters = [item.strip() for item in args.exclude_phage_clusters.split(',')]
-        elif isinstance(args.exclude_phage_clusters, list) and len(args.exclude_phage_clusters) == 1 and ',' in args.exclude_phage_clusters[0]:
+        elif type(args.exclude_phage_clusters) == list and len(args.exclude_phage_clusters) == 1 and ',' in args.exclude_phage_clusters[0]:
             args.exclude_phage_clusters = re.sub(r'[\[\]]', '',args.exclude_phage_clusters[0])
             args.exclude_phage_clusters = [item.strip() for item in args.exclude_phage_clusters.split(',')]
 
@@ -344,15 +345,15 @@ def main():
                 outdirname = f"{args.sbatch_id}_torch_mlp_n{n}_k{k}_{tag}"
             else:
                 outdirname = f'torch_mlp_n{n}_k{k}_{tag}'
-            outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}")
+            outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
             while os.path.exists(outdir):
                 run += 1
-                outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}")
+                outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
         else:
-            outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}")
+            outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}/")
             while os.path.exists(outdir):
                 run += 1
-                outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}")
+                outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}/")
         os.makedirs(outdir, exist_ok=True)
         # Configure the logger
         logging.basicConfig(
@@ -412,15 +413,6 @@ def main():
     # Create inverse mapping: column_index -> kmer_encoded_int
     idx_to_minhash = {v: k for k, v in minhash_to_index.items()}
 
-    # Convert exclusion lists to sets for O(1) membership testing inside the hot nested loop
-    exclude_bacts_set = set(args.exclude_bacts) if args.exclude_pairs else set()
-    exclude_phages_set = set(args.exclude_phages) if args.exclude_pairs else set()
-    exclude_bact_clusters_set = set(args.exclude_bact_clusters) if args.exclude_clusters else set()
-    exclude_phage_clusters_set = set(args.exclude_phage_clusters) if args.exclude_clusters else set()
-
-    # Pre-resolve entity order to avoid repeated string comparison in the inner loop
-    bact_first = (args.entity_order == "bact_first")
-
     if args.logging: feature_flag = False
     cidx = 0 #counter for idx of all features
     eidx = 0 #counter for idx of excluded features
@@ -442,14 +434,19 @@ def main():
             
             # Get features and metadata for this pair
             score = host_range_data[bact][phage]
-            if bact_first:
+            if args.entity_order == "bact_first":
                 features = np.concatenate((binary_matrix[entity_to_index[bact]], 
                                        binary_matrix[entity_to_index[phage]]))
-                rows_meta.append((bact, phage))
-            else:
+            elif args.entity_order == "phage_first":
                 features = np.concatenate((binary_matrix[entity_to_index[phage]], 
                                        binary_matrix[entity_to_index[bact]]))
+            
+            if args.entity_order == "bact_first":
+                rows_meta.append((bact, phage))
+            elif args.entity_order == "phage_first":
                 rows_meta.append((phage, bact))
+            else:
+                raise ValueError("Invalid entity_order argument. Must be 'bact_first' or 'phage_first'.")
 
             # Logging
             if args.logging and not feature_flag:
@@ -458,24 +455,28 @@ def main():
                 feature_flag = True
 
             # Decide what to do with this pair based on exclusion criteria
-            if args.exclude_pairs and (bact in exclude_bacts_set or phage in exclude_phages_set):
+            if args.exclude_pairs and (bact in args.exclude_bacts or phage in args.exclude_phages):
                 X_excl.append(features)
                 y_excl.append(score)    
                 X_excl_idx.append(cidx)
-                if bact in exclude_bacts_set and phage in exclude_phages_set:
+                if bact in args.exclude_bacts and phage in args.exclude_phages:
                     X_excl_true_unseen_idx.append(eidx)
                 cidx += 1
                 eidx += 1
                 continue
 
             if args.exclude_clusters:
-                if bact in exclude_bact_clusters_set or phage in exclude_phage_clusters_set:
+                if bact in args.exclude_bact_clusters or phage in args.exclude_phage_clusters:
+                    # if args.logging:
+                    #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Checking cluster exclusion for pair ({bact}, {phage})...', file=logfile)
+                    #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - Bact clusters to exclude: {args.exclude_bact_clusters}', file=logfile)
+                    #     print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} - Phage clusters to exclude: {args.exclude_phage_clusters}', file=logfile)
                     X_excl.append(features)
                     y_excl.append(score)    
                     X_excl_idx.append(cidx)
                     if args.logging:
                         logging.info(f'Pair ({bact}, {phage}) added to exclusion set based on cluster criteria.')
-                    if bact in exclude_bact_clusters_set and phage in exclude_phage_clusters_set:
+                    if bact in args.exclude_bact_clusters and phage in args.exclude_phage_clusters:
                         X_excl_true_unseen_idx.append(eidx)
                         if args.logging:
                             logging.info(f'Pair ({bact}, {phage}) is truly unseen in test set because both entities are in the exclusion lists.')
@@ -605,8 +606,6 @@ def main():
     scaler = StandardScaler()
     X_train_f = scaler.fit_transform(X_train_f)
     X_test = scaler.transform(X_test)
-    if X_val is not None:  # BUG FIX: X_val must be scaled with the same scaler as X_train_f
-        X_val = scaler.transform(X_val)
 
     if args.smote:
         sm = SMOTE(random_state=42)
@@ -649,8 +648,8 @@ def main():
             # Create data loaders
             train_ds = TensorDataset(X_train_t, y_train_t)
             val_ds = TensorDataset(X_val_t, y_val_t)
-            train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-            val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+            train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+            val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
 
             # Initialize model, criterion, and optimizer
             model = MLP(input_dim=X_train_f.shape[1]).to(device)
@@ -663,7 +662,7 @@ def main():
                 running_loss = 0.0
                 for xb, yb in train_loader:
                     xb, yb = xb.to(device), yb.to(device)
-                    optimizer.zero_grad(set_to_none=True)
+                    optimizer.zero_grad()
                     logits = model(xb)
                     loss = criterion(logits, yb)
                     loss.backward()
@@ -718,10 +717,10 @@ def main():
 
         # Datasets / loaders
         train_ds = TensorDataset(X_train_t, y_train_t)
-        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
         if args.use_val:
             val_ds = TensorDataset(X_val_t, y_val_t)
-            val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+            val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
 
         model = MLP(input_dim=X_train_f.shape[1]).to(device)
         criterion = nn.BCEWithLogitsLoss() #Loss function
@@ -734,7 +733,7 @@ def main():
             running_loss = 0.0
             for xb, yb in train_loader:
                 xb, yb = xb.to(device), yb.to(device)
-                optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad()
                 logits = model(xb)
                 loss = criterion(logits, yb)
                 loss.backward()
@@ -783,11 +782,11 @@ def main():
     # Evaluation on test set: loss + accuracy --------
     model.eval()
     with torch.no_grad():
-        test_logits = model(X_test_t)
-        test_loss = criterion(test_logits, y_test_t).item()
+        test_logits = model(X_test_t.to(device))
+        test_loss = criterion(test_logits, y_test_t.to(device)).item()
         test_probs = torch.sigmoid(test_logits)
         test_preds = (test_probs >= 0.5).float()
-        test_acc = (test_preds == y_test_t).float().mean().item()
+        test_acc = (test_preds.to(device) == y_test_t).float().mean().item()
         #balanced accruacy calculation - cpu operation: move tensors back to the CPU before passing them to any scikit-learn function
         test_ba = balanced_accuracy_score(y_test_t.cpu().numpy(), test_preds.cpu().numpy())
 
@@ -983,52 +982,44 @@ def main():
     ### Apply phage & bact to hostrange ###
     # Apply each phage & bacteria pair to the trained model and save predictions
     model.eval()
+    results = []
     thresh = globals().get('best_t', 0.5)  # use best_t if computed, otherwise fallback to 0.5
 
-    # Build all valid pairs as a single matrix and run inference in one batched pass
-    # This is far faster than calling scaler.transform(single_row) in a tight inner loop.
-    pair_records = []
-    all_pair_features = []
-    for bact_name in tqdm(bacteria_names, desc="Building all-pairs matrix"):
-        bact_idx = entity_to_index.get(bact_name)
-        if bact_idx is None:
-            continue
-        for phage_name in phage_names:
-            phage_idx = entity_to_index.get(phage_name)
-            if phage_idx is None:
-                continue
-            combined = np.concatenate((binary_matrix[bact_idx], binary_matrix[phage_idx]))
-            all_pair_features.append(combined)
-            pair_records.append((bact_name, phage_name))
+    with torch.no_grad():
+        for bact_name in tqdm(bacteria_names, desc="Bacteria names iterated"):
+            for phage_name in phage_names:
+                # skip pairs that don't exist in entity_to_index
+                try:
+                    bact_index = entity_to_index[bact_name]
+                    phage_index = entity_to_index[phage_name]
+                except KeyError:
+                    continue
 
-    if all_pair_features:
-        all_pair_matrix = np.array(all_pair_features, dtype=np.float32)
-        all_pair_scaled = scaler.transform(all_pair_matrix)
-        all_pair_t = torch.from_numpy(all_pair_scaled).float()
+                # build combined feature vector like in training
+                bact_features = binary_matrix[bact_index, :]
+                phage_features = binary_matrix[phage_index, :]
+                combined = np.concatenate((bact_features, phage_features)).astype(np.float32).reshape(1, -1)
 
-        all_probs = []
-        with torch.no_grad():
-            pair_ds = TensorDataset(all_pair_t)
-            pair_loader = DataLoader(pair_ds, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
-            for (xb,) in tqdm(pair_loader, desc="Running inference on all pairs"):
-                logits = model(xb.to(device))
-                probs_batch = torch.sigmoid(logits).cpu().numpy().flatten()
-                all_probs.extend(probs_batch)
+                # scale and convert to tensor
+                scaled = scaler.transform(combined)
+                x_t = torch.from_numpy(scaled).float().to(device)
 
-        all_probs = np.array(all_probs)
-        all_preds = (all_probs >= thresh).astype(int)
-        bact_names_col, phage_names_col = zip(*pair_records)
-        results = [
-            {"bacterium": b, "phage": p, "probability": prob, "prediction": pred}
-            for b, p, prob, pred in zip(bact_names_col, phage_names_col, all_probs, all_preds)
-        ]
-    else:
-        results = []
+                # inference
+                logits = model(x_t)
+                prob = torch.sigmoid(logits).item()
+                pred = int(prob >= thresh)
+
+                results.append({
+                    "bacterium": bact_name,
+                    "phage": phage_name,
+                    "probability": prob,
+                    "prediction": pred
+                })
 
     # Save results to DataFrame + CSV
     pred_df = pd.DataFrame(results)
     if args.logging:
-        outpath = os.path.join(outdir, "torchMLP_all_pairs_predictions.csv")
+        outpath = outdir + "torchMLP_all_pairs_predictions.csv"
         pred_df.to_csv(outpath, index=False)
 
         print(f"Saved {len(pred_df)} predictions to {outpath}")
