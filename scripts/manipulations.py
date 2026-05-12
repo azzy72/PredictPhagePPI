@@ -1014,13 +1014,11 @@ class calc_PFI:
             return [None]*6
 
         ### Calculating frequencies (normalized by total interactions/occurrences) ###
-        # 1. Pre-calculate sums once (O(N) vs O(N^2))
+        # Pre-calculate sums once (O(N) vs O(N^2))
         total_interactions = sum(interaction_pairs.values())
         total_occurences = sum(occurence_pairs.values())
-
         print("\nCalculating interaction, occurrence & expected frequencies...")
 
-        # 2. Handle subset logic and iteration more efficiently
         c = 0
         if subset is not None:
             keys_in_subset = []
@@ -1047,7 +1045,7 @@ class calc_PFI:
             
             c += 1
             
-            # 3. Throttle printing to every 100th iteration to save I/O time
+            # Throttle printing to every 100th iteration to save I/O time
             if c % 100 == 0 or c == len(interaction_pairs):
                 print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
 
