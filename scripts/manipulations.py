@@ -1046,7 +1046,7 @@ class calc_PFI:
             c += 1
             
             # Throttle printing to every 100th iteration to save I/O time
-            if c % 100 == 0 or c == len(interaction_pairs):
+            if c % 5000 == 0 or c == len(interaction_pairs):
                 print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
 
             if subset is not None:

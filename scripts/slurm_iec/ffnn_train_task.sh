@@ -13,7 +13,7 @@
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/parallel_tmp/%A_%a-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/parallel_tmp/%A_%a-%x.err
 #SBATCH --mail-type=FAIL,ARRAY_TASKS
-#SBATCH --mail-user=s215045@student.dtu.dk
+#SBATCH --mail-user=s215045@student.dtu.d
 
 set -euo pipefail
 
@@ -71,7 +71,7 @@ python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
 ACC_FILE="$ROOT_DIR/tmp/accuracies_par/b${bcluster_num}_p${pcluster_num}.txt"
 mkdir -p "$(dirname "$ACC_FILE")"
 
-acc=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run*/log_run*.txt" \
+acc=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run1/log_run1.txt" \
         -exec grep "Final test loss:" {} + \
     | awk -F'test accuracy: ' '{print $2}')
 

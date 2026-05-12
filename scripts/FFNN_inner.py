@@ -398,9 +398,6 @@ def main():
     X_excl_true_unseen_idx = [] #idx of the truly unseen pairs on excluded sets runs.
     #exclude_bact_characters = ["_reoriented", "_merged", "_KMC"]
     for bact in tqdm(bacteria_names, desc="Building dataset"):
-        if bact.endswith("_KMC"):
-            bact = bact.replace("_KMC", "")
-
         # Exclusion logic
         if args.exclude_noninteractions and not any(host_range_data.get(bact, {}).values()):
             continue
