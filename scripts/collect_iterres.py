@@ -21,6 +21,8 @@ def parse_arguments():
                         help="Base directory containing run folders")
     parser.add_argument("--out_dir", type=str, default=outdir_default,
                         help="Directory to save output graphs and CSV")
+    parser.add_argument("--weight_pfi", action='store_true', 
+                        help="Whether to weight the PFI scores by the corresponding test (balanced) accuracy of each run")
     
     ## Optional grouping arguments for more flexible plotting 
     parser.add_argument("--x_col", type=str, default=None,
@@ -32,6 +34,52 @@ def parse_arguments():
     parser.add_argument("--group_hue_col", type=str, default=None,
                         help="Column to use for grouping hue in plots")
     return parser.parse_args()
+
+def correct_deci_number(value):
+    """
+    In some cases the decimal values may be extracted as 568 instead of 0.568. This function checks if the value is greater than 1 and if so, divides it by the appropriate power of 10 to correct it. 
+    For example, if the value is 568, it will be divided by 1000 to become 0.568. If the value is already a proper decimal (e.g., 0.568), it will be returned unchanged.
+    """
+    try:
+        num = float(value)
+        if num > 1:
+            # Determine the number of digits to divide by
+            digits = len(str(int(num)))
+            corrected_value = num / (10 ** digits)
+            return corrected_value
+        else:
+            return num
+    
+    except ValueError:
+        print(f"Warning: Unable to convert '{value}' to a float. Returning original value.")
+        return value
+
+def calculate_unified_score(metrics_dict):
+    """
+    Calculates a single performance score from a dictionary of NN metrics.
+    Weights can be adjusted based on project priorities.
+    """
+    # 1. Define Weights (Total = 1.0)
+    # We prioritize Balanced Accuracy and Unseen Performance
+    weights = {
+        'test_balanced_accuracy': 0.30,
+        'f1': 0.25,
+        'unseen_test_balanced_accuracy': 0.45 
+    }
+    
+    # 2. Extract values (with defaults to prevent crashes)
+    b_acc = metrics_dict.get('test_balanced_accuracy', 0)
+    f1 = metrics_dict.get('f1', 0)
+    unseen_b_acc = metrics_dict.get('unseen_test_balanced_accuracy', 0)
+    
+    # 3. Calculate Weighted Score
+    final_score = (
+        (b_acc * weights['test_balanced_accuracy']) +
+        (f1 * weights['f1']) +
+        (unseen_b_acc * weights['unseen_test_balanced_accuracy'])
+    )
+    
+    return round(final_score, 4)
 
 def extract_metrics_from_log(file_path):
     """Parses a single log file for key performance metrics."""
@@ -114,26 +162,26 @@ def extract_metrics_from_log(file_path):
     # Extract Accuracy 
     acc_match = re.search(r"Standard test accuracy:\s+([\d.]+)", content)
     if acc_match:
-        metrics['test_accuracy'] = float(acc_match.group(1))
-    
+        metrics['test_accuracy'] = correct_deci_number(acc_match.group(1))
+
     unseen_acc_match = re.search(r"truly unseen test accuracy:\s+([\d.]+)", content)
     if unseen_acc_match:
-        metrics['unseen_test_accuracy'] = float(unseen_acc_match.group(1))
+        metrics['unseen_test_accuracy'] = correct_deci_number(unseen_acc_match.group(1))
 
     # Extract Balanced Accuracy
     ba_match = re.search(r"Standard test balanced accuracy:\s+([\d.]+)", content)
     if ba_match:
-        metrics['test_balanced_accuracy'] = float(ba_match.group(1))
+        metrics['test_balanced_accuracy'] = correct_deci_number(ba_match.group(1))
     unseen_ba_match = re.search(r"truly unseen test balanced accuracy:\s+([\d.]+)", content)
     if unseen_ba_match:
-        metrics['unseen_test_balanced_accuracy'] = float(unseen_ba_match.group(1))
+        metrics['unseen_test_balanced_accuracy'] = correct_deci_number(unseen_ba_match.group(1))
 
     # Extract Baseline Metrics (Precision, Recall, F1) [cite: 29]
     base_metrics = re.search(r"Baseline .* Precision:\s+([\d.]+),\s+Recall:\s+([\d.]+),\s+F1:\s+([\d.]+)", content)
     if base_metrics:
-        metrics['precision'] = float(base_metrics.group(1))
-        metrics['recall'] = float(base_metrics.group(2))
-        metrics['f1'] = float(base_metrics.group(3))
+        metrics['precision'] = correct_deci_number(base_metrics.group(1))
+        metrics['recall'] = correct_deci_number(base_metrics.group(2))
+        metrics['f1'] = correct_deci_number(base_metrics.group(3))
 
     # Extract Confusion Matrix components [cite: 31]
     # Log format: [TN FN] \n [FP TP]
@@ -185,6 +233,24 @@ class GAPlottingUtils:
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
         plt.savefig(self.outdir + f'kmer_distribution_{entity_type}.png')
+        plt.close()
+    
+    def plot_kmer_against_ups(self, df: pd.DataFrame, entity_type: str):
+        """
+        Plot the relationship between k-mer counts and the Unified Performance Score (UPS) for the given entity type
+        """
+        if 'UPS' not in df.columns:
+            print("UPS column not found in dataframe. Cannot plot k-mer against UPS.")
+            return
+        
+        plt.figure(figsize=(10, 6))
+        sns.scatterplot(x='kmer_in_seq', y='UPS', data=df, hue='gene' if entity_type == 'bacterium' else 'product', palette='coolwarm')
+        plt.title(f'Kmer Count vs Unified Performance Score (UPS) for {entity_type.capitalize()} Kmers')
+        plt.xlabel('Kmer Count')
+        plt.ylabel('Unified Performance Score (UPS)')
+        plt.legend(title='Gene' if entity_type == 'bacterium' else 'Product', bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        plt.savefig(self.outdir + f'kmer_vs_ups_{entity_type}.png')
         plt.close()
 
 class MetricPlottingUtils:
@@ -454,25 +520,52 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                     try:
                         df_kmers = pd.read_csv(top_kmers_path)
                         df_kmers['folder'] = folder_name
+                        if args.weight_pfi:
+                            df_kmers["UPS"] = calculate_unified_score(metrics)
                         top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
                     except Exception as e:
                         print(f"Error reading {top_kmers_path}: {e}")
+
+    ### Sorting top_kmers_df by weighted PFI score (if weight_pfi flag is set)
+    if not top_kmers_df.empty and args.weight_pfi:
+        if "UPS" in top_kmers_df.columns:
+            top_kmers_df = top_kmers_df.sort_values(by="UPS", ascending=False)
+            print("Sorted top_kmers_df by Unified Performance Score (UPS).")
+        else:
+            print("Warning: 'UPS' column not found in top_kmers_df. Skipping sorting by UPS.")
 
     ### Metrics Extraction Summary and Plotting ###
     if all_data:
         df = pd.DataFrame(all_data)
         print(f"Extracted metrics from {len(df)} log files.")
+
+        #check if any values of the cols in below_one_cols are above 1, if so, apply the correct_deci_number function to the entire column
+        try:
+            below_one_cols = ['test_accuracy', 'test_balanced_accuracy', 'unseen_test_accuracy', 'unseen_test_balanced_accuracy', 'precision', 'recall', 'f1']
+            for col in below_one_cols:
+                if col in df.columns:
+                    if (df[col] > 1).any():
+                        print(f"Column '{col}' contains values greater than 1. Applying correction to entire column.")
+                        df[col] = df[col].apply(correct_deci_number)
+                    else:
+                        continue
+                else:
+                    print(f"Column '{col}' not found in dataframe. Skipping correction for this column.")
+        except Exception as e:
+            print(f"Error during decimal correction: {e}")
+
         try:
             group_x_col = group_x_col.lower()
-        except Exception:
-            print(f"Unable to process group_x_col: {group_x_col}")
+        except Exception as e:
+            print(f"Unable to process group_x_col: {group_x_col}, error: {e}. Defaulting to no grouping.")
+        
         plotting = MetricPlottingUtils(df=df, outdir=str(outdir), x_col=x_col, hue_col=hue_col, x_col_by_cluster=(group_x_col == 'cluster'), x_col_by_phage=(group_x_col == 'phage'))
         plotting.plot_graphs()
         # Optional: save the raw data for inspection
         df.to_csv(outdir +'all_runs_summary.csv', index=False)
         print("Summary CSV saved as all_runs_summary.csv")
     else:
-        print("No valid data found to plot.")
+        print("No valid data found for Metrics Plotting.")
     
     ### Top Kmers Annotation Summary and Plotting ###
     if not top_kmers_df.empty:
@@ -499,13 +592,20 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
 
         # Gene Annot Plotting
         try:
+            title_suffix = "(Weighted PFI)" if args.weight_pfi else "(PFI)"
             plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir))
             if not bact_kmers_df.empty:
-                plotting_utils.plot_top_genes(bact_annot_df, entity_type="bacterium", title_suffix="(PFI)")
-                plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix="(PFI)")
+                plotting_utils.plot_top_genes(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
+                plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
+                if args.weight_pfi:
+                    plotting_utils.plot_kmer_against_ups(bact_annot_df, entity_type="bacterium")
+
             if not phage_kmers_df.empty:
-                plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix="(PFI)")
-                plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix="(PFI)")
+                plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
+                plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
+                if args.weight_pfi:
+                    plotting_utils.plot_kmer_against_ups(phage_annot_df, entity_type="phage")
+                    
         except Exception as e:
             raise ValueError(f"Error during gene annotation plotting: {e}")
 
