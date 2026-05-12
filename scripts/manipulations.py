@@ -1014,31 +1014,47 @@ class calc_PFI:
             return [None]*6
 
         ### Calculating frequencies (normalized by total interactions/occurrences) ###
+        # 1. Pre-calculate sums once (O(N) vs O(N^2))
+        total_interactions = sum(interaction_pairs.values())
+        total_occurences = sum(occurence_pairs.values())
+
         print("\nCalculating interaction, occurrence & expected frequencies...")
+
+        # 2. Handle subset logic and iteration more efficiently
         c = 0
         if subset is not None:
             keys_in_subset = []
-        for pair in interaction_pairs.keys():
-            if sum(interaction_pairs.values()) > 0:
-                interaction_freq_pairs[pair] = interaction_pairs[pair] / sum(interaction_pairs.values())
+
+        # Use .items() to get key and value at once
+        for pair, int_val in interaction_pairs.items():
+            # Interaction frequency
+            if total_interactions > 0:
+                if_val = int_val / total_interactions
             else:
-                interaction_freq_pairs[pair] = 0
+                if_val = 0
+            interaction_freq_pairs[pair] = if_val
             
-            if sum(occurence_pairs.values()) > 0:
-                occurence_freq_pairs[pair] = occurence_pairs[pair] / sum(occurence_pairs.values())
+            # Occurrence frequency (lookup needed as we iterate interaction_pairs)
+            occ_val = occurence_pairs.get(pair, 0)
+            if total_occurences > 0:
+                of_val = occ_val / total_occurences
             else:
-                occurence_freq_pairs[pair] = 0
+                of_val = 0
+            occurence_freq_pairs[pair] = of_val
             
-            expected_interactions[pair] = interaction_freq_pairs[pair] * occurence_pairs[pair]
+            # Expected interactions
+            expected_interactions[pair] = if_val * occ_val
             
             c += 1
-            print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
-
             
+            # 3. Throttle printing to every 100th iteration to save I/O time
+            if c % 100 == 0 or c == len(interaction_pairs):
+                print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
+
             if subset is not None:
                 keys_in_subset.append(pair)
                 if c >= subset:
-                    print(f"\nReached subset limit of {subset} pairs, stopping frequency calculation.")
+                    print(f"\nReached subset limit of {subset} pairs, stopping.")
                     break
         
         if self.outdir is not None:
