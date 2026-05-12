@@ -19,9 +19,14 @@ DATA_DIR="$ROOT_DIR/data_prod/"
 # Defaults
 DRY_RUN=false
 DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI/"
-BACT_CLUSTER_FILE="$DATA_DIR/bact_clusters_with_genus.csv"
-PHAGE_CLUSTER_FILE="$DATA_DIR/phage_clusters.csv"
-NK_VALS="500 12"
+N=500
+K=12
+DOWNDIR = "encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
+ROOT_DIR=$(git rev-parse --show-toplevel)
+DATA_DIR="$ROOT_DIR/data_prod"
+BACT_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_bact_clusters_n${N}_k${K}.csv"
+PHAGE_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_phage_clusters_n${N}_k${K}.csv"
+NK_VALS="${N} ${K}"
 
 usage() {
     echo "Usage: $0 [OPTIONS]"

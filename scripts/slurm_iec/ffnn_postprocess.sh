@@ -18,8 +18,8 @@
 set -euo pipefail
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
-DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI/"
-ACC_DIR="$ROOT_DIR/tmp/accuracies"
+DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI_parallel/"
+ACC_DIR="$ROOT_DIR/tmp/accuracies_par"
 
 # ── 3. Post-Processing: Average Accuracies ────────────────────────────────────
 echo "-------------------------------------------------------"

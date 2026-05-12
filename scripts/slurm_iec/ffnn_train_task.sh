@@ -18,12 +18,14 @@
 set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+N=500
+K=12
+DOWNDIR="encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
-BACT_CLUSTER_FILE="$DATA_DIR/bact_clusters_with_genus.csv"
-PHAGE_CLUSTER_FILE="$DATA_DIR/phage_clusters.csv"
+BACT_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_bact_clusters_n${N}_k${K}.csv"
+PHAGE_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_phage_clusters_n${N}_k${K}.csv"
 TASK_MAP="$ROOT_DIR/tmp/iter_excl_task_map.txt"
-NK_VALS="500 12"
 
 # ── Resolve this task's (bcluster, pcluster) pair from the task map ───────────
 # SLURM_ARRAY_TASK_ID is 1-indexed; sed line numbers are also 1-indexed.
@@ -40,17 +42,17 @@ bact_strains=$(tail -n +2 "$BACT_CLUSTER_FILE" \
 bact_strains=$(echo "$bact_strains" | sed 's/_reoriented//g')
 
 phage_strains=$(tail -n +2 "$PHAGE_CLUSTER_FILE" \
-    | awk -F',' -v c="$pcluster_num" '$2==c {print $1}' \
+    | awk -F',' -v c="$pcluster_num" '$3==c {print $1}' \
     | paste -sd ',' -)
 
 echo "Bact strains  : $bact_strains"
 echo "Phage strains : $phage_strains"
 
 # ── Training run ──────────────────────────────────────────────────────────────
-CUSTOM_OUT="iter_excl_PFI/cluster_b${bcluster_num}_p${pcluster_num}"
+CUSTOM_OUT="iter_excl_PFI_parallel/cluster_b${bcluster_num}_p${pcluster_num}"
 
 python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
-    --nk $NK_VALS \
+    --nk $N $K \
     --cv \
     --kf_n_splits 4 \
     --exclude_clusters \
@@ -64,7 +66,7 @@ python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
 # ── Extract and persist accuracy for this pair ────────────────────────────────
 # Write to a per-pair file so the post-processing job can gather them all
 # without any race conditions.
-ACC_FILE="$ROOT_DIR/tmp/accuracies/b${bcluster_num}_p${pcluster_num}.txt"
+ACC_FILE="$ROOT_DIR/tmp/accuracies_par/b${bcluster_num}_p${pcluster_num}.txt"
 mkdir -p "$(dirname "$ACC_FILE")"
 
 acc=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run*/log_run*.txt" \

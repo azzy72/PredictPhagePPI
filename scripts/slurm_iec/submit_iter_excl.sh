@@ -5,10 +5,13 @@
 
 set -euo pipefail
 
+N=500
+K=12
+DOWNDIR="encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
-BACT_CLUSTER_FILE="$DATA_DIR/bact_clusters_with_genus.csv"
-PHAGE_CLUSTER_FILE="$DATA_DIR/phage_clusters.csv"
+BACT_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_bact_clusters_n${N}_k${K}.csv"
+PHAGE_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_phage_clusters_n${N}_k${K}.csv"
 
 # ── 1. Enumerate every (bcluster, pcluster) pair and write a task-map file ───
 # Each line of the task map = one array task index → "bcluster_num pcluster_num"
@@ -17,7 +20,7 @@ mkdir -p "$ROOT_DIR/tmp"
 rm -f "$TASK_MAP"
 
 bclusters=$(tail -n +2 "$BACT_CLUSTER_FILE" | awk -F',' '{print $2}' | sort -nu)
-pclusters=$(tail -n +2 "$PHAGE_CLUSTER_FILE" | awk -F',' '{print $2}' | sort -u)
+pclusters=$(tail -n +2 "$PHAGE_CLUSTER_FILE" | awk -F',' '{print $3}' | sort -u)
 
 for b in $bclusters; do
     for p in $pclusters; do
