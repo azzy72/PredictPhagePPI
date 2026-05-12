@@ -941,9 +941,9 @@ def main():
                 logging.info(f'{line}')
             best_tp_df.to_csv(outdir+"best_predictions.csv", sep=";")
         
-            plot_entity_counts(best_tp_df, 'Phage_Name', outdir = outdir, logging = args.logging)
-            plot_entity_counts(best_tp_df, 'Bacterium_Name', outdir = outdir, logging = args.logging)
-            plot_bipartite_network(best_tp_df, id_lookup_bact, outdir = outdir, logging = args.logging, limit=50, conf_threshold=0.5)
+            plot_entity_counts(best_tp_df, 'Phage_Name', outdir = outdir, logging_on = args.logging)
+            plot_entity_counts(best_tp_df, 'Bacterium_Name', outdir = outdir, logging_on = args.logging)
+            plot_bipartite_network(best_tp_df, id_lookup_bact, outdir = outdir, logging_on = args.logging, limit=50, conf_threshold=0.5)
 
     except Exception as e:
         if args.logging:
