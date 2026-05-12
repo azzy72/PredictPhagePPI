@@ -9,7 +9,7 @@
 #SBATCH --mem=50G
 #SBATCH --cpus-per-task=25
 #SBATCH --gres=shard:1
-#SBATCH --time=72:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/parallel_tmp/%A_%a-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/parallel_tmp/%A_%a-%x.err
 #SBATCH --mail-type=FAIL,ARRAY_TASKS

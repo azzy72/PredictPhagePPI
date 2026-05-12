@@ -21,6 +21,8 @@ def parse_arguments():
                         help="Base directory containing run folders")
     parser.add_argument("--out_dir", type=str, default=outdir_default,
                         help="Directory to save output graphs and CSV")
+    
+    ## Optional grouping arguments for more flexible plotting 
     parser.add_argument("--x_col", type=str, default=None,
                         help="Column to use for x-axis in plots")
     parser.add_argument("--hue_col", type=str, default=None,
