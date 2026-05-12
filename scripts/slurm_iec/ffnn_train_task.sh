@@ -23,6 +23,7 @@ K=12
 DOWNDIR="encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
+CUSTOM_PARENT_DIR="iter_excl_PFI_parallel"
 BACT_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_bact_clusters_n${N}_k${K}.csv"
 PHAGE_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_phage_clusters_n${N}_k${K}.csv"
 TASK_MAP="$ROOT_DIR/tmp/iter_excl_task_map.txt"
@@ -49,7 +50,8 @@ echo "Bact strains  : $bact_strains"
 echo "Phage strains : $phage_strains"
 
 # ── Training run ──────────────────────────────────────────────────────────────
-CUSTOM_OUT="iter_excl_PFI_parallel/cluster_b${bcluster_num}_p${pcluster_num}"
+CUSTOM_OUT="$CUSTOM_PARENT_DIR/cluster_b${bcluster_num}_p${pcluster_num}"
+
 
 python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
     --nk $N $K \

@@ -313,15 +313,15 @@ def main():
                 outdirname = f"{args.sbatch_id}_torch_mlp_n{n}_k{k}_{tag}"
             else:
                 outdirname = f'torch_mlp_n{n}_k{k}_{tag}'
-            outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}")
+            outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
             while os.path.exists(outdir):
                 run += 1
-                outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}")
+                outdir = os.path.join(path_to_nn_runs, f"{outdirname}_run{run}/")
         else:
-            outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}")
+            outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}/")
             while os.path.exists(outdir):
                 run += 1
-                outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}")
+                outdir = os.path.join(path_to_nn_runs, f"{args.out}_run{run}/")
         os.makedirs(outdir, exist_ok=True)
         # Configure the logger
         logging.basicConfig(
@@ -396,7 +396,11 @@ def main():
     X_idx = []
     X_excl_idx = []
     X_excl_true_unseen_idx = [] #idx of the truly unseen pairs on excluded sets runs.
+    #exclude_bact_characters = ["_reoriented", "_merged", "_KMC"]
     for bact in tqdm(bacteria_names, desc="Building dataset"):
+        if bact.endswith("_KMC"):
+            bact = bact.replace("_KMC", "")
+
         # Exclusion logic
         if args.exclude_noninteractions and not any(host_range_data.get(bact, {}).values()):
             continue
@@ -1116,7 +1120,7 @@ def main():
             interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bact_minhash_data=bact_minhash_data, subset=args.subset_pfi)
             if interaction_pairs is None:
                 pfi_failed = True
-                logging.error(f"PFI analysis failed during interaction pair construction.\nCheck if test species interact.")
+                logging.error(f"PFI analysis failed during interaction pair construction - Check if test species interact.")
             elif args.logging: logging.info(f'Constructed interaction pairs and saved to {pfi_analyzer.outfile_pfi}')
         
         if hash_lookup is None and pfi_failed == False:
