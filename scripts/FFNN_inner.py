@@ -834,6 +834,7 @@ def main():
     probabilities = expit(logits).flatten()
     predicted_classes = (probabilities >= 0.5).astype(int)
     cm = confusion_matrix(true_labels, predicted_classes) # Calculate the confusion matrix
+    logging.info(f'\n--- Confusion Matrix ---\n{cm}')
     # Interpretation:
     # cm[0, 0]: True Negatives (TN)
     # cm[0, 1]: False Positives (FP)
@@ -938,9 +939,9 @@ def main():
                 logging.info(f'{line}')
             best_tp_df.to_csv(outdir+"best_predictions.csv", sep=";")
         
-            plot_entity_counts(best_tp_df, 'Phage_Name', outdir = outdir, logging_on = args.logging)
-            plot_entity_counts(best_tp_df, 'Bacterium_Name', outdir = outdir, logging_on = args.logging)
-            plot_bipartite_network(best_tp_df, id_lookup_bact, outdir = outdir, logging_on = args.logging, limit=50, conf_threshold=0.5)
+            plot_entity_counts(best_tp_df, 'Phage_Name', outdir = outdir, logging = args.logging)
+            plot_entity_counts(best_tp_df, 'Bacterium_Name', outdir = outdir, logging = args.logging)
+            plot_bipartite_network(best_tp_df, id_lookup_bact, outdir = outdir, logging = args.logging, limit=50, conf_threshold=0.5)
 
     except Exception as e:
         if args.logging:
@@ -950,7 +951,7 @@ def main():
     probs = test_probs.flatten().cpu().numpy() if hasattr(test_probs, "cpu") else test_probs.flatten()
     y_true = y_test.flatten()  # already numpy
     if args.logging:
-        f1_analysis(y_true, probs, logging=args.logging, outdir = outdir, logfile=logfile)
+        f1_analysis(y_true, probs, logging_on=args.logging, outdir = outdir, logfile=logfile)
 
     ### Apply phage & bact to hostrange ###
     # Apply each phage & bacteria pair to the trained model and save predictions
@@ -1140,7 +1141,7 @@ def main():
 
         if args.use_encoded and hash_lookup is not None and pfi_failed == False: #can only regain string kmers from hash, if lookup dict has been made
             #plot_interaction_pairs(interaction_pairs, occurence_pairs, hash_lookup, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
-            plot_interaction_pairs(interaction_pairs, occurence_pairs, expected_interactions, hash_lookup, hk_translation_dict, sort_by_ratio=True, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
+            plot_interaction_pairs(interaction_pairs, occurence_pairs, expected_interactions, hash_lookup, hk_translation_dict, sort_by_ratio=True, logging_on=args.logging, outdir=outdir, bact_clusters=bact_clusters)
 
             # Filter idx_to_minhash to only include the top X interaction pairs
             top_pairs = sorted(interaction_pairs.items(), key=lambda x: x[1], reverse=True)[:args.top_kmers_num] # Get top {args.top_kmers_num} pairs by interaction score
@@ -1156,7 +1157,7 @@ def main():
                 top_indices = [idx for idx, mh in filtered_idx_to_minhash.items()]
                 regain_kmers_out = regain_kmers(k=k, n=n, prefix=prefix, sourmash=sourmash_used, top_n=args.top_kmers_num, 
                                                 idx_to_minhash=filtered_idx_to_minhash, mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
-                                                logging=args.logging, logfile=logfile)
+                                                logging_on=args.logging, logfile=logfile)
                 pfi_top_idx, pfi_top_vals, pfi_top_kmers_decoded = regain_kmers_out
                 if len(pfi_top_idx) == 0: 
                     pfi_failed = True
@@ -1200,7 +1201,7 @@ def main():
                 indices, vals, all_kmers_decoded = regain_kmers(k=k, sourmash=sourmash_used, top_n=100, 
                     idx_to_minhash=idx_to_minhash,
                     mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
-                    logging=args.logging, logfile=logfile)
+                    logging_on=args.logging, logfile=logfile)
                 if args.logging: logging.info(f'Decoded k-mers (subset): {[all_kmers_decoded[i] for i in range(5)]}')
                 kmers_entity_df = pd.DataFrame([
                     {
@@ -1216,7 +1217,7 @@ def main():
                 logging.error(f"Error during k-mer regaining for annotation: {e}")
 
         try:
-            GA = GeneAnalysisNCBI(logfile=logfile, logging=args.logging, outdir=outdir)
+            GA = GeneAnalysisNCBI(logfile=logfile, logging_on=args.logging, outdir=outdir)
             phage_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "phage"]
             bact_kmers_decoded_df = kmers_entity_df[kmers_entity_df["organism"] == "bacterium"]
 
