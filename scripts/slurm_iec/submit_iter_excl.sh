@@ -15,7 +15,7 @@ PHAGE_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_phage_clusters_n${N
 
 # ── 1. Enumerate every (bcluster, pcluster) pair and write a task-map file ───
 # Each line of the task map = one array task index → "bcluster_num pcluster_num"
-TASK_MAP="$ROOT_DIR/tmp/iter_excl_task_map.txt"
+TASK_MAP="$ROOT_DIR/tmp/iter_excl_task_map_${N}_${K}.txt"
 mkdir -p "$ROOT_DIR/tmp"
 rm -f "$TASK_MAP"
 

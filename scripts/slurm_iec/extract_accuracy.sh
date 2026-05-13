@@ -1,25 +1,10 @@
 #!/bin/bash
-# scripts/slurm_iec/ffnn_train_task.sh
-# One Slurm array task = one (bcluster, pcluster) training run.
-# Submitted by submit_iter_excl.sh — do not run directly.
-#
-#SBATCH --job-name=IterExclTrain
-#SBATCH --partition=gpu
-#SBATCH --nodes=1
-#SBATCH --mem=50G
-#SBATCH --cpus-per-task=25
-#SBATCH --gres=shard:1
-#SBATCH --time=01:00:00
-#SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/parallel_tmp/%A_%a-%x.out
-#SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/parallel_tmp/%A_%a-%x.err
-#SBATCH --mail-type=FAIL,ARRAY_TASKS
-#SBATCH --mail-user=s215045@student.dtu.dk
+# scripts/slurm_iec/extract_accuracy.sh
+# Extracts the final test accuracy from a completed training run and writes it to a file.
+# This is indepdentn of the pipeline
 
-set -euo pipefail
-
-# ── Configuration ─────────────────────────────────────────────────────────────
 N=500
-K=12
+K=18
 DOWNDIR="encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
@@ -48,22 +33,6 @@ phage_strains=$(tail -n +2 "$PHAGE_CLUSTER_FILE" \
 
 echo "Bact strains  : $bact_strains"
 echo "Phage strains : $phage_strains"
-
-# ── Training run ──────────────────────────────────────────────────────────────
-CUSTOM_OUT="$CUSTOM_PARENT_DIR/cluster_b${bcluster_num}_p${pcluster_num}"
-
-
-python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
-    --nk $N $K \
-    --cv \
-    --kf_n_splits 4 \
-    --exclude_clusters \
-    --exclude_bact_clusters $bact_strains \
-    --exclude_phage_clusters $phage_strains \
-    --test_on_excluded \
-    --perform_pfi \
-    --out "$CUSTOM_OUT" \
-    --logging
 
 # ── Extract and persist accuracy for this pair ────────────────────────────────
 # Write to a per-pair file so the post-processing job can gather them all

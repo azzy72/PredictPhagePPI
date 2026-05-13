@@ -16,10 +16,11 @@
 #SBATCH --mail-user=s215045@student.dtu.dk
 
 set -euo pipefail
-
+N=500
+K=12
 ROOT_DIR=$(git rev-parse --show-toplevel)
-DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI_parallel/"
-ACC_DIR="$ROOT_DIR/tmp/accuracies_par"
+DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI_parallel_n${N}_k${K}"
+ACC_DIR="$ROOT_DIR/tmp/accuracies_n${N}_k${K}"
 
 # ── 3. Post-Processing: Average Accuracies ────────────────────────────────────
 echo "-------------------------------------------------------"

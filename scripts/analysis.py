@@ -7,6 +7,7 @@
 import pandas as pd
 from pathlib import Path
 import os
+import logging
 import json
 from Bio.Blast import NCBIWWW, NCBIXML
 from Bio import Entrez, SeqIO
@@ -28,7 +29,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.metrics import precision_score, recall_score, f1_score, classification_report, precision_recall_curve, average_precision_score, confusion_matrix
 from time import time, sleep
-from datetime import datetime
 from datetime import datetime
 import networkx as nx
 from scipy.cluster.hierarchy import linkage
@@ -257,21 +257,24 @@ def plot_losses(train_losses, valid_losses, n_epochs, title=None):
         fig.suptitle(title)
     fig.show()
 
-def f1_analysis(y_true, y_probs, logging : bool, outdir = None, logfile = None, filename = None, silent = False):
+def f1_analysis(y_true, y_probs, logging_on : bool, outdir = None, logfile = None, filename = None, silent = False):
     # Baseline at 0.5
     pred_05 = (y_probs >= 0.5).astype(int)
     prec_05 = precision_score(y_true, pred_05, zero_division=0)
     rec_05 = recall_score(y_true, pred_05, zero_division=0)
     f1_05 = f1_score(y_true, pred_05, zero_division=0)
-    if outdir is not None and logging:
-        if logfile is None:
-            logfile = open(outdir + 'f1_analysis_log.txt', 'a')
-            print("New logfile create at F1 analysis!")
-    elif outdir is None and logging:
+    if outdir is not None and logging_on:
+        logging.basicConfig(
+            level=logging.INFO,
+            filename=os.path.join(outdir,'f1_analysis_log.txt'),
+            filemode='w', # 'a' for append, 'w' for overwrite
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        print("New logfile create at F1 analysis!")
+    elif outdir is None and logging_on:
         raise ValueError("Please specify an outdir when logging is on")
 
     print(f"Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}")
-    if logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}', file=logfile)
+    if logging_on: logging.info(f'Baseline (threshold=0.5) -> Precision: {prec_05:.4f}, Recall: {rec_05:.4f}, F1: {f1_05:.4f}')
 
     # Sweep thresholds to find best F1
     thresholds = np.linspace(0.0, 1.0, 201)
@@ -294,30 +297,29 @@ def f1_analysis(y_true, y_probs, logging : bool, outdir = None, logfile = None, 
     best_rec = recs[best_idx]
 
     print(f"Best threshold by F1 -> threshold={best_t:.3f}, Precision={best_prec:.4f}, Recall={best_rec:.4f}, F1={best_f1:.4f}")
-    if logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Best threshold by F1 -> threshold={best_t:.3f}, Precision={best_prec:.4f}, Recall={best_rec:.4f}, F1={best_f1:.4f}', file=logfile)
+    if logging_on: logging.info(f'Best threshold by F1 -> threshold={best_t:.3f}, Precision={best_prec:.4f}, Recall={best_rec:.4f}, F1={best_f1:.4f}')
 
     # Classification report at best threshold
     best_preds = (y_probs >= best_t).astype(int)
     report = classification_report(y_true, best_preds, zero_division=0)
-    print("\nClassification report at best threshold:\n", report)
-    if logging: 
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Classification report at best threshold:', file=logfile)
+    if logging_on: 
+        logging.info(f'Classification report at best threshold:')
         for line in report.splitlines():
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {line}', file=logfile)
+            logging.info(f'{line}')
 
     # Average precision (area under PR curve)
     precision_curve, recall_curve, pr_thresholds = precision_recall_curve(y_true, y_probs)
     avg_prec = average_precision_score(y_true, y_probs)
     print(f"Average precision (AP): {avg_prec:.4f}")
-    if logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Average precision (AP): {avg_prec:.4f}', file=logfile)
+    if logging_on: logging.info(f'Average precision (AP): {avg_prec:.4f}')
 
     # Confusion matrix at best threshold
     cm = confusion_matrix(y_true, best_preds)
     print("Confusion matrix (rows=true, cols=pred):\n", cm)
-    if logging: 
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Confusion matrix:', file=logfile)
+    if logging_on: 
+        logging.info(f'Confusion matrix:')
         for i in range(cm.shape[0]):
-            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {cm[i]}', file=logfile)
+            logging.info(f'{cm[i]}')
 
     # Plots: F1 vs threshold and Precision-Recall curve
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -337,18 +339,18 @@ def f1_analysis(y_true, y_probs, logging : bool, outdir = None, logfile = None, 
     axes[1].grid(True)
 
     plt.suptitle(f'F1 analysis (best t={best_t:.3f}, F1={best_f1:.4f})')
-    if logging: 
+    if logging_on: 
         if filename is None: 
             outname = 'torchMLP_f1_analysis.png'
         else:
             outname = filename
         plt.savefig(outdir + outname, bbox_inches='tight')
-        print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} F1 analysis figure saved as: {outdir+outname}', file=logfile)
+        logging.info(f'F1 analysis figure saved as: {outdir+outname}')
 
     # if silent is False:
     #     plt.show()
 
-def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging : bool, outdir: str = None,):
+def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging_on : bool, outdir: str = None,):
     """
     Counts the occurrences of an entity column in the DataFrame and plots 
     the result as a sorted horizontal bar graph.
@@ -357,12 +359,12 @@ def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging : bool, out
         outdir: path to out directory for saving
         df: The DataFrame containing the True Positive results.
         entity_column: The name of the column to count (e.g., 'Phage_Name').
-        logging: Whether to save logs and plots
-    
+        logging_on: Whether to save logs and plots
+
     Returns: 
         None (displays and saves the plot)
     """
-    if outdir is None and logging:
+    if outdir is None and logging_on:
         raise ValueError("Please specify an outdir when logging is on")
 
     # 1. Count the occurrences of each unique entity
@@ -399,7 +401,7 @@ def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging : bool, out
     plt.tight_layout()
     
     # Optional: Save the figure
-    if logging:
+    if logging_on:
         if 'Phage' in entity_column:
             plt.savefig(outdir + 'phage_tp_counts.png')
         else:
@@ -407,7 +409,7 @@ def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging : bool, out
     
     ##plt.show()
 
-def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, logging : bool, outdir: str = None, limit: int = 50, conf_threshold=0.5):
+def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, logging_on : bool, outdir: str = None, limit: int = 50, conf_threshold=0.5):
     """
     Creates and plots a bipartite network graph of Phage-Bacterium True Positive 
     interactions, weighted by predicted probability, with bacterial nodes 
@@ -416,14 +418,14 @@ def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, loggi
     Args:
         df: DataFrame containing 'Bacterium_Name', 'Phage_Name', and 'Predicted_Probability' (sorted by confidence).
         id_lookup_bact: DataFrame with Bacterium metadata ('Bacterium_Name', 'Species').
-        logging: Whether to save logs and plots
+        logging_on: Whether to save logs and plots
         limit: The maximum number of interactions to include in the plot.
         conf_threshold: Minimum predicted probability to include an interaction in the plot.
     
     Returns: 
         None (displays and saves the plot)
     """
-    if outdir is None and logging:
+    if outdir is None and logging_on:
         raise ValueError("Please specify an outdir when logging is on")
 
     # 1. Prepare Data and Subsample
@@ -549,7 +551,7 @@ def plot_bipartite_network(df: pd.DataFrame, id_lookup_bact: pd.DataFrame, loggi
 
     plt.axis('off')
     plt.tight_layout()
-    if logging: plt.savefig(outdir + f'bipartisan_conf_interactions_p{conf_threshold}.png') 
+    if logging_on: plt.savefig(outdir + f'bipartisan_conf_interactions_p{conf_threshold}.png') 
     ###plt.show()
 
 def model_idx_to_kmer(idx, num_features_per_entity, feature_indices, idx_to_minhash):
@@ -561,7 +563,7 @@ def model_idx_to_kmer(idx, num_features_per_entity, feature_indices, idx_to_minh
 
 def regain_kmers(k: int, n: int, prefix : str, sourmash: bool, top_n: int = 20, idx_to_minhash: dict = None, 
                  mapping_func=None, mapping_args=None, attributions=None, 
-                 TS: bool = False, logging: bool = False, logfile=None):
+                 TS: bool = False, logging_on: bool = False, logfile=None):
     """
     Standalone function to regain original k-mer features corresponding to top feature indices.
     
@@ -589,7 +591,7 @@ def regain_kmers(k: int, n: int, prefix : str, sourmash: bool, top_n: int = 20, 
         if TS: 
             print(f"Top {top_n} indices:", top_idx)
             print("Mean attributions:", top_vals)
-        if logging and logfile: 
+        if logging_on and logfile: 
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top {top_n} indices: {top_idx}', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Mean attributions: {top_vals}', file=logfile)
 
@@ -625,7 +627,7 @@ def regain_kmers(k: int, n: int, prefix : str, sourmash: bool, top_n: int = 20, 
         if TS: 
             print("Decoded kmers mapping:", decoded_kmers_dict)
         
-        if logging and logfile: 
+        if logging_on and logfile: 
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Decoded kmers: {decoded_kmers_dict}', file=logfile)
     
     return top_idx, top_vals, decoded_kmers_dict
@@ -641,7 +643,7 @@ def get_strain_name(hash_value, hash_lookup):
     return str(hash_value)
 
 def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expected_interactions: dict, hash_lookup: dict, hk_translation_dict: dict,
-                           sort_by_ratio: bool = False, logging : bool = False, outdir: str = None, bact_clusters: pd.DataFrame = None):
+                           sort_by_ratio: bool = False, logging_on : bool = False, outdir: str = None, bact_clusters: pd.DataFrame = None):
 
     # Divide interaction score by occurrence count
     interaction_ratio_pairs = {
@@ -744,7 +746,7 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
                 for label in g.ax_heatmap.get_yticklabels():
                     label.set_color("black")
 
-            if logging and outdir:
+            if logging_on and outdir:
                 plt.savefig(os.path.join(outdir, 'interaction_pairs_clustermap.png'))
             print("Clustermap plotted successfully: interaction_pairs_clustermap.png")
 
@@ -765,7 +767,7 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
         plt.yticks(fontsize=6)
         plt.tight_layout()
 
-        if logging and outdir:
+        if logging_on and outdir:
             graph_name = 'interaction_pairs_sorted.png' if sort_by_ratio else 'interaction_pairs.png'
             plt.savefig(os.path.join(outdir, graph_name))
         print(f"Heatmap plotted successfully: {graph_name}")
@@ -795,7 +797,7 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
         plt.yticks(fontsize=6)
         plt.tight_layout()
 
-        if logging and outdir:
+        if logging_on and outdir:
             graph_name = 'interaction_pairs_sorted_scaled.png' if sort_by_ratio else 'interaction_pairs_scaled.png'
             plt.savefig(os.path.join(outdir, graph_name))
         print(f"Scaled heatmap plotted successfully: {graph_name}")
@@ -803,7 +805,7 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
         print(f"Error creating scaled heatmap: {e}")
 
 class FeatureImportance():
-    def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging : bool, TS : bool = False):
+    def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging_on : bool, TS : bool = False):
         self.raw_data_path = raw_data_path
         self.data_prod_path = data_prod_path
         self.model = model
@@ -815,10 +817,10 @@ class FeatureImportance():
         self.host_range_data = host_range_data
         self.TS = TS
         self.pca_prepped = False
-        self.logging = logging
+        self.logging = logging_on
         self.logfile = logfile
 
-        if outdir is None and logging:
+        if outdir is None and logging_on:
             self.logging = False
             if self.TS: print("Logging turned off as no outdir was given!")
         
@@ -1298,13 +1300,13 @@ class GeneAnalysis():
 
 
 class GeneAnalysisNCBI():
-    def __init__(self, logfile, logging : bool, outdir : str):
+    def __init__(self, logfile, logging_on : bool, outdir : str):
         self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/"
         self.raw_data_path = os.path.join(self.root, "raw_data/")
         self.data_prod_path = os.path.join(self.root, "data_prod/")
         self.path_to_nn_runs = os.path.join(self.root, "nn_runs/")
         self.logfile = logfile
-        self.logging = logging
+        self.logging = logging_on
         self.outdir = outdir
 
         # Load kmer annotations from CSV into a dictionary for quick lookup

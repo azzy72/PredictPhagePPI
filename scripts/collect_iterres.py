@@ -5,6 +5,7 @@ import re
 import ast
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, BoundaryNorm
 import seaborn as sns
 import numpy as np
 import argparse
@@ -13,7 +14,6 @@ from datetime import datetime
 from paths import data_prod_path, path_to_nn_runs
 from analysis import GeneAnalysis
 outdir_default = data_prod_path + "iterExclClus/"
-print(path_to_nn_runs)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Metric Extraction Script")
@@ -109,26 +109,53 @@ def extract_metrics_from_log(file_path):
             print(f"Error parsing single-line Params in {file_path}: {e}")
             return None
     else:
-        # New format: multiline key-value block after "Params:"
-        block_match = re.search(
-            r"^Params:\s*\n(.*?)(?:^\s*#+\s*$|\n\s*\n)",
-            content,
-            re.MULTILINE | re.DOTALL
-        )
+        # New format: logger-prefixed multiline key-value block after "Params:"
+        # Example lines:
+        # 2026-05-12 ... - root - INFO - Params:
+        # 2026-05-12 ... - root - INFO -   nk: [500, 12]
+        params_dict = {}
+        lines = content.splitlines()
+        params_start = None
 
-        if not block_match:
+        for i, line in enumerate(lines):
+            if re.search(r"\bParams:\s*$", line):
+                params_start = i
+                break
+
+        if params_start is None:
             print(f"Could not find Params section in {file_path}")
             return None
 
-        params_dict = {}
-        for line in block_match.group(1).splitlines():
+        param_line_re = re.compile(
+            r"^(?:.*?\s-\sINFO\s-\s*)?(?P<key>[A-Za-z0-9_]+):\s*(?P<value>.*)$"
+        )
+
+        for line in lines[params_start + 1:]:
             stripped = line.strip()
-            if not stripped or ':' not in stripped:
+
+            # Stop at the first non-parameter line after the Params block begins.
+            if not stripped:
+                if params_dict:
+                    break
                 continue
 
-            key, value_str = stripped.split(':', 1)
-            key = key.strip()
-            value_str = value_str.strip()
+            match = param_line_re.match(line)
+            if not match:
+                if params_dict:
+                    break
+                continue
+
+            key = match.group('key').strip()
+            value_str = match.group('value').strip()
+
+            # Some logger formats may leave the key/value in the tail of the line
+            # after the final " - INFO - " segment, so try that fallback too.
+            if not key or key.lower() == 'info':
+                tail = line.split(' - INFO - ', 1)[-1].strip()
+                tail_match = re.match(r"(?P<key>[A-Za-z0-9_]+):\s*(?P<value>.*)$", tail)
+                if tail_match:
+                    key = tail_match.group('key').strip()
+                    value_str = tail_match.group('value').strip()
 
             if value_str == "":
                 params_dict[key] = None
@@ -139,6 +166,10 @@ def extract_metrics_from_log(file_path):
             except Exception:
                 # Keep plain (unquoted) strings as-is
                 params_dict[key] = value_str
+
+        if not params_dict:
+            print(f"Could not parse any Params entries in {file_path}")
+            return None
 
     try:
         # Preferred format: 'nk': [n, k]
@@ -177,22 +208,50 @@ def extract_metrics_from_log(file_path):
         metrics['unseen_test_balanced_accuracy'] = correct_deci_number(unseen_ba_match.group(1))
 
     # Extract Baseline Metrics (Precision, Recall, F1) [cite: 29]
+    # Try legacy format first
     base_metrics = re.search(r"Baseline .* Precision:\s+([\d.]+),\s+Recall:\s+([\d.]+),\s+F1:\s+([\d.]+)", content)
     if base_metrics:
         metrics['precision'] = correct_deci_number(base_metrics.group(1))
         metrics['recall'] = correct_deci_number(base_metrics.group(2))
         metrics['f1'] = correct_deci_number(base_metrics.group(3))
+    else:
+        # Try new format: "Best threshold by F1 -> ..., Precision=..., Recall=..., F1=..."
+        best_threshold = re.search(
+            r"Best threshold by F1.*?Precision=([\d.]+),\s*Recall=([\d.]+),\s*F1=([\d.]+)",
+            content,
+            re.DOTALL
+        )
+        if best_threshold:
+            metrics['precision'] = correct_deci_number(best_threshold.group(1))
+            metrics['recall'] = correct_deci_number(best_threshold.group(2))
+            metrics['f1'] = correct_deci_number(best_threshold.group(3))
 
     # Extract Confusion Matrix components [cite: 31]
-    # Log format: [TN FN] \n [FP TP]
-    cm_pattern = r"Confusion matrix:.*?\[\s*(\d+)\s+(\d+)\s*\].*?\[\s*(\d+)\s+(\d+)\s*\]"
-    cm_match = re.search(cm_pattern, content, re.DOTALL)
+    # New format: --- Confusion Matrix --- with [[TN FP] [FN TP]]
+    cm_array_match = re.search(
+        r"--- Confusion Matrix ---\s*\[\[\s*(\d+)\s+(\d+)\s*\]\s*\[\s*(\d+)\s+(\d+)\s*\]\s*\]",
+        content,
+        re.DOTALL
+    )
+    if cm_array_match:
+        metrics['TN'] = int(cm_array_match.group(1))
+        metrics['FP'] = int(cm_array_match.group(2))
+        metrics['FN'] = int(cm_array_match.group(3))
+        metrics['TP'] = int(cm_array_match.group(4))
+    else:
+        # Try legacy format: [TN FN] \n [FP TP]
+        cm_pattern = r"Confusion matrix:.*?\[\s*(\d+)\s+(\d+)\s*\].*?\[\s*(\d+)\s+(\d+)\s*\]"
+        cm_match = re.search(cm_pattern, content, re.DOTALL)
+        if cm_match:
+            metrics['TN'] = int(cm_match.group(1))
+            metrics['FN'] = int(cm_match.group(2))
+            metrics['FP'] = int(cm_match.group(3))
+            metrics['TP'] = int(cm_match.group(4))
     
-    if cm_match:
-        metrics['TN'] = int(cm_match.group(1))
-        metrics['FN'] = int(cm_match.group(2))
-        metrics['FP'] = int(cm_match.group(3))
-        metrics['TP'] = int(cm_match.group(4))
+    if "ERROR - No positive values in test" in content:
+        metrics['status'] = False
+    else:
+        metrics['status'] = True
 
     return metrics
 
@@ -264,8 +323,18 @@ class MetricPlottingUtils:
         df['recall'] = pd.to_numeric(df['recall'])
         df['f1'] = pd.to_numeric(df['f1'])
         df['folder'] = df['folder'].astype(str).str.replace(r'_run\d+$', '', regex=True)
+        df['status'] = df['status'].apply(lambda x: 'passed' if x else 'failed')
+        
+        try:
+            df['b_value'] = df['folder'].str.extract(r"b(\d+)")[0]
+            df['p_value'] = df['folder'].str.extract(r"p(\d+)")[0]
+        except Exception as e:
+            print(f"Error extracting b_value and p_value from folder names: {e}")
+            df['b_value'] = None
+            df['p_value'] = None
 
         self.outdir = outdir
+        self.failed_runs_flag = False
 
         # Automatically detect if all runs have the same 'n' and 'k' values
         self.singular_n = False
@@ -318,6 +387,12 @@ class MetricPlottingUtils:
                 df = df.sort_values("cluster_id")
         
         self.df = df
+
+        if "failed" in self.df['status'].values:
+            print("Warning: Some runs have failed! Count: ", (self.df['status'] == 'failed').sum())
+            self.df_all = self.df.copy()
+            self.df = self.df[self.df['status'] == 'passed']
+            self.failed_runs_flag = True
 
         print(f"Dataframe length: {len(self.df)}. Recognized metrics:")
         for col in self.df.columns:
@@ -411,6 +486,33 @@ class MetricPlottingUtils:
         plt.savefig(outpath)
         print(f"Saved: {outpath}")
 
+    def _plot_bp_heatmap(self, title_suffix=""):
+        # Calculate success rate for each combination
+        heatmap_data = self.df_all.groupby(['b_value', 'p_value'])['status'].value_counts(normalize=True).unstack().fillna(0)
+        # We only care about the 'passed' percentage
+        passed_rate = heatmap_data['passed'].unstack()
+
+        plt.figure(figsize=(10, 8))
+        cmap = ListedColormap(["#D4840DE8", "#2E78E0D9"])  # muted orange, muted blue
+        norm = BoundaryNorm([-0.5, 0.5, 1.5], cmap.N)
+
+        sns.heatmap(
+            passed_rate,
+            annot=True,
+            fmt=".0f",
+            cmap=cmap,
+            norm=norm,
+            cbar_kws={"label": "Success Rate", "ticks": [0, 1]}
+        )
+
+        plt.title("Success Rate by Phage and Bacterial Clusters")
+        plt.xlabel("Phage Clusters")
+        plt.ylabel("Bacterial Clusters")
+        plt.tight_layout()
+        plt.savefig(self.outdir + 'bp_cluster_heatmap.png', dpi=300)
+        plt.close() # Close to free up memory
+        print("Saved: bp_cluster_heatmap.png")
+
     def plot_graphs(self):
         # --- Graph 1: Grouped Accuracy Bar Chart (X=n, Hue=k) ---
         self._plot_bars(
@@ -479,6 +581,11 @@ class MetricPlottingUtils:
         plt.savefig(self.outdir + 'averaged_confusion_matrix.png')
         print("Saved: averaged_confusion_matrix.png")
 
+        # --- Graph 8: Heatmap of success rate by bacterial and phage clusters ---
+        if self.failed_runs_flag:
+            self._plot_bp_heatmap(title_suffix=self.title_suffix)
+
+
 def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=None, group_x_col=None, group_hue_col=None):
     all_data = []
     top_kmers_df = pd.DataFrame() # Placeholder top_kmers_csv file
@@ -505,14 +612,14 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         if os.path.isdir(folder_path):
             # Search for log files in this specific run folder
             for file in os.listdir(folder_path):
+                # Find failed runs and sort them
 
                 # Extract metrics from log files 
-                if file.endswith(".txt") or file.endswith(".log"):
+                if file.endswith(".txt") and "log_run" in file.lower():
                     log_path = os.path.join(folder_path, file)
                     metrics = extract_metrics_from_log(log_path)
-                    if metrics and metrics['test_accuracy'] is not None:
-                        metrics['folder'] = folder_name
-                        all_data.append(metrics)
+                    metrics['folder'] = folder_name
+                    all_data.append(metrics)
 
                 # Extract top kmers from pair_kmers.csv files
                 elif file.endswith("pair_kmers.csv"):
