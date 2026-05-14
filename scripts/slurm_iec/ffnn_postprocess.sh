@@ -3,7 +3,7 @@
 # Aggregates results from all training tasks and runs collect_iterres.py.
 # Submitted by submit_iter_excl.sh with --dependency=afterok:<array_job_id>.
 # Do not run directly until all training tasks have finished.
-#
+
 #SBATCH --job-name=IterExclPostProc
 #SBATCH --partition=cpu      # no GPU needed here — adjust to your cluster
 #SBATCH --nodes=1
@@ -19,6 +19,7 @@ set -euo pipefail
 N=500
 K=12
 ROOT_DIR=$(git rev-parse --show-toplevel)
+DATA_DIR="$ROOT_DIR/data_prod"
 DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI_parallel_n${N}_k${K}"
 ACC_DIR="$ROOT_DIR/tmp/accuracies_n${N}_k${K}"
 
@@ -33,10 +34,7 @@ accuracies=$(cat "$ACC_DIR"/*.txt 2>/dev/null || true)
 if [[ -z "$accuracies" ]]; then
     echo "WARNING: no accuracy files found in $ACC_DIR — skipping average."
 else
-    average=$(echo "$accuracies" | awk '
-        NF > 0 { sum += $1; count++ }
-        END     { if (count > 0) print sum / count; else print "0" }
-    ')
+    average=$(echo "$accuracies" | awk 'NF > 0 { sum += $1; count++ } END { if (count > 0) print sum / count; else print "0" }')
     total_runs=$(echo "$accuracies" | grep -c '[0-9]' || true)
 
     echo "Total Runs Analyzed:        $total_runs"
@@ -46,4 +44,4 @@ fi
 # ── 4. Collecting results ─────────────────────────────────────────────────────
 echo ""
 echo "📊 Collecting results..."
-python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUN"
+python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUN" --out_dir "$DATA_DIR/iterExclClus_n${N}_k${K}/" --show_cm_bar_percentage

@@ -2,7 +2,7 @@
 # scripts/slurm_iec/ffnn_train_task.sh
 # One Slurm array task = one (bcluster, pcluster) training run.
 # Submitted by submit_iter_excl.sh — do not run directly.
-#
+
 #SBATCH --job-name=IterExclTrain
 #SBATCH --partition=gpu
 #SBATCH --nodes=1

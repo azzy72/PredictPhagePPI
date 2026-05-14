@@ -39,10 +39,8 @@ def parse_arguments():
 
     # Parameters: Mutual exclusivity for n/k vs specific bn/bk/pn/pk
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--nk", nargs=2, type=int, metavar=('N', 'K'), default=(500, 12),
-                        help="Unified n and k values (e.g., -nk 500 12)")
-    group.add_argument("--split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'),
-                        help="Split values for Bact (n, k) and Phage (n, k)")
+    group.add_argument("--nk", nargs=2, type=int, metavar=('N', 'K'), default=(500, 12), help="Unified n and k values (e.g., -nk 500 12)")
+    group.add_argument("--split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'), help="Split values for Bact (n, k) and Phage (n, k)")
 
     # Data Source
     parser.add_argument("--use_encoded", action="store_true", help="Use encoded_sketches instead of SM_sketches")
@@ -51,22 +49,14 @@ def parse_arguments():
     parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
     parser.add_argument("--sbatch_id", type=str, help="(Optional) sbatch job ID to include in output directory name for easier tracking")
 
-    # Flags
+    # Analysis Options
     parser.add_argument("--logging", action="store_true", help="Enable logging and saving")
-    parser.add_argument("--cv", action="store_true", help="Enable cross-validation")
-    parser.add_argument("--kf_n_splits", type=int, default=4, help="Number of folds for K-Fold CV")
-    parser.add_argument("--smote", action="store_true", help="Apply SMOTE oversampling")
-    parser.add_argument("--train_by_cluster", action="store_true", help="Split data by bacterial clusters")
-    parser.add_argument("--no_randomize", action="store_false", dest="randomize", help="Disable entity randomization")
-    parser.add_argument("--no_shuffle", action="store_false", dest="shuffle", help="Disable feature shuffling")
-    parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
     parser.add_argument("--perform_fi", action="store_true", help="Perform feature importance analysis")
     parser.add_argument("--perform_pfi", action="store_true", help="Perform pairwise feature importance analysis")
+    parser.add_argument("--perform_pfi_full", action="store_true", help="Perform pairwise feature importance analysis on all features, and not just the test dataset features")
     parser.add_argument("--perform_ga", action="store_true", help="Perform gene analysis on top features")
     parser.add_argument("--run_ga_on_pfi", action="store_true", help="Run gene analysis on top features from pairwise feature importance analysis, rather than the standard feature importance analysis")
     parser.add_argument("--reconstruct_gene_annotation", action="store_true", help="Reconstruct gene annotations from GeneAnalysisNCBI, rather than loading them from a file from a previous run.")
-    parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
-    parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
     parser.add_argument("--subset_pfi", type=int, help="Number of top features to include in pairwise feature importance analysis (set to 0 or a negative number to include all features)")
     parser.add_argument("--force_pfi_recalculation", action="store_true", help="Force recalculation of pairwise feature importance even if the output file already exists. This can be useful if you have changed the subset_pfi parameter or made changes to the code that calculates feature importance and want to ensure that the pairwise feature importance is recalculated with the new logic.")
 
@@ -80,9 +70,19 @@ def parse_arguments():
     parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="Array of bacterial strains to exclude in a cluster like manner")
     parser.add_argument("--exclude_phage_clusters", nargs='+', default=[], help="Array of phage strains to exclude in a cluster like manner")
     parser.add_argument("--cluster_by_genus", action="store_true", help="Cluster by genus instead of a pre-defined cluster file. This is a more extreme exclusion strategy that may be useful to test the model's ability to generalize to completely unseen genera.")
-    
     parser.add_argument("--test_on_excluded", action="store_true", help="Test the model on the excluded pairs/clusters and not a test split from the main dataset")
+    parser.add_argument("--test_on_unseen", action="store_true", help="Test the model with analysis on completely unseen data, rather than partially unseen")
 
+    # Model
+    parser.add_argument("--cv", action="store_true", help="Enable cross-validation")
+    parser.add_argument("--kf_n_splits", type=int, default=4, help="Number of folds for K-Fold CV")
+    parser.add_argument("--smote", action="store_true", help="Apply SMOTE oversampling")
+    parser.add_argument("--train_by_cluster", action="store_true", help="Split data by bacterial clusters")
+    parser.add_argument("--no_randomize", action="store_false", dest="randomize", help="Disable entity randomization")
+    parser.add_argument("--no_shuffle", action="store_false", dest="shuffle", help="Disable feature shuffling")
+    parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
+    parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
+    parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
 
     # Hyperparameters
     parser.add_argument("--n_epochs", type=int, default=50)
@@ -146,6 +146,10 @@ def parse_arguments():
     if args.run_ga_on_pfi and not args.perform_pfi:
         print("WARNING: --run_ga_on_pfi will be ignored because --perform_pfi is not set. It doesn't make sense to run gene analysis on pairwise feature importance if we're not performing feature importance analysis at all.", file=sys.stderr)
         args.run_ga_on_pfi = False
+    
+    # Reequirement: if --perform_pfi_full is True, then --perform_pfi must also be True.
+    if args.perform_pfi_full and not args.perform_pfi:
+        args.perform_pfi = True
 
     # # Modification: automatically set test_on_excluded to True if exclude_pairs or exclude_clusters is used, since it doesn't make sense to have a test split from the main dataset if the excluded pairs/clusters are not in the test set
     # if (args.exclude_pairs or args.exclude_clusters) and not args.test_on_excluded:
@@ -594,9 +598,9 @@ def main():
     # Training loop
     if args.cv:
         if args.logging: 
-            logging.debug(f'Train + Val size: {X_train_f.shape[0]} samples, Test size: {X_test.shape[0]} samples')
-            logging.debug(f'Fraction of positive interactions in train+val: {round(sum(y_train_f)/len(y_train_f)*100,2)}%')
-            logging.debug(f'Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%')
+            logging.info(f'Train + Val size: {X_train_f.shape[0]} samples, Test size: {X_test.shape[0]} samples')
+            logging.info(f'Fraction of positive interactions in train+val: {round(sum(y_train_f)/len(y_train_f)*100,2)}%')
+            logging.info(f'Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%')
 
 
         kf = KFold(n_splits=args.kf_n_splits, shuffle=True, random_state=42)
@@ -606,7 +610,7 @@ def main():
 
         for train_idx, val_idx in kf.split(X_train_f):
             print(f"Fold {fold}:")
-            if args.logging: logging.debug(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fold {fold}...')
+            if args.logging: logging.info(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fold {fold}...')
 
             # Split data into training and validation sets for this fold
             X_train_fold, X_val_fold = X_train_f[train_idx], X_train_f[val_idx]
@@ -666,18 +670,18 @@ def main():
 
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
                 if args.logging: 
-                    logging.debug(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}')
+                    logging.info(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}')
 
             fold += 1
         fold -= 1 # Adjust fold count after loop to reflect actual number of folds completed
     
     else:
         if args.logging: 
-            logging.debug(f'Train size: {X_train_f.shape[0]} samples, Val size: {X_val.shape[0] if X_val is not None else 0} samples, Test size: {X_test.shape[0]} samples')
-            logging.debug(f'Fraction of positive interactions in train: {round(sum(y_train_f)/len(y_train_f)*100,2)}%')
+            logging.info(f'Train size: {X_train_f.shape[0]} samples, Val size: {X_val.shape[0] if X_val is not None else 0} samples, Test size: {X_test.shape[0]} samples')
+            logging.info(f'Fraction of positive interactions in train: {round(sum(y_train_f)/len(y_train_f)*100,2)}%')
             if args.use_val:
-                logging.debug(f'Fraction of positive interactions in val: {round(sum(y_val)/len(y_val)*100,2)}%')
-            logging.debug(f'Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%')
+                logging.info(f'Fraction of positive interactions in val: {round(sum(y_val)/len(y_val)*100,2)}%')
+            logging.info(f'Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%')
 
         fold = 1 #used for n_epochs multiplier in later code
         # Convert to torch tensors
@@ -737,10 +741,10 @@ def main():
                     val_accuracies.append(val_acc)
 
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
-                if args.logging: logging.debug(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}')
+                if args.logging: logging.info(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}')
             else:
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}")
-                if args.logging: logging.debug(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}')
+                if args.logging: logging.info(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}')
     
     # Appropriating test and excluded sets
     X_test_t = torch.from_numpy(X_test).float().to(device)
@@ -934,14 +938,14 @@ def main():
         # 5. Save and Plot
         if args.logging:
             logging.info(f'\n--- Top True Positive Entries (Grouped by strain) ---')
-            logging.info(f'Total True Positives found in unseen test: {len(best_tp_df)}')
-            for line in best_tp_df.head(10):
-                logging.info(f'{line}')
+            logging.info(f'Predicted True Positives in unseen test: {sum(tp_predicted_probs)}')
+            logging.info(f'Actual True Positives in unseen test: {sum(tp_actual_scores)}')
+            logging.info(best_tp_df.head(10))
             best_tp_df.to_csv(outdir+"best_predictions.csv", sep=";")
         
-            plot_entity_counts(best_tp_df, 'Phage_Name', outdir = outdir, logging = args.logging)
-            plot_entity_counts(best_tp_df, 'Bacterium_Name', outdir = outdir, logging = args.logging)
-            plot_bipartite_network(best_tp_df, id_lookup_bact, outdir = outdir, logging = args.logging, limit=50, conf_threshold=0.5)
+            plot_entity_counts(best_tp_df, 'Phage_Name', outdir = outdir, logging_on = args.logging)
+            plot_entity_counts(best_tp_df, 'Bacterium_Name', outdir = outdir, logging_on = args.logging)
+            plot_bipartite_network(best_tp_df, id_lookup_bact, outdir = outdir, logging_on = args.logging, limit=50, conf_threshold=0.5)
 
     except Exception as e:
         if args.logging:
@@ -1030,7 +1034,7 @@ def main():
 
     # save and show a quick preview
     if args.logging:
-        logging.debug(f"Preview of ordered prediction matrix:\n{pred_matrix.head()}")
+        logging.info(f"Preview of ordered prediction matrix:\n{pred_matrix.head()}")
         outname = 'torchMLP_prediction_matrix_ordered.csv'
         pred_matrix.to_csv(outdir + outname)
         print(f"Saved ordered prediction matrix to {outdir + outname}")
@@ -1078,8 +1082,27 @@ def main():
         phage_minhash_data_full = phage_minhash_data.copy()
         bact_minhash_data_full = bact_minhash_data.copy()
         if args.exclude_clusters:
-            phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in args.exclude_phage_clusters}
-            bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in args.exclude_bact_clusters}
+            test_phages = exclude_phage_clusters_set
+            test_bacteria = exclude_bact_clusters_set
+        else:
+            if bact_first:
+                test_phages = set(metadata_test[:, 1]) # Assuming phage names are in the second column of metadata
+                test_bacteria = set(metadata_test[:, 0]) # Assuming bacteria names are in the first column of metadata
+            else:
+                test_phages = set(metadata_test[:, 0]) # Assuming phage names are in the first column of metadata
+                test_bacteria = set(metadata_test[:, 1]) # Assuming bacteria names are in the second column of metadata
+
+        # if args.exclude_clusters:
+        #     phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in args.exclude_phage_clusters}
+        #     bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in args.exclude_bact_clusters}
+        # else:
+        #     if bact_first:
+        #         phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in metadata_test[:, 1]} # Assuming phage names are in the second column of metadata
+        #         bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in metadata_test[:, 0]} # Assuming bacteria names are in the first column of metadata
+        #     else:
+        #         phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in metadata_test[:, 0]} # Assuming phage names are in the first column of metadata
+        #         bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in metadata_test[:, 1]} # Assuming bacteria names are in the second column of metadata
+        
         if args.logging: 
             print(f'Subsetted host range and minhash data to test set strains. Remaining bact strains: {len(host_range_data)}')
             print(f'Subsetted host range data: [{len(host_range_data)}x{len(next(iter(host_range_data.values())))}]')
@@ -1114,8 +1137,8 @@ def main():
                     logging.error(f"Error loading existing PFI results: {e}")
                     interaction_pairs = None
         else:
-            pfi_analyzer = calc_PFI(host_range_data=host_range_data, outdir=outdir, outname_pfi=out_pfi, pfi_objects_dir=pfi_objects_dir, logging=args.logging)
-            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data=phage_minhash_data, bact_minhash_data=bact_minhash_data, subset=args.subset_pfi)
+            pfi_analyzer = calc_PFI(host_range_data=host_range_data, test_on_unseen=args.test_on_unseen, outdir=outdir, outname_pfi=out_pfi, pfi_objects_dir=pfi_objects_dir, logging=args.logging)
+            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data, bact_minhash_data, test_phages, test_bacteria, args.subset_pfi)
             if interaction_pairs is None:
                 pfi_failed = True
                 logging.error(f"PFI analysis failed during interaction pair construction - Check if test species interact.")

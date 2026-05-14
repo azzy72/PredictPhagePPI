@@ -804,6 +804,160 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
     except Exception as e:
         print(f"Error creating scaled heatmap: {e}")
 
+
+class PFI_Lookup():
+    def __init__(self, hk_lookup_rev : dict, pfi_lookup : pd.DataFrame, TS : bool = False):
+        self.hk_lookup_rev = hk_lookup_rev
+        self.pfi_lookup = pfi_lookup
+        self.TS = TS
+        self._cache = {}  # Cache for k-mer -> PFI score mappings
+        self._prepared = False
+        self._phage_hash_set = None
+        self._bact_hash_set = None
+        self._prepare_lookup()  # Pre-process for faster lookups
+    
+    def _prepare_lookup(self):
+        """Pre-process pfi_lookup DataFrame for optimized lookups."""
+        if isinstance(self.pfi_lookup, pd.DataFrame) and {'phage_hash', 'bact_hash', 'expected_interaction'}.issubset(self.pfi_lookup.columns):
+            try:
+                # Create normalized copies of hash columns for fast lookups
+                self.pfi_lookup['_phage_hash_norm'] = self.pfi_lookup['phage_hash'].astype(str).str.strip()
+                self.pfi_lookup['_bact_hash_norm'] = self.pfi_lookup['bact_hash'].astype(str).str.strip()
+                
+                # Pre-convert expected_interaction to numeric
+                self.pfi_lookup['_expected_interaction_numeric'] = pd.to_numeric(
+                    self.pfi_lookup['expected_interaction'], errors='coerce'
+                ).fillna(0)
+                
+                # Create sets for O(1) membership checks
+                self._phage_hash_set = set(self.pfi_lookup['_phage_hash_norm'].unique())
+                self._bact_hash_set = set(self.pfi_lookup['_bact_hash_norm'].unique())
+                
+                self._prepared = True
+                if self.TS:
+                    print(f"  PFI lookup prepared: {len(self.pfi_lookup)} entries indexed for fast lookups.")
+            except Exception as e:
+                if self.TS:
+                    print(f"  Warning: Could not prepare PFI lookup: {e}")
+                self._prepared = False
+
+    def normalize_hash(self, value):
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return None
+        try:
+            if isinstance(value, (int, np.integer)):
+                return str(int(value))
+            if isinstance(value, float) and value.is_integer():
+                return str(int(value))
+        except Exception:
+            pass
+        return str(value).strip()
+
+    def get_pfi_sum(self, kmer):
+        if kmer is None or (isinstance(kmer, float) and np.isnan(kmer)):
+            if self.TS: print(f"Warning: K-mer value is None or NaN. Cannot retrieve PFI score.")
+            return None
+        
+        # Check cache first (O(1) lookup)
+        if kmer in self._cache:
+            return self._cache[kmer]
+        
+        hash_value = self.hk_lookup_rev.get(kmer)
+        if hash_value is not None:
+            hash_value = self.normalize_hash(hash_value)
+
+            # Use pre-processed lookup if available (optimized)
+            if self._prepared and self._phage_hash_set is not None:
+                # Fast membership check using sets (O(1))
+                if hash_value in self._phage_hash_set or hash_value in self._bact_hash_set:
+                    # Use pre-normalized columns for filtering (no string conversion)
+                    matched_rows = self.pfi_lookup[
+                        (self.pfi_lookup['_phage_hash_norm'] == hash_value) | 
+                        (self.pfi_lookup['_bact_hash_norm'] == hash_value)
+                    ]
+                    
+                    if not matched_rows.empty:
+                        # Use pre-converted numeric column (no conversion needed)
+                        pfi_sum = matched_rows['_expected_interaction_numeric'].sum()
+                        self._cache[kmer] = pfi_sum  # Cache the result
+                        return pfi_sum
+                    else:
+                        if self.TS: print(f"Warning: Hash '{hash_value}' matched but no rows found in pfi_lookup.")
+                        self._cache[kmer] = None
+                        return None
+                else:
+                    if self.TS: print(f"Warning: Hash '{hash_value}' not found in pfi_lookup phage_hash or bact_hash columns.")
+                    self._cache[kmer] = None
+                    return None
+            
+            # Fallback to original method if not prepared
+            elif isinstance(self.pfi_lookup, pd.DataFrame) and {'phage_hash', 'bact_hash', 'expected_interaction'}.issubset(self.pfi_lookup.columns):
+                phage_hashes = self.pfi_lookup['phage_hash'].astype(str).str.strip()
+                bact_hashes = self.pfi_lookup['bact_hash'].astype(str).str.strip()
+                matched_rows = self.pfi_lookup[(phage_hashes == hash_value) | (bact_hashes == hash_value)]
+                
+                if not matched_rows.empty:
+                    expected_interaction = pd.to_numeric(matched_rows['expected_interaction'], errors='coerce').fillna(0)
+                    pfi_sum = expected_interaction.sum()
+                    self._cache[kmer] = pfi_sum
+                    return pfi_sum
+                else:
+                    if self.TS: print(f"Warning: Hash '{hash_value}' not found in pfi_lookup.")
+                    self._cache[kmer] = None
+                    return None
+            
+            # Legacy dictionary lookup fallback
+            result = self.pfi_lookup.get(hash_value, None) if isinstance(self.pfi_lookup, dict) else None
+            self._cache[kmer] = result
+            return result
+        else:
+            if self.TS:
+                print(f"Warning: K-mer '{kmer}' not found in HK lookup. Cannot retrieve PFI score.")
+            self._cache[kmer] = None
+            return None
+
+    def append_pfi_values(self, df, kmer_col='decoded_kmer'):
+        total = len(df)
+        pfi_results = []
+        
+        print(f"Processing {total} k-mers for PFI lookup...")
+        
+        for idx, kmer in enumerate(df[kmer_col], start=1):
+            # Print progress every 10% or at the end
+            if idx % max(1, total // 10) == 0 or idx == total:
+                pct = (idx / total) * 100
+                cache_hits = len(self._cache)
+                print(f"  [{idx:>7d}/{total}] {pct:>5.1f}% | Cache size: {cache_hits:>6d}")
+            
+            pfi_results.append(self.get_pfi_sum(kmer))
+        
+        # Convert to Series for consistency
+        pfi_res = pd.Series(pfi_results, index=df.index)
+        
+        none_count = pfi_res.isnull().sum()
+        if none_count == 0:
+            df['PFI'] = pfi_res
+            print(f"✓ Successfully retrieved PFI values for all {total} k-mers.")
+        else:
+            print(f"⚠ Warning: {none_count}/{total} PFI values could not be retrieved. Dropping {none_count} rows.")
+            df['PFI'] = pfi_res
+            initial_len = len(df)
+            df.dropna(subset=['PFI'], inplace=True)
+            dropped = initial_len - len(df)
+            print(f"✓ Final DataFrame: {len(df)} rows (dropped {dropped} rows with missing PFI values).")
+        
+        print(f"Cache statistics: {len(self._cache)} unique k-mers cached.")
+        return df
+
+# def append_pfi_values(df, hk_lookup_rev : dict, pfi_lookup : pd.DataFrame, kmer_col : str ='decoded_kmer'):
+#     """
+#     Takes a dataframe with decoded_kmer column (kmer_col) and appends a new column 'PFI' with the corresponding PFI scores.
+#     Uses hk_lookup to map k-mers to hash values, then matches those hash values against both phage_hash and bact_hash
+#     in pfi_lookup and returns the sum of expected_interaction for all matched rows.
+#     """
+#     df['PFI'] = df[kmer_col].apply(lambda kmer: get_pfi(kmer, hk_lookup_rev, pfi_lookup))
+#     return df
+
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging_on : bool, TS : bool = False):
         self.raw_data_path = raw_data_path
@@ -1297,7 +1451,6 @@ class GeneAnalysis():
                     pbar.update(1)
 
         return phage_annotations
-
 
 class GeneAnalysisNCBI():
     def __init__(self, logfile, logging_on : bool, outdir : str):

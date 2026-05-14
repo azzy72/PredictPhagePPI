@@ -888,12 +888,14 @@ class calc_PFI:
     """
     Perform Pairwise Feature Interaction (PFI) analysis given the minhash data for phages and bacteria and the host range data, by constructing interaction pairs and calculating their frequencies.
     """
-    def __init__(self, host_range_data : dict = None, outdir : str = None, outname_pfi : str = None, pfi_objects_dir : str = None, logging : bool = False):
+    def __init__(self, host_range_data : dict = None, test_on_unseen : bool = False, outdir : str = None, outname_pfi : str = None, pfi_objects_dir : str = None, logging : bool = False):
         """
         **host_range_data** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
-        **phage_names** (list): list of phage names to consider (should match keys in phage_minhash_data)
-        **bacteria_names** (list): list of bacteria names to consider (should match keys in bact_minhash_data)
-        **outfile** (str): path to output file (default is None, meaning no file is written)
+        **test_on_unseen** (bool): whether to test on unseen phage-bacteria combinations or the partially unseen (default is False)
+        **outdir** (str): directory to save the output file (default is None, meaning no file is written)
+        **outname_pfi** (str): name of the output file for pfi values (default is None, meaning no file is written)
+        **pfi_objects_dir** (str): directory to save the pfi objects (interaction pairs, occurrence pairs, frequencies, etc.) as pickle files (default is None, meaning no files are written)
+        **logging** (bool): whether to enable logging (default is False)
         """
         import os
         # self.phage_names = phage_names
@@ -911,11 +913,11 @@ class calc_PFI:
             raise ValueError("outname_pfi should not contain directory paths, it should be just the filename (e.g., 'pfi_values.txt'). Please provide the directory path separately in outdir.")
         else:
             self.outfile_pfi = os.path.join(outdir, outname_pfi) if outdir else None
-        self.pfi_objects_dir = self.outdir + pfi_objects_dir
+        self.pfi_objects_dir = self.outdir + pfi_objects_dir if pfi_objects_dir else None
         self.logging = logging
+        self.test_on_unseen = test_on_unseen
 
-    
-    def construct_interaction_pairs(self, phage_minhash_data : dict, bact_minhash_data : dict, subset : int = None) -> [dict, dict, dict, dict, dict, dict]:
+    def construct_interaction_pairs(self, phage_minhash_data : dict, bact_minhash_data : dict, test_phages_names : list, test_bacteria_names : list, subset : int = None) -> [dict, dict, dict, dict, dict, dict]:
         """
         Construct a dictionary of interaction pairs given the minhash data for phages and bacteria and the host range data.
         The dictionary will have keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
@@ -923,6 +925,8 @@ class calc_PFI:
         Args:
             **phage_minhash_data** (dict): dictionary with keys as phage names and values as lists of minhashes.
             **bact_minhash_data** (dict): dictionary with keys as bacteria strain IDs and values as lists of minhashes.
+            **test_phages_names** (list): list of phage names in test.
+            **test_bacteria_names** (list): list of bacteria names in test .
             **subset** (int): number of combinations to consider (default is None, meaning all combinations)
             
         Returns:
@@ -942,11 +946,29 @@ class calc_PFI:
         interaction_freq_pairs = dict()
         occurence_freq_pairs = dict()
         expected_interactions = dict()
-        
         c = 0
-        phage_names = list(phage_minhash_data.keys())
-        bacteria_names = list(bact_minhash_data.keys())
-        total_combinations = len(phage_names) * len(bacteria_names)
+
+        ### Construct pair combinations ##
+        print("test_phages_names:", test_phages_names)
+        print("test_bacteria_names:", test_bacteria_names)
+
+        # if test on unseen:
+        if self.test_on_unseen:
+            pairs_combination = list(product(test_bacteria_names, test_phages_names))
+        else:
+            pairs_combination = []
+            for bname in bact_minhash_data.keys():
+                for pname in test_phages_names:
+                    pairs_combination.append([bname, pname])
+            
+            for bname in test_bacteria_names:
+                for pname in phage_minhash_data.keys():
+                    if c < 5: print(f"Adding pair combination: Phage: {pname}, Bacteria: {bname}")
+                    pairs_combination.append([bname, pname])
+
+        total_combinations = len(pairs_combination)
+        print(f"Total phage-bacteria combinations to process: {total_combinations}")
+        print(f"Example combinations: {pairs_combination[:5]}")
         
         # Call hostrange if None
         if self.host_range_data is None:
@@ -957,7 +979,7 @@ class calc_PFI:
 
             if self.logging: print("Host range data not provided, calling hostrange_bact to obtain host range data for bacteria names...")
             self.host_range_data = {}
-            for bact in bacteria_names:
+            for bact, pname in pairs_combination:
                 self.host_range_data[bact] = hostrange_bact(host_range_data, [bact], approach="acceptive", threshold=0.5, TS = False)
             
             self.host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in self.host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
@@ -973,38 +995,35 @@ class calc_PFI:
                 print(f"Could not create outdir {self.outdir}: {e}")
                 self.outdir = None  # Set to None to avoid further issues with saving
 
-        for pname in phage_names:
+        for pair in pairs_combination:
+            bname, pname = pair
             pkmer_list = phage_minhash_data.get(pname, [])
-            # if not pkmer_list: #skip if no kmers for this phage
+            bkmer_list = bact_minhash_data.get(bname, [])
+            # if not bkmer_list: #skip if no kmers for this bacteria
             #     continue
 
-            for bname in bacteria_names:
-                bkmer_list = bact_minhash_data.get(bname, [])
-                # if not bkmer_list: #skip if no kmers for this bacteria
-                #     continue
+            interaction_score = self.host_range_data[bname][pname]
+            #if type(interaction_score) != (int, float, np.integer, np.floating, np.float64, np.float32, np.int64, np.int32):
+            #    raise ValueError(f"Interaction score for bacteria {bname} and phage {pname} is not a number: {interaction_score}")
 
-                interaction_score = self.host_range_data[bname][pname]
-                #if type(interaction_score) != (int, float, np.integer, np.floating, np.float64, np.float32, np.int64, np.int32):
-                #    raise ValueError(f"Interaction score for bacteria {bname} and phage {pname} is not a number: {interaction_score}")
+            # Hoist hash_lookup population — once per (pname, bname), not per pair
+            for pkmer in pkmer_list:
+                hash_lookup[pkmer].add(pname)
+            for bkmer in bkmer_list:
+                hash_lookup[bkmer].add(bname)
 
-                # Hoist hash_lookup population — once per (pname, bname), not per pair
-                for pkmer in pkmer_list:
-                    hash_lookup[pkmer].add(pname)
-                for bkmer in bkmer_list:
-                    hash_lookup[bkmer].add(bname)
-
-                # Vectorized pair generation
-                pairs = list(product(pkmer_list, bkmer_list))
-                occurence_pairs.update(pairs)
-                for pair in pairs:
-                    interaction_pairs[pair] += interaction_score
-        
-                c += 1
-                print(f"Int/Occ: Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
-                if subset is not None and c >= subset:
-                    if sum(interaction_pairs.values()) > 0: #continue if no interaction has been found
-                        print(f"\nReached subset limit of {subset} combinations, stopping pair construction.")
-                        break
+            # Vectorized pair generation
+            pairs = list(product(pkmer_list, bkmer_list))
+            occurence_pairs.update(pairs)
+            for pair in pairs:
+                interaction_pairs[pair] += interaction_score
+    
+            c += 1
+            print(f"Int/Occ: Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
+            if subset is not None and c >= subset:
+                if sum(interaction_pairs.values()) > 0: #continue if no interaction has been found
+                    print(f"\nReached subset limit of {subset} combinations, stopping pair construction.")
+                    break
 
         if not sum(interaction_pairs.values()) > 0:
             print(f"Warning: Sum of interaction scores is 0, cannot calculate interaction frequencies: {sum(interaction_pairs.values())}\nCheck if test species interact.")

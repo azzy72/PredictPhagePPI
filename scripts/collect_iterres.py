@@ -8,12 +8,32 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import seaborn as sns
 import numpy as np
+from tqdm import tqdm
 import argparse
+from decimal import Decimal
 from time import time, sleep
 from datetime import datetime
 from paths import data_prod_path, path_to_nn_runs
-from analysis import GeneAnalysis
+from analysis import GeneAnalysis, PFI_Lookup
+import json
 outdir_default = data_prod_path + "iterExclClus/"
+
+# Global logger for capturing both stdout and file output
+class DualLogger:
+    def __init__(self, logfile=None):
+        self.logfile = logfile
+    
+    def log(self, message="", end="\n"):
+        """Write message to both stdout and logfile."""
+        print(message, end=end)
+        if self.logfile:
+            self.logfile.write(message + end)
+            self.logfile.flush()
+    
+    def set_logfile(self, logfile):
+        self.logfile = logfile
+
+logger = DualLogger()
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Metric Extraction Script")
@@ -21,10 +41,18 @@ def parse_arguments():
                         help="Base directory containing run folders")
     parser.add_argument("--out_dir", type=str, default=outdir_default,
                         help="Directory to save output graphs and CSV")
+    parser.add_argument("--hk_lookup_path", type=str, default=None,
+                        help="Path to the HK lookup table")
+    
+    #Flags
     parser.add_argument("--weight_pfi", action='store_true', 
                         help="Whether to weight the PFI scores by the corresponding test (balanced) accuracy of each run")
+    parser.add_argument("--top_kmers", type=int, default=500,
+                        help="Number of top k-mers to extract and analyze")
     
     ## Optional grouping arguments for more flexible plotting 
+    parser.add_argument("--show_cm_bar_percentage", action='store_true',
+                        help="Whether to display percentages on confusion matrix bars")
     parser.add_argument("--x_col", type=str, default=None,
                         help="Column to use for x-axis in plots")
     parser.add_argument("--hue_col", type=str, default=None,
@@ -51,11 +79,13 @@ def correct_deci_number(value):
             return num
     
     except ValueError:
-        print(f"Warning: Unable to convert '{value}' to a float. Returning original value.")
+        logger.log(f"Warning: Unable to convert '{value}' to a float. Returning original value.")
         return value
+    #return Decimal(value)  # Validate if it's a number
 
 def calculate_unified_score(metrics_dict):
     """
+    Unified Performance Score (UPS) Calculation:
     Calculates a single performance score from a dictionary of NN metrics.
     Weights can be adjusted based on project priorities.
     """
@@ -81,6 +111,7 @@ def calculate_unified_score(metrics_dict):
     
     return round(final_score, 4)
 
+
 def extract_metrics_from_log(file_path):
     """Parses a single log file for key performance metrics."""
     with open(file_path, 'r') as f:
@@ -95,6 +126,11 @@ def extract_metrics_from_log(file_path):
         'f1': None,
         'TN': None, 'FN': None, 'FP': None, 'TP': None
     }
+
+    run_info = {
+        'use_encoded' : None,
+        'data2': None
+    }
     
     # Extract Params from logfile
     params_dict = None
@@ -106,7 +142,7 @@ def extract_metrics_from_log(file_path):
         try:
             params_dict = ast.literal_eval(params_str)
         except Exception as e:
-            print(f"Error parsing single-line Params in {file_path}: {e}")
+            logger.log(f"Error parsing single-line Params in {file_path}: {e}")
             return None
     else:
         # New format: logger-prefixed multiline key-value block after "Params:"
@@ -123,7 +159,7 @@ def extract_metrics_from_log(file_path):
                 break
 
         if params_start is None:
-            print(f"Could not find Params section in {file_path}")
+            logger.log(f"Could not find Params section in {file_path}")
             return None
 
         param_line_re = re.compile(
@@ -183,17 +219,20 @@ def extract_metrics_from_log(file_path):
             metrics['k'] = params_dict.get('k')
 
         if metrics['n'] is None or metrics['k'] is None:
-            print(f"Could not extract n/k from Params in {file_path}")
+            logger.log(f"Could not extract n/k from Params in {file_path}")
             return None
 
+        run_info['use_encoded'] = params_dict.get('use_encoded')
+        run_info['data2'] = params_dict.get('data2')
+
     except Exception as e:
-        print(f"Error parsing Params in {file_path}: {e}")
+        logger.log(f"Error parsing Params in {file_path}: {e}")
         return None
 
     # Extract Accuracy 
     acc_match = re.search(r"Standard test accuracy:\s+([\d.]+)", content)
     if acc_match:
-        metrics['test_accuracy'] = correct_deci_number(acc_match.group(1))
+        metrics['test_accuracy'] = correct_deci_number((acc_match.group(1)))
 
     unseen_acc_match = re.search(r"truly unseen test accuracy:\s+([\d.]+)", content)
     if unseen_acc_match:
@@ -202,24 +241,28 @@ def extract_metrics_from_log(file_path):
     # Extract Balanced Accuracy
     ba_match = re.search(r"Standard test balanced accuracy:\s+([\d.]+)", content)
     if ba_match:
+        #metrics['test_balanced_accuracy'] = correct_deci_number(ba_match.group(1))
         metrics['test_balanced_accuracy'] = correct_deci_number(ba_match.group(1))
     unseen_ba_match = re.search(r"truly unseen test balanced accuracy:\s+([\d.]+)", content)
     if unseen_ba_match:
         metrics['unseen_test_balanced_accuracy'] = correct_deci_number(unseen_ba_match.group(1))
 
     # Extract Baseline Metrics (Precision, Recall, F1) [cite: 29]
-    # Try legacy format first
-    base_metrics = re.search(r"Baseline .* Precision:\s+([\d.]+),\s+Recall:\s+([\d.]+),\s+F1:\s+([\d.]+)", content)
+    # Try Baseline format first: "Baseline (threshold=X) -> Precision: Y, Recall: Z, F1: W"
+    base_metrics = re.search(
+        r"Baseline\s*\([^)]*\)\s*(?:->|:)\s*Precision:\s*([\d.]+)\s*,\s*Recall:\s*([\d.]+)\s*,\s*F1:\s*([\d.]+)",
+        content
+    )
     if base_metrics:
         metrics['precision'] = correct_deci_number(base_metrics.group(1))
         metrics['recall'] = correct_deci_number(base_metrics.group(2))
         metrics['f1'] = correct_deci_number(base_metrics.group(3))
     else:
-        # Try new format: "Best threshold by F1 -> ..., Precision=..., Recall=..., F1=..."
+        # Try "Best threshold by F1" format: "Best threshold by F1 -> threshold=X, Precision=Y, Recall=Z, F1=W"
         best_threshold = re.search(
-            r"Best threshold by F1.*?Precision=([\d.]+),\s*Recall=([\d.]+),\s*F1=([\d.]+)",
+            r"Best\s+threshold\s+by\s+F1\s*(?:->|:)\s*(?:threshold=[^,]+,\s*)?Precision\s*=\s*([\d.]+)\s*,\s*Recall\s*=\s*([\d.]+)\s*,\s*F1\s*=\s*([\d.]+)",
             content,
-            re.DOTALL
+            re.IGNORECASE
         )
         if best_threshold:
             metrics['precision'] = correct_deci_number(best_threshold.group(1))
@@ -248,12 +291,12 @@ def extract_metrics_from_log(file_path):
             metrics['FP'] = int(cm_match.group(3))
             metrics['TP'] = int(cm_match.group(4))
     
-    if "ERROR - No positive values in test" in content:
-        metrics['status'] = False
-    else:
+    if "INFO - Process completed in" in content:
         metrics['status'] = True
+    else:
+        metrics['status'] = False
 
-    return metrics
+    return metrics, run_info
 
 class GAPlottingUtils:
     def __init__(self, df, outdir):
@@ -294,22 +337,23 @@ class GAPlottingUtils:
         plt.savefig(self.outdir + f'kmer_distribution_{entity_type}.png')
         plt.close()
     
-    def plot_kmer_against_ups(self, df: pd.DataFrame, entity_type: str):
+    def plot_kmer_against_ups_or_pfi(self, df: pd.DataFrame, entity_type: str, sort_by = 'UPS'):
         """
         Plot the relationship between k-mer counts and the Unified Performance Score (UPS) for the given entity type
         """
-        if 'UPS' not in df.columns:
-            print("UPS column not found in dataframe. Cannot plot k-mer against UPS.")
+        if sort_by not in df.columns:
+            logger.log("Column not found in dataframe. Cannot plot k-mer against UPS or PFI.")
             return
         
         plt.figure(figsize=(10, 6))
-        sns.scatterplot(x='kmer_in_seq', y='UPS', data=df, hue='gene' if entity_type == 'bacterium' else 'product', palette='coolwarm')
-        plt.title(f'Kmer Count vs Unified Performance Score (UPS) for {entity_type.capitalize()} Kmers')
+        title_part = "Unified Performance Score (UPS)" if sort_by == 'UPS' else "PFI Score"
+        sns.scatterplot(x='kmer_in_seq', y=sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'product', palette='coolwarm')
+        plt.title(f'Kmer Count vs {title_part} for {entity_type.capitalize()} Kmers')
         plt.xlabel('Kmer Count')
-        plt.ylabel('Unified Performance Score (UPS)')
+        plt.ylabel(title_part)
         plt.legend(title='Gene' if entity_type == 'bacterium' else 'Product', bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
-        plt.savefig(self.outdir + f'kmer_vs_ups_{entity_type}.png')
+        plt.savefig(self.outdir + f'kmer_vs_{sort_by.lower()}_{entity_type}.png')
         plt.close()
 
 class MetricPlottingUtils:
@@ -391,7 +435,10 @@ class MetricPlottingUtils:
         if "failed" in self.df['status'].values:
             print("Warning: Some runs have failed! Count: ", (self.df['status'] == 'failed').sum())
             self.df_all = self.df.copy()
-            self.df = self.df[self.df['status'] == 'passed']
+            if "passed" in self.df['status'].values:
+                self.df = self.df[self.df['status'] == 'passed']
+            else:
+                raise ValueError("All runs have failed. No data to plot.")
             self.failed_runs_flag = True
 
         print(f"Dataframe length: {len(self.df)}. Recognized metrics:")
@@ -399,13 +446,25 @@ class MetricPlottingUtils:
             print(f"  {col}: {self.df[col].dtype}")
         print(self.df)
 
-    def _plot_cm_bars(self, title_suffix=""):
+    def _plot_cm_bars(self, title_suffix="", show_percentage=False):
         # 1. Prepare the Confusion Matrix Data
         # We melt the dataframe so 'TN', 'FN', 'FP', 'TP' become categories in one column
         cm_cols = ['TN', 'FN', 'FP', 'TP']
         cm_df = self.df[cm_cols + [self.x_col]].copy()
         cm_melted = cm_df.melt(id_vars=self.x_col, var_name='Metric', value_name='Count')
         cm_melted['Metric'] = cm_melted['folder'] + '_' + cm_melted['Metric'] # Combine folder and metric for unique bars
+        
+        # Calculate percentages if requested
+        if show_percentage:
+            # Calculate total for each x_col group
+            cm_melted['Total'] = cm_melted.groupby(self.x_col)['Count'].transform('sum')
+            cm_melted['Percentage'] = (cm_melted['Count'] / cm_melted['Total']) * 100
+            plot_value = 'Percentage'
+            y_label = 'Percentage (%)'
+        else:
+            plot_value = 'Count'
+            y_label = 'Count (Number of Samples)'
+        
         cm_melted = cm_melted.sort_values(by=[self.x_col, 'Metric']) # sort by folder and then by metric for consistent ordering
         print("Prepared confusion matrix data for bar plot:")
         print(cm_melted)
@@ -423,7 +482,7 @@ class MetricPlottingUtils:
         ax = sns.barplot(
             data=cm_melted, 
             x=self.x_col, 
-            y='Count', 
+            y=plot_value, 
             hue='MetricType', 
             palette=metric_colors, 
             edgecolor='black',
@@ -431,20 +490,26 @@ class MetricPlottingUtils:
         plt.legend(title='Confusion Matrix Metric', bbox_to_anchor=(1.05, 1), loc='upper left')
 
         # 4. Add labels on top of bars (similar to your reference image)
-        for p in ax.patches:
-            ax.annotate(f'{int(p.get_height())}', 
-                        (p.get_x() + p.get_width() / 2., p.get_height()), 
-                        ha='center', va='center', 
-                        fontsize=6, color='black', 
-                        xytext=(0, 7), 
-                        textcoords='offset points')
+        if len(cm_melted) < 50:  # Only add labels if there aren't too many bars to avoid clutter
+            for p in ax.patches:
+                height = p.get_height()
+                if show_percentage:
+                    label = f'{height:.1f}%'
+                else:
+                    label = f'{int(height)}'
+                ax.annotate(label, 
+                            (p.get_x() + p.get_width() / 2., height), 
+                            ha='center', va='center', 
+                            fontsize=4, color='black', 
+                            xytext=(0, 7),
+                            textcoords='offset points')
 
         # 5. Formatting
-        ax.tick_params(axis='x', labelsize=8)
-        plt.xticks(rotation=45, ha='right')
+        #ax.tick_params(axis='x', labelsize=8)
+        plt.xticks(rotation=90, ha='right')
         plt.title(f'Confusion Matrix Components by Run {title_suffix}', fontsize=14, weight='bold', pad=20)
-        plt.ylabel('Count (Number of Samples)', fontsize=10)
-        plt.xlabel('Run / Configuration', fontsize=10)
+        plt.ylabel(y_label, fontsize=10)
+        plt.xlabel('Run / Configuration', fontsize=6)
         
         # Place legend outside to the right
         plt.legend(title='Metrics', bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0.)
@@ -452,9 +517,10 @@ class MetricPlottingUtils:
         plt.tight_layout()
         
         # 6. Save
-        plt.savefig(self.outdir + 'confusion_matrix_by_run.png', dpi=300)
+        filename = 'confusion_matrix_by_run_percentage.png' if show_percentage else 'confusion_matrix_by_run.png'
+        plt.savefig(self.outdir + filename, dpi=300)
         plt.close() # Close to free up memory
-        print("Saved: confusion_matrix_by_run.png")
+        print(f"Saved: {filename}")
 
     def _plot_bars(self, x_col, y_col, hue_col=None, title="", ylabel="", outpath=""):
         plt.figure(figsize=(12, 7))
@@ -480,7 +546,7 @@ class MetricPlottingUtils:
 
         plt.title(title, fontsize=15, pad=15)
         plt.ylabel(ylabel, fontsize=12)
-        plt.xlabel(x_col.capitalize(), fontsize=12)
+        plt.xlabel(x_col.capitalize(), fontsize=6)
         if hue_col: plt.legend(title=hue_col.capitalize(), bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
         plt.savefig(outpath)
@@ -565,7 +631,7 @@ class MetricPlottingUtils:
         )
 
         # --- Graph 6: Confusion Matrix as bars ---
-        self._plot_cm_bars(title_suffix=self.title_suffix)
+        self._plot_cm_bars(title_suffix=self.title_suffix, show_percentage=args.show_cm_bar_percentage)
 
         # --- Graph 7: Averaged Confusion Matrix ---
         avg_cm = self.df[['TN', 'FN', 'FP', 'TP']].mean()
@@ -585,30 +651,54 @@ class MetricPlottingUtils:
         if self.failed_runs_flag:
             self._plot_bp_heatmap(title_suffix=self.title_suffix)
 
+def open_hk_lookup(hk_lookup_path, reverse=True):
+    if hk_lookup_path and os.path.exists(hk_lookup_path):
+        with open(hk_lookup_path, 'r') as f:
+            hk_lookup_dict = json.load(f)
+        logger.log(f"Loaded hk_lookup JSON file from {hk_lookup_path}")
+        if reverse:
+            # reverse key values in hk_lookup_dict to create a mapping from kmer to gene
+            kmer_to_gene = {v: k for k, v in hk_lookup_dict.items()}
+            return kmer_to_gene
+        else:
+            return hk_lookup_dict
+    else:
+        logger.log(f"hk_lookup JSON file not found at {hk_lookup_path}\tProceeding without it.")
+        return None
 
 def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=None, group_x_col=None, group_hue_col=None):
     all_data = []
     top_kmers_df = pd.DataFrame() # Placeholder top_kmers_csv file
     
     if not os.path.exists(base_dir):
-        print(f"Directory {base_dir} not found.")
+        logger.log(f"Directory {base_dir} not found.")
         return
     else:
-        print(f"Scanning directory: {base_dir}")
+        logger.log(f"Scanning directory: {base_dir}")
     
     if not os.path.exists(outdir):
         os.makedirs(outdir, exist_ok=True)
-        print(f"Created output directory: {outdir}")
+        logger.log(f"Created output directory: {outdir}")
     else:
-        print(f"Output directory already exists: {outdir}")
+        logger.log(f"Output directory already exists: {outdir}")
     
     logfile_path = os.path.join(outdir, "collect_iterres_log.txt")
     logfile = open(logfile_path, 'w')
-    print(f"{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} collect_iterres started. Scanning {base_dir} for log files.", file=logfile)
+    logger.set_logfile(logfile)
+    logger.log(f"{datetime.now().strftime('[%Y-%m-%d %H:%M:%S] ')} collect_iterres started. Scanning {base_dir} for log files.")
+
+    # Try opening hk_lookup & pfi_lookup
+    if args.hk_lookup_path:
+        kmer_to_gene = open_hk_lookup(args.hk_lookup_path, reverse=True)
+    else:
+        logger.log("Note: HK lookup path not provided. Will attempt to deduce from log files.")
+        kmer_to_gene = None
 
     # Iterate through all folders in nn_runs
-    for folder_name in os.listdir(base_dir):          
+    for folder_name in tqdm(os.listdir(base_dir), desc="Processing folders"):
         folder_path = os.path.join(base_dir, folder_name)
+        pfi_success = False
+        top_int_kmer_success = False
         if os.path.isdir(folder_path):
             # Search for log files in this specific run folder
             for file in os.listdir(folder_path):
@@ -617,34 +707,67 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 # Extract metrics from log files 
                 if file.endswith(".txt") and "log_run" in file.lower():
                     log_path = os.path.join(folder_path, file)
-                    metrics = extract_metrics_from_log(log_path)
+                    metrics, run_info = extract_metrics_from_log(log_path)
                     metrics['folder'] = folder_name
                     all_data.append(metrics)
+                    #print("run_info", run_info)
+
+                    if args.hk_lookup_path is None:
+                        #print("hk_lookup not provided. Attempting to deduce it from log info for encoded data2 run.")
+                        # If hk_lookup is not provided, try to deduce it from the log info
+                        try:
+                            dir = "encoded_sketches" if run_info['use_encoded'] else "sketches_sketches"
+                            if run_info['data2']:
+                                dir += "_data2"
+
+                            hk_path = os.path.join(data_prod_path, dir, f"hk_lookup_n{metrics['n']}_k{metrics['k']}.json")
+                            kmer_to_gene = open_hk_lookup(hk_path, reverse=True)
+                            print(f"Deduced hk_lookup path: {hk_path} for folder: {folder_name}")
+                        except Exception as e:
+                            print(f"Error deducing hk_lookup from log info in {log_path}: {e}")
 
                 # Extract top kmers from pair_kmers.csv files
                 elif file.endswith("pair_kmers.csv"):
+                    logger.log(f"Found top kmers file: {file} in folder: {folder_name}")
                     top_kmers_path = os.path.join(folder_path, file)
                     try:
                         df_kmers = pd.read_csv(top_kmers_path)
                         df_kmers['folder'] = folder_name
-                        if args.weight_pfi:
-                            df_kmers["UPS"] = calculate_unified_score(metrics)
-                        top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
+                        df_kmers["UPS"] = calculate_unified_score(metrics)
+                        top_int_kmer_success = True
                     except Exception as e:
-                        print(f"Error reading {top_kmers_path}: {e}")
+                        logger.log(f"Error reading {top_kmers_path}: {e}")
+                
+                # Extract pfi lookup
+                elif file.startswith("pfi_") and file.endswith(".txt"):
+                    pfi_file_path = os.path.join(folder_path, file)
+                    logger.log(f"Found PFI file: {file} in folder: {folder_name}")
+                    pfi_success = True
+            
+            if kmer_to_gene is not None and top_int_kmer_success and pfi_success:
+                pfi_lookup = pd.read_csv(pfi_file_path, sep="\t")
+                logger.log(f"Processing PFI lookup for {folder_name}...")
+                pfi_class = PFI_Lookup(kmer_to_gene, pfi_lookup, TS=True)
+                df_kmers = pfi_class.append_pfi_values(df_kmers, kmer_col="decoded_kmer")
+            else:
+                logger.log(f"Skipping PFI calculation for {folder_name}. Reason: top_kmers={top_int_kmer_success}, pfi_file={pfi_success}, hk_lookup={kmer_to_gene is not None}")
+            
+            if top_int_kmer_success:
+                top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
+
 
     ### Sorting top_kmers_df by weighted PFI score (if weight_pfi flag is set)
     if not top_kmers_df.empty and args.weight_pfi:
         if "UPS" in top_kmers_df.columns:
             top_kmers_df = top_kmers_df.sort_values(by="UPS", ascending=False)
-            print("Sorted top_kmers_df by Unified Performance Score (UPS).")
+            logger.log("Sorted top_kmers_df by Unified Performance Score (UPS).")
         else:
-            print("Warning: 'UPS' column not found in top_kmers_df. Skipping sorting by UPS.")
+            logger.log("Warning: 'UPS' column not found in top_kmers_df. Skipping sorting by UPS.")
 
     ### Metrics Extraction Summary and Plotting ###
     if all_data:
         df = pd.DataFrame(all_data)
-        print(f"Extracted metrics from {len(df)} log files.")
+        logger.log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Extracted metrics from {len(df)} log files.")
 
         #check if any values of the cols in below_one_cols are above 1, if so, apply the correct_deci_number function to the entire column
         try:
@@ -652,66 +775,150 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             for col in below_one_cols:
                 if col in df.columns:
                     if (df[col] > 1).any():
-                        print(f"Column '{col}' contains values greater than 1. Applying correction to entire column.")
+                        logger.log(f"Column '{col}' contains values greater than 1. Applying correction to entire column.")
                         df[col] = df[col].apply(correct_deci_number)
                     else:
                         continue
                 else:
-                    print(f"Column '{col}' not found in dataframe. Skipping correction for this column.")
+                    logger.log(f"Column '{col}' not found in dataframe. Skipping correction for this column.")
         except Exception as e:
-            print(f"Error during decimal correction: {e}")
+            logger.log(f"Error during decimal correction: {e}")
 
         try:
             group_x_col = group_x_col.lower()
         except Exception as e:
-            print(f"Unable to process group_x_col: {group_x_col}, error: {e}. Defaulting to no grouping.")
+            logger.log(f"Unable to process group_x_col: {group_x_col}, error: {e}. Defaulting to no grouping.")
+
+        # Marking TP = 0 runs as failed runs for better visualization in the confusion matrix bar plot and heatmap
+        if 'TP' in df.columns:
+            df['status'] = df.apply(lambda row: False if row['TP'] == 0 or row['TP'] is None else row['status'], axis=1)
+            
+        
+        # Subsetting df to only include successful runs
+        if False in df["status"].values:
+            logger.log(f"⚠ WARNING: Some runs have failed! Count: {(df['status'] == False).sum()}")
+            
+            #Get the list of failed runs folder names            
+            failed_runs = df[df['status'] == False]['folder'].tolist()
+            df_all = df.copy()
+            if (df['status'] == True).any():
+                df = df[df['status'] == True]
+            else:
+                raise ValueError("All runs have failed. No data to plot.")
+            
+            #Subset the top_kmers_df to only include the successful runs as well
+            #logger.log(top_kmers_df.head())
+            top_kmers_df = top_kmers_df[~top_kmers_df['folder'].isin(failed_runs)]
+            logger.log(f"Subsetted dataframe to {len(df)} successful runs for plotting. Also subsetted top_kmers_df to {len(top_kmers_df)} entries corresponding to successful runs.")
+
+            # Obtain b_value and p_value from each failed run
+            try: 
+                failed_runs_info = []
+                for folder in failed_runs:
+                    b_value = None
+                    p_value = None
+                    try:
+                        b_match = re.search(r"b(\d+)", folder)
+                        p_match = re.search(r"p(\d+)", folder)
+                        if b_match:
+                            b_value = b_match.group(1)
+                        if p_match:
+                            p_value = p_match.group(1)
+                    except Exception as e:
+                        logger.log(f"Error extracting b_value and p_value from folder name '{folder}': {e}")
+                    failed_runs_info.append((folder, b_value, p_value))
+                logger.log("Failed runs and their corresponding b_value and p_value:")
+                for folder, b_value, p_value in failed_runs_info:
+                    logger.log(f"  {folder}: b={b_value}, p={p_value}")
+            except Exception as e:
+                logger.log(f"Error processing failed runs for b_value and p_value extraction: {e}")
         
         plotting = MetricPlottingUtils(df=df, outdir=str(outdir), x_col=x_col, hue_col=hue_col, x_col_by_cluster=(group_x_col == 'cluster'), x_col_by_phage=(group_x_col == 'phage'))
         plotting.plot_graphs()
         # Optional: save the raw data for inspection
         df.to_csv(outdir +'all_runs_summary.csv', index=False)
-        print("Summary CSV saved as all_runs_summary.csv")
+        logger.log("✓ Summary CSV saved as all_runs_summary.csv")
     else:
-        print("No valid data found for Metrics Plotting.")
+        logger.log("No valid data found for Metrics Plotting.")
     
     ### Top Kmers Annotation Summary and Plotting ###
     if not top_kmers_df.empty:
-        print(f"Extracted top k-mers from {len(top_kmers_df['folder'].unique())} files.")
+        logger.log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Extracted top k-mers from {len(top_kmers_df['folder'].unique())} files.")
+        logger.log(f"Value counts for 'organism' column:\n{top_kmers_df['organism'].value_counts()}")
 
         # Split by "entity" column 
-        bact_kmers_df = top_kmers_df[top_kmers_df['entity'] == 'bacterium']
-        phage_kmers_df = top_kmers_df[top_kmers_df['entity'] == 'phage' or top_kmers_df['entity'] == 'bacteriophage']
+        bact_kmers_df = top_kmers_df[top_kmers_df['organism'] == 'bacterium']
+        phage_kmers_df = top_kmers_df[top_kmers_df['organism'] == 'phage']
+        bact_len_before = len(bact_kmers_df)
+        phage_len_before = len(phage_kmers_df)
+        logger.log(f"Bacterium k-mers sample:\n{bact_kmers_df.head()}")
+        logger.log(f"Phage k-mers sample:\n{phage_kmers_df.head()}")
 
+        sort_by = 'UPS' if not args.weight_pfi else 'PFI'
+
+        # Keep only args.top_kmers number of kkmers per entity per folder based on UPS score
+        if not bact_kmers_df.empty:
+            bact_kmers_df = bact_kmers_df.sort_values(by=sort_by, ascending=False).groupby(['folder', 'entity']).head(args.top_kmers)
+            logger.log(f"Top k-mers with {sort_by} scores - bacterium:")
+            logger.log(f"{bact_kmers_df[['entity', 'decoded_kmer', sort_by]].head()}")
+            bact_len_after = len(bact_kmers_df)
+
+        else:
+            logger.log(f"No valid bacterium k-mers data found for {sort_by} sorting.")
+            bact_len_after = 0
+
+        if not phage_kmers_df.empty:
+            phage_kmers_df = phage_kmers_df.sort_values(by=sort_by, ascending=False).groupby(['folder', 'entity']).head(args.top_kmers)
+            logger.log(f"Top k-mers with {sort_by} scores - phage:")
+            logger.log(f"{phage_kmers_df[['entity', 'decoded_kmer', sort_by]].head()}")
+            phage_len_after = len(phage_kmers_df)
+        else:
+            logger.log(f"No valid phage k-mers data found for {sort_by} sorting.")
+            phage_len_after = 0
+
+        # Obtain pfi scores for kmers and add them to the dataframes if weight_pfi flag is set, then sort by pfi scores instead of UPS scores
+        if args.weight_pfi:
+            pass
+        
+        logger.log(f"Reduced bacterium k-mers from {bact_len_before} to {bact_len_after} based on top_kmers and sorting criteria.")
+        logger.log(f"Reduced phage k-mers from {phage_len_before} to {phage_len_after} based on top_kmers and sorting criteria.")
+        if bact_len_after > 0:
+            logger.log(f"Final bacterium sample:\n{bact_kmers_df.head()}")
+        if phage_len_after > 0:
+            logger.log(f"Final phage sample:\n{phage_kmers_df.head()}")
+
+
+        #return # for testing purposes, to check the outputs up to this point before proceeding with annotation and plotting
         # Gene analysis
         try:
             GA = GeneAnalysis()
             if not bact_kmers_df.empty:
                 bact_annot_df = GA.batch_bact_annotate(bkmers=bact_kmers_df['decoded_kmer'].tolist(), bact_names=bact_kmers_df['entity'].tolist(), data_prod_path=data_prod_path)
             else:
-                print("No valid bacterium k-mers data found for annotation.")
+                logger.log("No valid bacterium k-mers data found for annotation.")
 
             if not phage_kmers_df.empty:
                 phage_annot_df = GA.batch_phage_annotate(pkmers=phage_kmers_df['decoded_kmer'].tolist(), phage_names=phage_kmers_df['entity'].tolist(), data_prod_path=data_prod_path)
             else:
-                print("No valid phage k-mers data found for annotation.")
+                logger.log("No valid phage k-mers data found for annotation.")
         except Exception as e:
             raise ValueError(f"Error during gene annotation: {e}")
 
         # Gene Annot Plotting
         try:
-            title_suffix = "(Weighted PFI)" if args.weight_pfi else "(PFI)"
+            title_suffix = "(Weighted PFI)" if args.weight_pfi else "(UPS)"
             plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir))
             if not bact_kmers_df.empty:
                 plotting_utils.plot_top_genes(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
                 if args.weight_pfi:
-                    plotting_utils.plot_kmer_against_ups(bact_annot_df, entity_type="bacterium")
+                    plotting_utils.plot_kmer_against_ups_or_pfi(bact_annot_df, entity_type="bacterium", sort_by=sort_by)
 
             if not phage_kmers_df.empty:
                 plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
                 if args.weight_pfi:
-                    plotting_utils.plot_kmer_against_ups(phage_annot_df, entity_type="phage")
+                    plotting_utils.plot_kmer_against_ups_or_pfi(phage_annot_df, entity_type="phage", sort_by=sort_by)
                     
         except Exception as e:
             raise ValueError(f"Error during gene annotation plotting: {e}")
@@ -721,20 +928,21 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             if not bact_kmers_df.empty and not phage_kmers_df.empty:
                 combined_annot_df = pd.concat([bact_annot_df, phage_annot_df], ignore_index=True)
                 combined_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
-                print("Top Kmers Annotations CSV saved as top_kmers_annotations.csv")
+                logger.log("Top Kmers Annotations CSV saved as top_kmers_annotations.csv")
             
             elif not bact_kmers_df.empty:
                 bact_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
-                print("Bacterium Kmers Annotations CSV saved as top_kmers_annotations.csv")
+                logger.log("Bacterium Kmers Annotations CSV saved as top_kmers_annotations.csv")
             elif not phage_kmers_df.empty:
                 phage_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
-                print("Phage Kmers Annotations CSV saved as top_kmers_annotations.csv")
+                logger.log("Phage Kmers Annotations CSV saved as top_kmers_annotations.csv")
         except Exception as e:
             raise ValueError(f"Error saving top k-mers annotations: {e}")
 
     else:
-        print("No valid top k-mers data found.")
+        logger.log("No valid top k-mers data found.")
 
+    logger.log(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Script execution completed.")
     logfile.close()
 
 if __name__ == "__main__":
