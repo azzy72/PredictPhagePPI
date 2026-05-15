@@ -3,7 +3,7 @@
 # One Slurm array task = one (bcluster, pcluster) training run.
 # Submitted by submit_iter_excl.sh — do not run directly.
 
-#SBATCH --job-name=IterExclTrainK18
+#SBATCH --job-name=IterExclTrain
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --mem=50G
@@ -18,9 +18,14 @@
 set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-N=500
-K=18
-DOWNDIR="encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
+if [[ $# -gt 3 ]]; then
+    echo "Usage: sbatch ffnn_train_task.sh [N] [K] [DOWNDIR]" >&2
+    exit 1
+fi
+
+N="${1:-500}"
+K="${2:-18}"
+DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
 CUSTOM_PARENT_DIR="iter_excl_PFI_parallel_n${N}_k${K}" # for organizing outputs by config
@@ -54,12 +59,12 @@ CUSTOM_OUT="$CUSTOM_PARENT_DIR/cluster_b${bcluster_num}_p${pcluster_num}"
 
 
 python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
-    --nk $N $K \
+    --nk "$N" "$K" \
     --cv \
     --kf_n_splits 4 \
     --exclude_clusters \
-    --exclude_bact_clusters $bact_strains \
-    --exclude_phage_clusters $phage_strains \
+    --exclude_bact_clusters "$bact_strains" \
+    --exclude_phage_clusters "$phage_strains" \
     --test_on_excluded \
     --perform_pfi \
     --top_kmers_num 200 \

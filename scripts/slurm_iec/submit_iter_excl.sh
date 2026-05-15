@@ -5,9 +5,14 @@
 
 set -euo pipefail
 
-N=500
-K=18
-DOWNDIR="encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
+if [[ $# -gt 3 ]]; then
+    echo "Usage: bash submit_iter_excl.sh [N] [K] [DOWNDIR]" >&2
+    exit 1
+fi
+
+N="${1:-500}"
+K="${2:-18}"
+DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
 BACT_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_bact_clusters_n${N}_k${K}.csv"
@@ -35,7 +40,8 @@ echo "Task map written: $total_tasks pairs → $TASK_MAP"
 array_job_id=$(sbatch \
     --array="1-${total_tasks}" \
     --parsable \
-    "$ROOT_DIR/scripts/slurm_iec/ffnn_train_task.sh")
+    "$ROOT_DIR/scripts/slurm_iec/ffnn_train_task.sh" \
+    "$N" "$K" "$DOWNDIR")
 
 echo "Submitted training array job: $array_job_id  (${total_tasks} tasks)"
 
@@ -44,7 +50,8 @@ pp_job_id=$(sbatch \
     --dependency="afterok:${array_job_id}" \
     --parsable \
     --kill-on-invalid-dep=yes \
-    "$ROOT_DIR/scripts/slurm_iec/ffnn_postprocess.sh")
+    "$ROOT_DIR/scripts/slurm_iec/ffnn_postprocess.sh" \
+    "$N" "$K")
 
 echo "Submitted post-processing job: $pp_job_id  (runs after $array_job_id)"
 echo ""

@@ -808,7 +808,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 raise ValueError("All runs have failed. No data to plot.")
             
             #Subset the top_kmers_df to only include the successful runs as well
-            logger.log(top_kmers_df.head())
+            logger.log(top_kmers_df.head().to_string())
             top_kmers_df = top_kmers_df[~top_kmers_df['folder'].isin(failed_runs)]
             logger.log(f"Subsetted dataframe to {len(df)} successful runs for plotting. Also subsetted top_kmers_df to {len(top_kmers_df)} entries corresponding to successful runs.")
 

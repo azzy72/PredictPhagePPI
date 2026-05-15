@@ -4,7 +4,7 @@
 # Submitted by submit_iter_excl.sh with --dependency=afterok:<array_job_id>.
 # Do not run directly until all training tasks have finished.
 
-#SBATCH --job-name=IterExclPostProcessN300
+#SBATCH --job-name=IterExclPostProcess
 #SBATCH --partition=cpu      # no GPU needed here — adjust to your cluster
 #SBATCH --nodes=1
 #SBATCH --mem=8G
@@ -16,8 +16,14 @@
 #SBATCH --mail-user=s215045@student.dtu.dk
 
 set -euo pipefail
-N=300
-K=12
+
+if [[ $# -gt 2 ]]; then
+    echo "Usage: sbatch ffnn_postprocess.sh [N] [K]" >&2
+    exit 1
+fi
+
+N="${1:-300}"
+K="${2:-12}"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
 DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI_parallel_n${N}_k${K}"
