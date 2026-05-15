@@ -1167,7 +1167,7 @@ def main():
             plot_interaction_pairs(interaction_pairs, occurence_pairs, expected_interactions, hash_lookup, hk_translation_dict, sort_by_ratio=True, logging_on=args.logging, outdir=outdir, bact_clusters=bact_clusters)
 
             # Filter idx_to_minhash to only include the top X interaction pairs
-            top_pairs = sorted(interaction_pairs.items(), key=lambda x: x[1], reverse=True)[:args.top_kmers_num] # Get top {args.top_kmers_num} pairs by interaction score
+            top_pairs = sorted(interaction_pairs.items(), key=lambda x: expected_interactions.get(x[0], 0), reverse=True)[:args.top_kmers_num] # Get top {args.top_kmers_num} pairs by expected interactions score
             top_minhashes = set()
             for (phage_hash, bact_hash), score in top_pairs:
                 top_minhashes.add(phage_hash)

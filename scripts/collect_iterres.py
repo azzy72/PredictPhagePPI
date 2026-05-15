@@ -314,7 +314,7 @@ class GAPlottingUtils:
 
         plt.figure(figsize=(10, 6))
         sns.barplot(x=gene_counts.index, y=gene_counts.values, palette='viridis')
-        plt.title(f'Top {entity_type.capitalize()} Kmers Annotated Genes {title_suffix}')
+        plt.title(f'Top {title_suffix} {entity_type.capitalize()} Kmers Annotated Genes')
         plt.xlabel('Gene')
         plt.ylabel('Count')
         plt.xticks(rotation=45, ha='right')
@@ -329,7 +329,7 @@ class GAPlottingUtils:
         gene_kmer_counts = df['kmer_in_seq'].value_counts()
         plt.figure(figsize=(10, 6))
         sns.barplot(x=gene_kmer_counts.index, y=gene_kmer_counts.values, palette='magma')
-        plt.title(f'Distribution of Top {entity_type.capitalize() }Kmers {title_suffix}')
+        plt.title(f'Distribution of Top {title_suffix} {entity_type.capitalize()} Kmers')
         plt.xlabel('Kmers')
         plt.ylabel('Kmer Count')
         plt.xticks(rotation=45, ha='right')
@@ -697,9 +697,10 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
     # Iterate through all folders in nn_runs
     for folder_name in tqdm(os.listdir(base_dir), desc="Processing folders"):
         folder_path = os.path.join(base_dir, folder_name)
-        pfi_success = False
-        top_int_kmer_success = False
         if os.path.isdir(folder_path):
+            pfi_success = False
+            top_int_kmer_success = False
+            
             # Search for log files in this specific run folder
             for file in os.listdir(folder_path):
                 # Find failed runs and sort them
@@ -807,7 +808,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 raise ValueError("All runs have failed. No data to plot.")
             
             #Subset the top_kmers_df to only include the successful runs as well
-            #logger.log(top_kmers_df.head())
+            logger.log(top_kmers_df.head())
             top_kmers_df = top_kmers_df[~top_kmers_df['folder'].isin(failed_runs)]
             logger.log(f"Subsetted dataframe to {len(df)} successful runs for plotting. Also subsetted top_kmers_df to {len(top_kmers_df)} entries corresponding to successful runs.")
 
@@ -906,7 +907,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
 
         # Gene Annot Plotting
         try:
-            title_suffix = "(Weighted PFI)" if args.weight_pfi else "(UPS)"
+            title_suffix = "(PFI)" if args.weight_pfi else "(UPS)"
             plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir))
             if not bact_kmers_df.empty:
                 plotting_utils.plot_top_genes(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)

@@ -4,7 +4,7 @@
 # Submitted by submit_iter_excl.sh with --dependency=afterok:<array_job_id>.
 # Do not run directly until all training tasks have finished.
 
-#SBATCH --job-name=IterExclPostProc
+#SBATCH --job-name=IterExclPostProcessN300
 #SBATCH --partition=cpu      # no GPU needed here — adjust to your cluster
 #SBATCH --nodes=1
 #SBATCH --mem=8G
@@ -16,7 +16,7 @@
 #SBATCH --mail-user=s215045@student.dtu.dk
 
 set -euo pipefail
-N=500
+N=300
 K=12
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
@@ -44,4 +44,9 @@ fi
 # ── 4. Collecting results ─────────────────────────────────────────────────────
 echo ""
 echo "📊 Collecting results..."
-python3 "$ROOT_DIR/scripts/collect_iterres.py" --base_dir "$DIR_IN_NN_RUN" --out_dir "$DATA_DIR/iterExclClus_n${N}_k${K}/" --show_cm_bar_percentage
+python3 "$ROOT_DIR/scripts/collect_iterres.py" \
+    --base_dir "$DIR_IN_NN_RUN" \
+    --out_dir "$DATA_DIR/iterExclClus_n${N}_k${K}/" \
+    --show_cm_bar_percentage \
+    --weight_pfi \
+    --top_kmers 200

@@ -3,7 +3,7 @@
 # One Slurm array task = one (bcluster, pcluster) training run.
 # Submitted by submit_iter_excl.sh — do not run directly.
 
-#SBATCH --job-name=IterExclTrain
+#SBATCH --job-name=IterExclTrainK18
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --mem=50G
@@ -19,7 +19,7 @@ set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 N=500
-K=12
+K=18
 DOWNDIR="encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
@@ -62,6 +62,7 @@ python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
     --exclude_phage_clusters $phage_strains \
     --test_on_excluded \
     --perform_pfi \
+    --top_kmers_num 200 \
     --out "$CUSTOM_OUT" \
     --logging
 
