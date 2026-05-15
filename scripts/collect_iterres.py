@@ -696,6 +696,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
 
     # Iterate through all folders in nn_runs
     for folder_name in tqdm(os.listdir(base_dir), desc="Processing folders"):
+        logger.log(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing folder: {folder_name}")
         folder_path = os.path.join(base_dir, folder_name)
         if os.path.isdir(folder_path):
             pfi_success = False
@@ -717,13 +718,14 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                         #print("hk_lookup not provided. Attempting to deduce it from log info for encoded data2 run.")
                         # If hk_lookup is not provided, try to deduce it from the log info
                         try:
-                            dir = "encoded_sketches" if run_info['use_encoded'] else "sketches_sketches"
+                            dir = "encoded_sketches" if run_info['use_encoded'] else "SM_sketches"
                             if run_info['data2']:
                                 dir += "_data2"
 
                             hk_path = os.path.join(data_prod_path, dir, f"hk_lookup_n{metrics['n']}_k{metrics['k']}.json")
                             kmer_to_gene = open_hk_lookup(hk_path, reverse=True)
-                            print(f"Deduced hk_lookup path: {hk_path} for folder: {folder_name}")
+                            if kmer_to_gene is not None:
+                                logger.log(f"Deduced hk_lookup from log info for {folder_name} using path: {hk_path}")
                         except Exception as e:
                             print(f"Error deducing hk_lookup from log info in {log_path}: {e}")
 
@@ -755,15 +757,20 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             
             if top_int_kmer_success:
                 top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
-
+        logger.log(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Folder processed: {folder_name}")
+        logger.log("#" * 50)
 
     ### Sorting top_kmers_df by weighted PFI score (if weight_pfi flag is set)
-    if not top_kmers_df.empty and args.weight_pfi:
-        if "UPS" in top_kmers_df.columns:
+    if not top_kmers_df.empty:
+        top_kmers_go = True
+        if args.weight_pfi and "UPS" in top_kmers_df.columns:
             top_kmers_df = top_kmers_df.sort_values(by="UPS", ascending=False)
             logger.log("Sorted top_kmers_df by Unified Performance Score (UPS).")
         else:
             logger.log("Warning: 'UPS' column not found in top_kmers_df. Skipping sorting by UPS.")
+    else:
+        logger.log("top_kmers_df is empty. No k-mer data to process or plot.")
+        top_kmers_go = False
 
     ### Metrics Extraction Summary and Plotting ###
     if all_data:
@@ -808,9 +815,10 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 raise ValueError("All runs have failed. No data to plot.")
             
             #Subset the top_kmers_df to only include the successful runs as well
-            logger.log(top_kmers_df.head().to_string())
-            top_kmers_df = top_kmers_df[~top_kmers_df['folder'].isin(failed_runs)]
-            logger.log(f"Subsetted dataframe to {len(df)} successful runs for plotting. Also subsetted top_kmers_df to {len(top_kmers_df)} entries corresponding to successful runs.")
+            if top_kmers_go:
+                logger.log(top_kmers_df.head().to_string())
+                top_kmers_df = top_kmers_df[~top_kmers_df['folder'].isin(failed_runs)]
+                logger.log(f"Subsetted dataframe to {len(df)} successful runs for plotting. Also subsetted top_kmers_df to {len(top_kmers_df)} entries corresponding to successful runs.")
 
             # Obtain b_value and p_value from each failed run
             try: 
@@ -843,7 +851,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         logger.log("No valid data found for Metrics Plotting.")
     
     ### Top Kmers Annotation Summary and Plotting ###
-    if not top_kmers_df.empty:
+    if top_kmers_go:
         logger.log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Extracted top k-mers from {len(top_kmers_df['folder'].unique())} files.")
         logger.log(f"Value counts for 'organism' column:\n{top_kmers_df['organism'].value_counts()}")
 

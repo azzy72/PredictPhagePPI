@@ -22,7 +22,7 @@ if [[ $# -gt 2 ]]; then
     exit 1
 fi
 
-N="${1:-300}"
+N="${1:-500}"
 K="${2:-12}"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"

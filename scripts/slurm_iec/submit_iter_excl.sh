@@ -11,7 +11,7 @@ if [[ $# -gt 3 ]]; then
 fi
 
 N="${1:-500}"
-K="${2:-18}"
+K="${2:-12}"
 DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"

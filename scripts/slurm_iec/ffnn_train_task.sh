@@ -24,7 +24,7 @@ if [[ $# -gt 3 ]]; then
 fi
 
 N="${1:-500}"
-K="${2:-18}"
+K="${2:-12}"
 DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
@@ -57,6 +57,19 @@ echo "Phage strains : $phage_strains"
 # ── Training run ──────────────────────────────────────────────────────────────
 CUSTOM_OUT="$CUSTOM_PARENT_DIR/cluster_b${bcluster_num}_p${pcluster_num}"
 
+#if "encoded_sketches" in "$DOWNDIR"; then add --use_encoded argument to FFNN_inner.py
+if [[ "$DOWNDIR" == *"encoded_sketches"* ]]; then
+    ENCODED_FLAG="--use_encoded"
+else
+    ENCODED_FLAG=""
+fi
+
+#if "data2" in "$DOWNDIR"; then add --data2 argument to FFNN_inner.py
+if [[ "$DOWNDIR" == *"data2"* ]]; then
+    DATA2_FLAG="--data2"
+else
+    DATA2_FLAG=""
+fi
 
 python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
     --nk "$N" "$K" \
@@ -69,7 +82,9 @@ python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
     --perform_pfi \
     --top_kmers_num 200 \
     --out "$CUSTOM_OUT" \
-    --logging
+    --logging \
+    $DATA2_FLAG \
+    $ENCODED_FLAG
 
 # ── Extract and persist accuracy for this pair ────────────────────────────────
 # Write to a per-pair file so the post-processing job can gather them all
