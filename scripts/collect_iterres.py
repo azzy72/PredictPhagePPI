@@ -111,7 +111,6 @@ def calculate_unified_score(metrics_dict):
     
     return round(final_score, 4)
 
-
 def extract_metrics_from_log(file_path):
     """Parses a single log file for key performance metrics."""
     with open(file_path, 'r') as f:
@@ -666,6 +665,46 @@ def open_hk_lookup(hk_lookup_path, reverse=True):
         logger.log(f"hk_lookup JSON file not found at {hk_lookup_path}\tProceeding without it.")
         return None
 
+def balanced_top_k(df: pd.DataFrame, group_cols, sort_col: str, total_k: int) -> pd.DataFrame:
+    if df.empty or total_k <= 0:
+        return df.head(0)
+
+    if sort_col not in df.columns:
+        raise ValueError(f"Column '{sort_col}' not found in dataframe.")
+
+    sorted_df = df.sort_values(by=sort_col, ascending=False).copy()
+
+    if total_k >= len(sorted_df):
+        return sorted_df
+
+    n_groups = sorted_df.groupby(group_cols, sort=False).ngroups
+    if n_groups == 0:
+        return sorted_df.head(0)
+
+    base_quota = total_k // n_groups
+    remainder = total_k % n_groups
+
+    sorted_df['_group_rank'] = sorted_df.groupby(group_cols, sort=False).cumcount() + 1
+
+    if base_quota > 0:
+        selected = sorted_df[sorted_df['_group_rank'] <= base_quota].copy()
+    else:
+        selected = sorted_df.head(0).copy()
+
+    if remainder > 0:
+        extra_candidates = sorted_df[sorted_df['_group_rank'] == (base_quota + 1)]
+        extra = extra_candidates.nlargest(remainder, sort_col)
+        selected = pd.concat([selected, extra], ignore_index=False)
+
+    if len(selected) < total_k:
+        selected_idx = set(selected.index.tolist())
+        fill = sorted_df.loc[~sorted_df.index.isin(selected_idx)].nlargest(total_k - len(selected), sort_col)
+        selected = pd.concat([selected, fill], ignore_index=False)
+
+    selected = selected.sort_values(by=sort_col, ascending=False).head(total_k)
+    return selected.drop(columns=['_group_rank'], errors='ignore')
+
+
 def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=None, group_x_col=None, group_hue_col=None):
     all_data = []
     top_kmers_df = pd.DataFrame() # Placeholder top_kmers_csv file
@@ -772,6 +811,8 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         logger.log("top_kmers_df is empty. No k-mer data to process or plot.")
         top_kmers_go = False
 
+
+
     ### Metrics Extraction Summary and Plotting ###
     if all_data:
         df = pd.DataFrame(all_data)
@@ -844,9 +885,11 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         
         plotting = MetricPlottingUtils(df=df, outdir=str(outdir), x_col=x_col, hue_col=hue_col, x_col_by_cluster=(group_x_col == 'cluster'), x_col_by_phage=(group_x_col == 'phage'))
         plotting.plot_graphs()
-        # Optional: save the raw data for inspection
+        # Save the raw data for inspection
         df.to_csv(outdir +'all_runs_summary.csv', index=False)
-        logger.log("✓ Summary CSV saved as all_runs_summary.csv")
+        if top_kmers_go:
+            top_kmers_df.to_csv(outdir + 'top_kmers_summary.csv', index=False)
+        logger.log("✓ Summary CSVs saved as all_runs_summary.csv and top_kmers_summary.csv")
     else:
         logger.log("No valid data found for Metrics Plotting.")
     
@@ -867,7 +910,12 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
 
         # Keep only args.top_kmers number of kkmers per entity per folder based on UPS score
         if not bact_kmers_df.empty:
-            bact_kmers_df = bact_kmers_df.sort_values(by=sort_by, ascending=False).groupby(['folder', 'entity']).head(args.top_kmers)
+            bact_kmers_df = balanced_top_k(
+                df=bact_kmers_df,
+                group_cols=['folder', 'entity'],
+                sort_col=sort_by,
+                total_k=args.top_kmers
+            )
             logger.log(f"Top k-mers with {sort_by} scores - bacterium:")
             logger.log(f"{bact_kmers_df[['entity', 'decoded_kmer', sort_by]].head()}")
             bact_len_after = len(bact_kmers_df)
@@ -877,7 +925,12 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             bact_len_after = 0
 
         if not phage_kmers_df.empty:
-            phage_kmers_df = phage_kmers_df.sort_values(by=sort_by, ascending=False).groupby(['folder', 'entity']).head(args.top_kmers)
+            phage_kmers_df = balanced_top_k(
+                df=phage_kmers_df,
+                group_cols=['folder', 'entity'],
+                sort_col=sort_by,
+                total_k=args.top_kmers
+            )
             logger.log(f"Top k-mers with {sort_by} scores - phage:")
             logger.log(f"{phage_kmers_df[['entity', 'decoded_kmer', sort_by]].head()}")
             phage_len_after = len(phage_kmers_df)

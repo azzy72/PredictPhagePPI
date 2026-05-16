@@ -7,9 +7,9 @@
 #SBATCH --job-name=IterExclPostProcess
 #SBATCH --partition=cpu      # no GPU needed here — adjust to your cluster
 #SBATCH --nodes=1
-#SBATCH --mem=8G
-#SBATCH --cpus-per-task=4
-#SBATCH --time=01:00:00
+#SBATCH --mem=12G
+#SBATCH --cpus-per-task=8
+#SBATCH --time=24:00:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=ALL
