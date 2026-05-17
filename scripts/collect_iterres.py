@@ -325,7 +325,7 @@ class GAPlottingUtils:
             gene_counts = df['product'].value_counts()
 
         # Limit number of x values to avoid overlapping labels
-        gene_counts = self._limit_series_top(gene_counts, max_items=50)
+        gene_counts = self._limit_series_top(gene_counts, max_items=40)
 
         plt.figure(figsize=(10, 6))
         sns.barplot(x=gene_counts.index, y=gene_counts.values, palette='viridis')
@@ -344,7 +344,7 @@ class GAPlottingUtils:
         gene_kmer_counts = df['kmer_in_seq'].value_counts()
 
         # Limit number of x values to avoid overlapping labels
-        gene_kmer_counts = self._limit_series_top(gene_kmer_counts, max_items=50)
+        gene_kmer_counts = self._limit_series_top(gene_kmer_counts, max_items=40)
         plt.figure(figsize=(10, 6))
         sns.barplot(x=gene_kmer_counts.index, y=gene_kmer_counts.values, palette='magma')
         plt.title(f'Distribution of Top {title_suffix} {entity_type.capitalize()} Kmers')
@@ -374,8 +374,8 @@ class GAPlottingUtils:
         # Reduce number of x-axis tick labels to at most 50 to avoid overlap
         try:
             unique_x = np.unique(df['kmer_in_seq'].values)
-            if len(unique_x) > 50:
-                idx = np.linspace(0, len(unique_x) - 1, num=50, dtype=int)
+            if len(unique_x) > 40:
+                idx = np.linspace(0, len(unique_x) - 1, num=40, dtype=int)
                 tick_vals = unique_x[idx]
                 ax.set_xticks(tick_vals)
                 ax.set_xticklabels([str(v) for v in tick_vals], rotation=45, ha='right')
