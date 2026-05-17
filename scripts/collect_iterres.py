@@ -49,6 +49,8 @@ def parse_arguments():
                         help="Whether to weight the PFI scores by the corresponding test (balanced) accuracy of each run")
     parser.add_argument("--top_kmers", type=int, default=500,
                         help="Number of top k-mers to extract and analyze")
+    parser.add_argument("--filter_harsh", action='store_true',
+                        help="Whether to apply harsh filtering criteria on the success of runs (only include runs that have; test accuracy above 0.5 and precision and recall above 0.5)")
     
     ## Optional grouping arguments for more flexible plotting 
     parser.add_argument("--show_cm_bar_percentage", action='store_true',
@@ -872,6 +874,16 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         # Marking TP = 0 runs as failed runs for better visualization in the confusion matrix bar plot and heatmap
         if 'TP' in df.columns:
             df['status'] = df.apply(lambda row: False if row['TP'] == 0 or row['TP'] is None else row['status'], axis=1)
+        
+        if args.filter_harsh:
+            prec_recall_threshold = 0.5
+            if len(df["precision"].dropna()) > 0:
+                if (df["precision"] > 0.5).any() and (df["recall"] > prec_recall_threshold).any():
+                    df['status'] = df.apply(lambda row: False if row['precision'] <= prec_recall_threshold or row['precision'] is None else row['status'], axis=1)
+                    df['status'] = df.apply(lambda row: False if row['recall'] <= prec_recall_threshold or row['recall'] is None else row['status'], axis=1)
+            if len(df["test_accuracy"].dropna()) > 0:
+                if (df["test_accuracy"] > 0.5).any():
+                    df['status'] = df.apply(lambda row: False if row['test_accuracy'] <= 0.5 or row['test_accuracy'] is None else row['status'], axis=1)
             
         
         # Subsetting df to only include successful runs
