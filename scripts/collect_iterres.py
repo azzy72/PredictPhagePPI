@@ -301,6 +301,19 @@ class GAPlottingUtils:
     def __init__(self, df, outdir):
         self.df = df
         self.outdir = outdir
+
+    def _limit_series_top(self, series: pd.Series, max_items: int = 40) -> pd.Series:
+        """
+        Return the top `max_items` entries of a value-count Series. If the series
+        length is already <= max_items it's returned unchanged.
+        """
+        try:
+            if len(series) <= max_items:
+                return series
+            # Ensure highest counts first
+            return series.sort_values(ascending=False).head(max_items)
+        except Exception:
+            return series
     
     def plot_top_genes(self, df: pd.DataFrame, entity_type : str, title_suffix: str = ""):
         """
@@ -310,6 +323,9 @@ class GAPlottingUtils:
             gene_counts = df['gene'].value_counts()
         elif entity_type == "phage":
             gene_counts = df['product'].value_counts()
+
+        # Limit number of x values to avoid overlapping labels
+        gene_counts = self._limit_series_top(gene_counts, max_items=50)
 
         plt.figure(figsize=(10, 6))
         sns.barplot(x=gene_counts.index, y=gene_counts.values, palette='viridis')
@@ -326,6 +342,9 @@ class GAPlottingUtils:
         Plot the distribution of k-mers across different genes for the given entity type
         """
         gene_kmer_counts = df['kmer_in_seq'].value_counts()
+
+        # Limit number of x values to avoid overlapping labels
+        gene_kmer_counts = self._limit_series_top(gene_kmer_counts, max_items=50)
         plt.figure(figsize=(10, 6))
         sns.barplot(x=gene_kmer_counts.index, y=gene_kmer_counts.values, palette='magma')
         plt.title(f'Distribution of Top {title_suffix} {entity_type.capitalize()} Kmers')
@@ -346,11 +365,23 @@ class GAPlottingUtils:
         
         plt.figure(figsize=(10, 6))
         title_part = "Unified Performance Score (UPS)" if sort_by == 'UPS' else "PFI Score"
-        sns.scatterplot(x='kmer_in_seq', y=sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'product', palette='coolwarm')
+        ax = sns.scatterplot(x='kmer_in_seq', y=sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'product', palette='coolwarm')
         plt.title(f'Kmer Count vs {title_part} for {entity_type.capitalize()} Kmers')
         plt.xlabel('Kmer Count')
         plt.ylabel(title_part)
         plt.legend(title='Gene' if entity_type == 'bacterium' else 'Product', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        # Reduce number of x-axis tick labels to at most 50 to avoid overlap
+        try:
+            unique_x = np.unique(df['kmer_in_seq'].values)
+            if len(unique_x) > 50:
+                idx = np.linspace(0, len(unique_x) - 1, num=50, dtype=int)
+                tick_vals = unique_x[idx]
+                ax.set_xticks(tick_vals)
+                ax.set_xticklabels([str(v) for v in tick_vals], rotation=45, ha='right')
+        except Exception:
+            pass
+
         plt.tight_layout()
         plt.savefig(self.outdir + f'kmer_vs_{sort_by.lower()}_{entity_type}.png')
         plt.close()
