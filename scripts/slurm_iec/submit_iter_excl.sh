@@ -20,7 +20,7 @@ PHAGE_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_phage_clusters_n${N
 
 # ── 1. Enumerate every (bcluster, pcluster) pair and write a task-map file ───
 # Each line of the task map = one array task index → "bcluster_num pcluster_num"
-TASK_MAP="$ROOT_DIR/tmp/iter_excl_task_map_${N}_${K}.txt"
+TASK_MAP="$ROOT_DIR/tmp/IterExcl_Taskmap_${DOWNDIR}_${N}_${K}.txt"
 mkdir -p "$ROOT_DIR/tmp"
 rm -f "$TASK_MAP"
 
@@ -51,7 +51,7 @@ pp_job_id=$(sbatch \
     --parsable \
     --kill-on-invalid-dep=yes \
     "$ROOT_DIR/scripts/slurm_iec/ffnn_postprocess.sh" \
-    "$N" "$K")
+    "$N" "$K" "$DOWNDIR")
 
 echo "Submitted post-processing job: $pp_job_id  (runs after $array_job_id)"
 echo ""

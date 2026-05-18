@@ -8,8 +8,8 @@
 #SBATCH --partition=cpu      # no GPU needed here — adjust to your cluster
 #SBATCH --nodes=1
 #SBATCH --mem=12G
-#SBATCH --cpus-per-task=8
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --time=48:00:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=ALL
@@ -17,17 +17,18 @@
 
 set -euo pipefail
 
-if [[ $# -gt 2 ]]; then
-    echo "Usage: sbatch ffnn_postprocess.sh [N] [K]" >&2
+if [[ $# -gt 3 ]]; then
+    echo "Usage: sbatch ffnn_postprocess.sh [N] [K] [DOWNDIR]" >&2
     exit 1
 fi
 
 N="${1:-500}"
 K="${2:-12}"
+DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
-DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/iter_excl_PFI_parallel_n${N}_k${K}"
-ACC_DIR="$ROOT_DIR/tmp/accuracies_n${N}_k${K}"
+DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/IterExcl_${DOWNDIR}_n${N}_k${K}"
+ACC_DIR="$ROOT_DIR/tmp/accuracies_${DOWNDIR}_n${N}_k${K}"
 
 # ── 3. Post-Processing: Average Accuracies ────────────────────────────────────
 echo "-------------------------------------------------------"
@@ -39,7 +40,7 @@ accuracies=$(cat "$ACC_DIR"/*.txt 2>/dev/null || true)
 
 if [[ -z "$accuracies" ]]; then
     echo "WARNING: no accuracy files found in $ACC_DIR — skipping average."
-else
+els
     average=$(echo "$accuracies" | awk 'NF > 0 { sum += $1; count++ } END { if (count > 0) print sum / count; else print "0" }')
     total_runs=$(echo "$accuracies" | grep -c '[0-9]' || true)
 
@@ -52,7 +53,17 @@ echo ""
 echo "📊 Collecting results..."
 python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --base_dir "$DIR_IN_NN_RUN" \
-    --out_dir "$DATA_DIR/iterExclClus_n${N}_k${K}/" \
+    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}/" \
     --show_cm_bar_percentage \
     --weight_pfi \
     --top_kmers 200
+
+echo ""
+echo "📊 Collecting results with harsh filtering..."
+python3 "$ROOT_DIR/scripts/collect_iterres.py" \
+    --base_dir "$DIR_IN_NN_RUN" \
+    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_harsh/" \
+    --show_cm_bar_percentage \
+    --weight_pfi \
+    --top_kmers 200 \
+    --filter_harsh
