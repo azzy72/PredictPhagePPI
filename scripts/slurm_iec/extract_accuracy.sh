@@ -3,9 +3,9 @@
 # Extracts the final test accuracy from a completed training run and writes it to a file.
 # This is indepdentn of the pipeline
 
-N=500
-K=18
-DOWNDIR="encoded_sketches" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
+N="${1:-500}"
+K="${2:-18}"
+DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
 CUSTOM_PARENT_DIR="iter_excl_PFI_parallel_n${N}_k${K}" # for organizing outputs by config
@@ -36,9 +36,10 @@ echo "Phage strains : $phage_strains"
 
 # ── Extract and persist accuracy for this pair ────────────────────────────────
 # Write to a per-pair file so the post-processing job can gather them all
-# without any race conditions.
-ACC_FILE="$ROOT_DIR/tmp/accuracies_n${N}_k${K}/b${bcluster_num}_p${pcluster_num}.txt"
-mkdir -p "$(dirname "$ACC_FILE")"
+# without any race conditions. Use the same naming scheme as the postprocess job.
+ACC_DIR="$ROOT_DIR/tmp/accuracies_${DOWNDIR}_n${N}_k${K}"
+ACC_FILE="$ACC_DIR/b${bcluster_num}_p${pcluster_num}.txt"
+mkdir -p "$ACC_DIR"
 
 acc=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run1/log_run1.txt" \
         -exec grep "Final test loss:" {} + \

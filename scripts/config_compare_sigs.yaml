@@ -5,16 +5,16 @@
 # Encoding/sketch directories to process.
 # Each must contain BactMinhash_n{n}_k{k}/ and PhageMinhash_n{n}_k{k}/ subdirs.
 sketch_dirs:
-  - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches
+#  - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches
   - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches
-  - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches_data2
-  - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches_data2 
+#  - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches_data2
+#  - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches_data2 
 
 # Downsampling parameter sweep
-n_values: [50, 100, 300, 500, 1000, 5000]
-k_values: [6, 9, 12, 15, 18, 24, 32, 51]
-# n_values: [5000]
-# k_values: [24, 32, 51]
+# n_values: [50, 100, 300, 500, 1000, 5000]
+# k_values: [6, 9, 12, 15, 18, 24, 32, 51]
+n_values: [500]
+k_values: [24]
 
 
 # Bacteria genus-lookup CSV (produced externally; used for label prefixing)

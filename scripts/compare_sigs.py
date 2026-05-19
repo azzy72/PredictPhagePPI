@@ -87,47 +87,95 @@ def run(cmd: list[str], *, cwd: Path | None = None, dry_run: bool = False) -> No
         subprocess.run(cmd, cwd=cwd, check=True)
 
 
-def already_done(path: Path, dry_run: bool) -> bool:
+def already_done(path: Path, dry_run: bool, force: bool) -> bool:
     """Skip a step whose output already exists (unless dry-running)."""
-    if not dry_run and path.exists():
+    if not dry_run and path.exists() and not force:
         log.info("  SKIP – already exists: %s", path)
         return True
     return False
+
+def _assign_partitions(df: pd.DataFrame, num_partitions: int) -> pd.DataFrame:
+    """
+    Assign clusters to partitions such that partitions are balanced in size
+    and clusters are not split across partitions.
+    
+    Clusters are sorted and assigned to partitions greedily, always adding
+    the next cluster to the partition with the smallest current size.
+    """
+    if num_partitions < 1:
+        raise ValueError("num_partitions must be >= 1")
+    
+    if num_partitions == 1:
+        # All labels go to partition 0
+        df = df.copy()
+        df["Partition"] = 0
+        return df
+    
+    # Group by cluster and count size
+    cluster_sizes = df.groupby("Cluster").size().reset_index(name="size")
+    cluster_sizes = cluster_sizes.sort_values("Cluster").reset_index(drop=True)
+    
+    # Initialize partitions
+    partitions = [[] for _ in range(num_partitions)]
+    partition_sizes = [0] * num_partitions
+    
+    # Assign clusters to partitions, balancing size
+    for _, row in cluster_sizes.iterrows():
+        cluster_id = int(row["Cluster"])
+        size = int(row["size"])
+        # Find partition with smallest current size
+        min_idx = partition_sizes.index(min(partition_sizes))
+        partitions[min_idx].append(cluster_id)
+        partition_sizes[min_idx] += size
+    
+    # Create mapping from cluster to partition
+    cluster_to_partition = {}
+    for partition_id, clusters in enumerate(partitions):
+        for cluster_id in clusters:
+            cluster_to_partition[cluster_id] = partition_id
+    
+    # Assign partition to each row
+    df = df.copy()
+    df["Partition"] = df["Cluster"].map(cluster_to_partition).astype(int)
+    
+    return df
+
 
 
 # ── Pipeline steps ────────────────────────────────────────────────────────────
 
 def step1_compare(sig_dir: Path, out_mat: Path, out_labels: Path,
-                  dry_run: bool) -> None:
+                  dry_run: bool, force: bool) -> None:
     """Run sourmash compare to produce a similarity matrix."""
     log.info("── Step 1: sourmash compare  →  %s", out_mat.name)
-    if already_done(out_mat, dry_run):
+    if already_done(out_mat, dry_run, force):
         return
     out_mat.parent.mkdir(parents=True, exist_ok=True)
-    run(
-        ["sourmash", "compare", str(sig_dir),
-         "-o", str(out_mat),
-         "--labels-to", str(out_labels)],
-        dry_run=dry_run,
-    )
+    cmd = ["sourmash", "compare", str(sig_dir), "-o", str(out_mat), "--labels-to", str(out_labels)]
+    if force:
+        cmd.append("-f")
+    run(cmd,cwd=sig_dir.parent, dry_run=dry_run)
 
 
-def step2_plot_standard(mat: Path, dry_run: bool) -> None:
+def step2_plot_standard(mat: Path, dry_run: bool, force: bool) -> None:
     """Run sourmash plot (writes <mat>.png next to the matrix file)."""
     png = mat.with_suffix(mat.suffix + ".png")
     log.info("── Step 2: sourmash plot     →  %s", png.name)
-    if already_done(png, dry_run):
+    if already_done(png, dry_run, force):
         return
     # sourmash plot puts output in cwd, so cd into sim_matrices/
-    run(["sourmash", "plot", mat.name], cwd=mat.parent, dry_run=dry_run)
+    cmd = ["sourmash", "plot", mat.name]
+    if force:
+        cmd.append("-f")
+    run(cmd, cwd=mat.parent, dry_run=dry_run)
 
 
 def step3_prefix_labels(labels_to: Path, genus_csv: Path,
                         prefix_script: Path, out_prefixed: Path,
-                        dry_run: bool) -> None:
+                        dry_run: bool, force: bool) -> None:
     """Prefix bacteria sample labels with their genus names."""
     log.info("── Step 3: prefix labels     →  %s", out_prefixed.name)
-    if already_done(out_prefixed, dry_run):
+    if already_done(out_prefixed, dry_run, force):
         return
     if dry_run:
         log.info("  bash %s %s %s > %s",
@@ -143,33 +191,36 @@ def step3_prefix_labels(labels_to: Path, genus_csv: Path,
 
 def step4_dendrogram(mat: Path, labels: Path, out_png: Path,
                      cut_point: float, figsize_x: int, figsize_y: int,
-                     dry_run: bool) -> None:
+                     dry_run: bool, force: bool) -> None:
     """Run sourmash scripts plot2 to produce an annotated dendrogram."""
     log.info("── Step 4: dendrogram        →  %s", out_png.name)
-    if already_done(out_png, dry_run):
+    if already_done(out_png, dry_run, force):
         return
-    run(
-        ["sourmash", "scripts", "plot2",
+    cmd = ["sourmash", "scripts", "plot2",
          str(mat), str(labels),
          "-o", str(out_png),
          f"--cut-point={cut_point}",
          "--cluster-out",
          "--figsize-x", str(figsize_x),
-         "--figsize-y", str(figsize_y)],
-         cwd=mat.parent,
-        dry_run=dry_run,
-    )
+         "--figsize-y", str(figsize_y)]
+    if force:
+        cmd.append("-f")
+    run(cmd,cwd=mat.parent,dry_run=dry_run)
 
-def step5_collect_clusters(sim_mat_dir: Path, n: int, k: int, dry_run: bool) -> None:
+def step5_collect_clusters(sim_mat_dir: Path, n: int, k: int, dry_run: bool,
+                           num_partitions: int = 1, force: bool = False) -> None:
     """
     Aggregates .mat.[num].csv files and removes individual files after processing.
+    Also creates partition files that assign labels to partitions.
     """
     log.info("── Step 5: collect & cleanup clusters in %s", sim_mat_dir.name)
     
     out_bact = sim_mat_dir / f"combined_bact_clusters_n{n}_k{k}.csv"
     out_phage = sim_mat_dir / f"combined_phage_clusters_n{n}_k{k}.csv"
+    out_bact_partitions = sim_mat_dir / f"bact_partitions_n{n}_k{k}.csv"
+    out_phage_partitions = sim_mat_dir / f"phage_partitions_n{n}_k{k}.csv"
 
-    if not dry_run and out_bact.exists() and out_phage.exists():
+    if not dry_run and out_bact.exists() and out_phage.exists() and not force:
         log.info("  SKIP – summary files already exist.")
         return
 
@@ -217,17 +268,29 @@ def step5_collect_clusters(sim_mat_dir: Path, n: int, k: int, dry_run: bool) -> 
             bact_clust_count += 1
             processed_files.append(file_path)
 
+    # Add partition assignments
+    combined_bact = _assign_partitions(combined_bact, num_partitions)
+    combined_phage = _assign_partitions(combined_phage, num_partitions)
+
     if dry_run:
-        log.info("  [dry-run] Would save aggregated CSVs and remove %d individual files", len(processed_files))
+        log.info("  [dry-run] Would save aggregated CSVs, partition files, and remove %d individual files", len(processed_files))
         return
 
     # Save aggregated results
     if not combined_bact.empty:
         combined_bact.to_csv(out_bact)
         log.info("  Saved: %s", out_bact.name)
+        # Save partition file
+        bact_partitions = combined_bact[["Partition"]].copy()
+        bact_partitions.to_csv(out_bact_partitions)
+        log.info("  Saved: %s", out_bact_partitions.name)
     if not combined_phage.empty:
         combined_phage.to_csv(out_phage)
         log.info("  Saved: %s", out_phage.name)
+        # Save partition file
+        phage_partitions = combined_phage[["Partition"]].copy()
+        phage_partitions.to_csv(out_phage_partitions)
+        log.info("  Saved: %s", out_phage_partitions.name)
 
     # Cleanup: Delete individual files only if aggregation was successful
     for f in processed_files:
@@ -243,7 +306,7 @@ def step5_collect_clusters(sim_mat_dir: Path, n: int, k: int, dry_run: bool) -> 
 # ── Per-parameter-combination entry point ────────────────────────────────────
 
 def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
-                        dry_run: bool) -> None:
+                        dry_run: bool, force: bool) -> None:
     sim_dir = sketch_dir / "sim_matrices"
     tag = f"n{n}_k{k}"
 
@@ -268,19 +331,21 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
 
     
 
-    step1_compare(bact_dir, bact_mat, bact_lbl, dry_run)
-    step2_plot_standard(bact_mat, dry_run)
+    step1_compare(bact_dir, bact_mat, bact_lbl, dry_run, force)
+    step2_plot_standard(bact_mat, dry_run, force)
     step3_prefix_labels(
         bact_lbl,
         Path(cfg["bact_labels_csv"]),
         Path(cfg["prefix_script"]),
         bact_pre,
         dry_run,
+        force,
     )
     step4_dendrogram(
         bact_mat, bact_pre, bact_den,
         cfg["bact_cut_point"], cfg["figsize_x"], cfg["figsize_y"],
         dry_run,
+        force,
     )
 
     # ── Phage ─────────────────────────────────────────────────────────────────
@@ -300,17 +365,18 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
         phage_lbl = sim_dir / f"PhageSim_{tag}.mat.labels_to.csv"
         phage_den = sim_dir / f"PhageDendro_{tag}.png"
 
-    step1_compare(phage_dir, phage_mat, phage_lbl, dry_run)
-    step2_plot_standard(phage_mat, dry_run)
+    step1_compare(phage_dir, phage_mat, phage_lbl, dry_run, force)
+    step2_plot_standard(phage_mat, dry_run, force)
     # Phage uses the raw labels_to CSV directly (no genus prefixing)
     step4_dendrogram(
         phage_mat, phage_lbl, phage_den,
         cfg["phage_cut_point"], cfg["figsize_x"], cfg["figsize_y"],
         dry_run,
+        force,
     )
 
     # ── Aggregation & Cleanup ─────────────────────────────────────────────────
-    step5_collect_clusters(sim_dir, n, k, dry_run)
+    step5_collect_clusters(sim_dir, n, k, dry_run, cfg["num_partitions"], force)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -328,7 +394,15 @@ def main() -> None:
                         help=f"Path to config YAML (default: {scripts_path}config_compare_sigs.yaml)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print commands without executing them")
+    parser.add_argument("--force", action="store_true",
+                        help="Ignore existing output files and re-write them")
     args = parser.parse_args()
+    
+    # Requirement: dry-run and force are mutually exclusive
+    if args.dry_run and args.force:
+        log.error("Arguments --dry-run and --force cannot be used together.")
+        sys.exit(1)
+    
     check_dependencies()
 
     config_path = Path(args.config)
@@ -344,6 +418,7 @@ def main() -> None:
     cfg.setdefault("phage_cut_point", 1.12)
     cfg.setdefault("figsize_x", 20)
     cfg.setdefault("figsize_y", 18)
+    cfg.setdefault("num_partitions", 6)
 
     if args.dry_run:
         log.info("DRY-RUN MODE – no commands will be executed")
@@ -355,9 +430,10 @@ def main() -> None:
     ))
     log.info("Processing %d combination(s) across %d sketch dir(s)",
              len(combos), len(cfg["sketch_dirs"]))
+    log.info("Force mode: %s", "ON" if args.force else "OFF")
 
     for sketch_dir_str, n, k in combos:
-        process_combination(Path(sketch_dir_str), int(n), int(k), cfg, args.dry_run)
+        process_combination(Path(sketch_dir_str), int(n), int(k), cfg, args.dry_run, args.force)
 
     log.info("Pipeline complete.")
 

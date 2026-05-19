@@ -125,7 +125,8 @@ def extract_metrics_from_log(file_path):
         'precision': None,
         'recall': None,
         'f1': None,
-        'TN': None, 'FN': None, 'FP': None, 'TP': None
+        'TN': None, 'FN': None, 'FP': None, 'TP': None,
+        'train_pairs': None, 'test_pairs': None, 'test_train_ratio': None,
     }
 
     run_info = {
@@ -291,6 +292,15 @@ def extract_metrics_from_log(file_path):
             metrics['FN'] = int(cm_match.group(2))
             metrics['FP'] = int(cm_match.group(3))
             metrics['TP'] = int(cm_match.group(4))
+    
+    # Extract Dataset Pairs: "Built dataset with X pairs and excluded Y pairs"
+    # X = train_pairs, Y = test_pairs (excluded is test)
+    pairs_match = re.search(r"Built dataset with (\d+) pairs and excluded (\d+) pairs", content)
+    if pairs_match:
+        metrics['train_pairs'] = int(pairs_match.group(1))
+        metrics['test_pairs'] = int(pairs_match.group(2))
+        if metrics['train_pairs'] is not None and metrics['test_pairs'] is not None and metrics['train_pairs'] > 0:
+            metrics['test_train_ratio'] = round(metrics['test_pairs'] / metrics['train_pairs'], 4)
     
     if "INFO - Process completed in" in content:
         metrics['status'] = True

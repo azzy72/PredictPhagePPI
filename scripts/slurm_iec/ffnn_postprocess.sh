@@ -17,6 +17,8 @@
 
 set -euo pipefail
 
+# directory of this script (works even if run from another cwd)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &>/dev/null && pwd )"
 if [[ $# -gt 3 ]]; then
     echo "Usage: sbatch ffnn_postprocess.sh [N] [K] [DOWNDIR]" >&2
     exit 1
@@ -36,11 +38,25 @@ echo "Calculating Average Test Accuracy..."
 echo "-------------------------------------------------------"
 
 # Collect all per-pair accuracy files written by the array tasks
-accuracies=$(cat "$ACC_DIR"/*.txt 2>/dev/null || true)
+shopt -s nullglob
+acc_files=("$ACC_DIR"/*.txt)
 
-if [[ -z "$accuracies" ]]; then
+if [[ ${#acc_files[@]} -eq 0 ]]; then
+    echo "WARNING: no accuracy files found in $ACC_DIR — attempting to run extractor."
+    # Try to run the per-run extractor script (same dir) to populate accuracies
+    if [[ -x "$SCRIPT_DIR/extract_accuracy.sh" ]]; then
+        "$SCRIPT_DIR/extract_accuracy.sh" "$N" "$K" "$DOWNDIR" || true
+    else
+        sh "$SCRIPT_DIR/extract_accuracy.sh" "$N" "$K" "$DOWNDIR" || true
+    fi
+    # re-evaluate accuracy files after attempted extraction
+    acc_files=("$ACC_DIR"/*.txt)
+fi
+
+if [[ ${#acc_files[@]} -eq 0 ]]; then
     echo "WARNING: no accuracy files found in $ACC_DIR — skipping average."
-els
+else
+    accuracies=$(cat "${acc_files[@]}" 2>/dev/null || true)
     average=$(echo "$accuracies" | awk 'NF > 0 { sum += $1; count++ } END { if (count > 0) print sum / count; else print "0" }')
     total_runs=$(echo "$accuracies" | grep -c '[0-9]' || true)
 

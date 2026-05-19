@@ -5,6 +5,7 @@
 #   bash run_compare_sigs.sh                   # use default config.yaml
 #   bash run_compare_sigs.sh --config my.yaml  # custom config
 #   bash run_compare_sigs.sh --dry-run         # print commands, don't run
+#   bash run_compare_sigs.sh --force           # ignore existing output files and overwrite them
 #
 # The script resolves its own directory so it can be called from anywhere.
 

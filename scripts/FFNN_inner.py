@@ -1172,6 +1172,7 @@ def main():
             for (phage_hash, bact_hash), score in top_pairs:
                 top_minhashes.add(phage_hash)
                 top_minhashes.add(bact_hash)
+            
             filtered_idx_to_minhash = {idx: mh for idx, mh in idx_to_minhash.items() if mh in top_minhashes}
 
             # Regain k-mers for the top interaction pairs
