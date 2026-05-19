@@ -44,16 +44,16 @@ submit_for_combination() {
         return 1
     fi
 
-    # ── 1. Enumerate every (bcluster, pcluster) pair and write a task-map file ───
+    # ── 1. Enumerate every (bpartition, ppartition) pair and write a task-map file ───
     TASK_MAP="$ROOT_DIR/tmp/IterExcl_Taskmap_${DOWNDIR}_${N}_${K}.txt"
     mkdir -p "$ROOT_DIR/tmp"
     rm -f "$TASK_MAP"
 
-    bclusters=$(tail -n +2 "$BACT_CLUSTER_FILE" | awk -F',' '{print $2}' | sort -nu)
-    pclusters=$(tail -n +2 "$PHAGE_CLUSTER_FILE" | awk -F',' '{print $3}' | sort -u)
+    bpartitions=$(tail -n +2 "$BACT_CLUSTER_FILE" | awk -F',' '{print $3}' | sort -nu)
+    ppartitions=$(tail -n +2 "$PHAGE_CLUSTER_FILE" | awk -F',' '{print $4}' | sort -u)
 
-    for b in $bclusters; do
-        for p in $pclusters; do
+    for b in $bpartitions; do
+        for p in $ppartitions; do
             echo "$b $p" >> "$TASK_MAP"
         done
     done

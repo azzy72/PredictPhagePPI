@@ -43,12 +43,12 @@ echo "Array task $SLURM_ARRAY_TASK_ID → bcluster=$bcluster_num  pcluster=$pclu
 
 # ── Resolve strain names from the cluster CSVs ────────────────────────────────
 bact_strains=$(tail -n +2 "$BACT_CLUSTER_FILE" \
-    | awk -F',' -v c="$bcluster_num" '$2==c {print $1}' \
+    | awk -F',' -v c="$bcluster_num" '$3==c {print $1}' \
     | paste -sd ',' -)
 bact_strains=$(echo "$bact_strains" | sed 's/_reoriented//g')
 
 phage_strains=$(tail -n +2 "$PHAGE_CLUSTER_FILE" \
-    | awk -F',' -v c="$pcluster_num" '$3==c {print $1}' \
+    | awk -F',' -v c="$pcluster_num" '$4==c {print $1}' \
     | paste -sd ',' -)
 
 echo "Bact strains  : $bact_strains"
