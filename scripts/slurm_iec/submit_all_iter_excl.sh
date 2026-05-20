@@ -9,7 +9,7 @@ set -euo pipefail
 #N_VALUES=(300 500 1000)
 #K_VALUES=(9 12 18 24 32 51)
 N_VALUES=(500)
-K_VALUES=(24)
+K_VALUES=(12 24)
 DOWNDIR_VALUES=("SM_sketches" "encoded_sketches" "encoded_sketches_data2" "SM_sketches_data2")
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
@@ -73,7 +73,7 @@ submit_for_combination() {
 
     # ── 3. Submit post-processing, gated on the whole array finishing cleanly ─────
     pp_job_id=$(sbatch \
-        --dependency="afterok:${array_job_id}" \
+        --dependency="afterany:${array_job_id}" \
         --parsable \
         --kill-on-invalid-dep=yes \
         "$ROOT_DIR/scripts/slurm_iec/ffnn_postprocess.sh" \
