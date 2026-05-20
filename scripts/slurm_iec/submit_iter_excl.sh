@@ -47,7 +47,7 @@ echo "Submitted training array job: $array_job_id  (${total_tasks} tasks)"
 
 # ── 3. Submit post-processing, gated on the whole array finishing cleanly ─────
 pp_job_id=$(sbatch \
-    --dependency="afterok:${array_job_id}" \
+    --dependency="afterany:${array_job_id}" \
     --parsable \
     --kill-on-invalid-dep=yes \
     "$ROOT_DIR/scripts/slurm_iec/ffnn_postprocess.sh" \
