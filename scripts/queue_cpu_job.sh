@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=CompareSigsALL
+#SBATCH --job-name=CompSigsSM
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --mem=20G
 #SBATCH --cpus-per-task=1
-#SBATCH --time=02:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=END,FAIL

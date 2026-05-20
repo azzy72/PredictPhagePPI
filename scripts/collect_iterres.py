@@ -781,7 +781,6 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         logger.log(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing folder: {folder_name}")
         folder_path = os.path.join(base_dir, folder_name)
         if os.path.isdir(folder_path):
-            pfi_success = False
             top_int_kmer_success = False
             
             # Search for log files in this specific run folder
@@ -824,18 +823,17 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                         logger.log(f"Error reading {top_kmers_path}: {e}")
                 
                 # Extract pfi lookup
-                elif file.startswith("pfi_") and file.endswith(".txt"):
-                    pfi_file_path = os.path.join(folder_path, file)
-                    logger.log(f"Found PFI file: {file} in folder: {folder_name}")
-                    pfi_success = True
+                # elif file.startswith("pfi_") and file.endswith(".txt"):
+                #     pfi_file_path = os.path.join(folder_path, file)
+                #     logger.log(f"Found PFI file: {file} in folder: {folder_name}")
             
-            if kmer_to_gene is not None and top_int_kmer_success and pfi_success:
-                pfi_lookup = pd.read_csv(pfi_file_path, sep="\t")
-                logger.log(f"Processing PFI lookup for {folder_name}...")
-                pfi_class = PFI_Lookup(kmer_to_gene, pfi_lookup, TS=True)
-                df_kmers = pfi_class.append_pfi_values(df_kmers, kmer_col="decoded_kmer")
+            # if kmer_to_gene is not None and top_int_kmer_success:
+            #     pfi_lookup = pd.read_csv(pfi_file_path, sep="\t")
+            #     logger.log(f"Processing PFI lookup for {folder_name}...")
+            #     pfi_class = PFI_Lookup(kmer_to_gene, pfi_lookup, TS=True)
+            #     df_kmers = pfi_class.append_pfi_values(df_kmers, kmer_col="decoded_kmer")
             else:
-                logger.log(f"Skipping PFI calculation for {folder_name}. Reason: top_kmers={top_int_kmer_success}, pfi_file={pfi_success}, hk_lookup={kmer_to_gene is not None}")
+                logger.log(f"Skipping PFI calculation for {folder_name}. Reason: top_kmers={top_int_kmer_success}, hk_lookup={kmer_to_gene is not None}")
             
             if top_int_kmer_success:
                 top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
@@ -959,7 +957,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         logger.log(f"Bacterium k-mers sample:\n{bact_kmers_df.head()}")
         logger.log(f"Phage k-mers sample:\n{phage_kmers_df.head()}")
 
-        sort_by = 'UPS' if not args.weight_pfi else 'PFI'
+        sort_by = 'UPS' if not args.weight_pfi else 'avg_expected_interaction'
 
         # Keep only args.top_kmers number of kkmers per entity per folder based on UPS score
         if not bact_kmers_df.empty:

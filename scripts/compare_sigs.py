@@ -305,6 +305,33 @@ def step5_collect_clusters(sim_mat_dir: Path, n: int, k: int, dry_run: bool,
 
 # ── Per-parameter-combination entry point ────────────────────────────────────
 
+def _resolve_param_for_k(param_value, k, k_values, name: str):
+    """
+    Resolve a parameter that may be a scalar or a list indexed by `k_values`.
+
+    If `param_value` is a list, match the integer `k` against `k_values`
+    (which may be strings or numbers) and return the corresponding entry.
+    Falls back to the first or last element with warnings if lengths/matches
+    are inconsistent.
+    """
+    if isinstance(param_value, list):
+        try:
+            k_values_int = [int(x) for x in k_values]
+        except Exception:
+            k_values_int = [int(x) for x in k_values]
+        try:
+            idx = k_values_int.index(int(k))
+        except ValueError:
+            log.warning("k=%s not found in cfg['k_values']; using first %s", k, name)
+            return float(param_value[0])
+        if idx < len(param_value):
+            return float(param_value[idx])
+        else:
+            log.warning("Configured %s list shorter than cfg['k_values']; using last value", name)
+            return float(param_value[-1])
+    return float(param_value)
+
+
 def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
                         dry_run: bool, force: bool) -> None:
     sim_dir = sketch_dir / "sim_matrices"
@@ -341,9 +368,11 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
         dry_run,
         force,
     )
+    # Resolve bacteria cut-point (may be scalar or list indexed by k_values)
+    bact_cut = _resolve_param_for_k(cfg.get("bact_cut_point", cfg.get("bact_cut_point", 1.08)), k, cfg["k_values"], "bact_cut_point")
     step4_dendrogram(
         bact_mat, bact_pre, bact_den,
-        cfg["bact_cut_point"], cfg["figsize_x"], cfg["figsize_y"],
+        bact_cut, cfg["figsize_x"], cfg["figsize_y"],
         dry_run,
         force,
     )
@@ -368,9 +397,10 @@ def process_combination(sketch_dir: Path, n: int, k: int, cfg: dict,
     step1_compare(phage_dir, phage_mat, phage_lbl, dry_run, force)
     step2_plot_standard(phage_mat, dry_run, force)
     # Phage uses the raw labels_to CSV directly (no genus prefixing)
+    phage_cut = _resolve_param_for_k(cfg.get("phage_cut_point", cfg.get("phage_cut_point", 1.12)), k, cfg["k_values"], "phage_cut_point")
     step4_dendrogram(
         phage_mat, phage_lbl, phage_den,
-        cfg["phage_cut_point"], cfg["figsize_x"], cfg["figsize_y"],
+        phage_cut, cfg["figsize_x"], cfg["figsize_y"],
         dry_run,
         force,
     )

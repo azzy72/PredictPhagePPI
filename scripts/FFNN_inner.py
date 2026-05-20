@@ -1092,17 +1092,6 @@ def main():
                 test_phages = set(metadata_test[:, 0]) # Assuming phage names are in the first column of metadata
                 test_bacteria = set(metadata_test[:, 1]) # Assuming bacteria names are in the second column of metadata
 
-        # if args.exclude_clusters:
-        #     phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in args.exclude_phage_clusters}
-        #     bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in args.exclude_bact_clusters}
-        # else:
-        #     if bact_first:
-        #         phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in metadata_test[:, 1]} # Assuming phage names are in the second column of metadata
-        #         bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in metadata_test[:, 0]} # Assuming bacteria names are in the first column of metadata
-        #     else:
-        #         phage_minhash_data = {k: v for k, v in phage_minhash_data.items() if k in metadata_test[:, 0]} # Assuming phage names are in the first column of metadata
-        #         bact_minhash_data = {k: v for k, v in bact_minhash_data.items() if k in metadata_test[:, 1]} # Assuming bacteria names are in the second column of metadata
-        
         if args.logging: 
             print(f'Subsetted host range and minhash data to test set strains. Remaining bact strains: {len(host_range_data)}')
             print(f'Subsetted host range data: [{len(host_range_data)}x{len(next(iter(host_range_data.values())))}]')
@@ -1169,16 +1158,19 @@ def main():
             # Filter idx_to_minhash to only include the top X interaction pairs
             top_pairs = sorted(interaction_pairs.items(), key=lambda x: expected_interactions.get(x[0], 0), reverse=True)[:args.top_kmers_num] # Get top {args.top_kmers_num} pairs by expected interactions score
             top_minhashes = set()
+            minhash_expected_interactions = {}
             for (phage_hash, bact_hash), score in top_pairs:
+                pair_expected_interaction = expected_interactions.get((phage_hash, bact_hash), 0)
                 top_minhashes.add(phage_hash)
                 top_minhashes.add(bact_hash)
+                minhash_expected_interactions.setdefault(phage_hash, []).append(pair_expected_interaction)
+                minhash_expected_interactions.setdefault(bact_hash, []).append(pair_expected_interaction)
             
             filtered_idx_to_minhash = {idx: mh for idx, mh in idx_to_minhash.items() if mh in top_minhashes}
 
             # Regain k-mers for the top interaction pairs
             pfi_top_kmers_df = None
             try:
-                top_indices = [idx for idx, mh in filtered_idx_to_minhash.items()]
                 regain_kmers_out = regain_kmers(k=k, n=n, prefix=prefix, sourmash=sourmash_used, top_n=args.top_kmers_num, 
                                                 idx_to_minhash=filtered_idx_to_minhash, mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
                                                 logging_on=args.logging, logfile=logfile)
@@ -1187,14 +1179,19 @@ def main():
                     pfi_failed = True
                     raise Exception("regain_kmers() failed")
                 if args.logging: logging.info(f'Decoded k-mers for top interaction pairs: {list(pfi_top_kmers_decoded.values())}')
+                pfi_top_avg_expected_interaction = [
+                    float(np.mean(minhash_expected_interactions.get(filtered_idx_to_minhash.get(idx), [0])))
+                    for idx in pfi_top_idx.keys()
+                ]
                 pfi_top_kmers_df = pd.DataFrame({
                     "feature_index": list(pfi_top_kmers_decoded.keys()),
                     "entity": [idx_to_entity.get(idx, "unknown") for idx in pfi_top_kmers_decoded.keys()],
                     "organism": ["bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data_full.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data_full.keys() else "unknown") for idx in pfi_top_kmers_decoded.keys()],
-                    "decoded_kmer": list(pfi_top_kmers_decoded.values())
+                    "decoded_kmer": list(pfi_top_kmers_decoded.values()),
+                    "avg_expected_interaction": pfi_top_avg_expected_interaction
                 })
-                pfi_top_kmers_df.to_csv(outdir+"top_interaction_pair_kmers.csv", index=False)
-                if args.logging: logging.info(f'Saved decoded k-mers for top interaction pairs to {outdir+"top_interaction_pair_kmers.csv"}')
+                pfi_top_kmers_df.to_csv(outdir+"top_expected_interaction_pair_kmers.csv", index=False)
+                if args.logging: logging.info(f'Saved decoded k-mers for top interaction pairs to {outdir+"top_expected_interaction_pair_kmers.csv"}')
             except Exception as e:
                 logging.error(f"Error during k-mer regaining for top interaction pairs: {e}")
                 pfi_failed = True
