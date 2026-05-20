@@ -34,7 +34,8 @@ requirements:
 env:
 	@echo "🐍 Creating isolated conda environment '$(ENV_NAME)'..."
 	@conda create --name $(ENV_NAME) python=$(PYTHON_VERSION) --no-default-packages -y
-	@conda run -n $(ENV_NAME) pip install -r $(REQUIREMENTS_FILE) --no-cache-dir --isolated
+	@echo "📦 Installing dependencies..."
+	@$$(conda info --base)/envs/$(ENV_NAME)/bin/pip install -r $(REQUIREMENTS_FILE) --no-cache-dir --isolated
 	@echo "  [✓] Conda env '$(ENV_NAME)' ready. Run: conda activate $(ENV_NAME)"
 
 clean-reqs:
