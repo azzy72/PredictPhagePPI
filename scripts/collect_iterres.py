@@ -6,6 +6,7 @@ import ast
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
+import networkx as nx
 import seaborn as sns
 import numpy as np
 from tqdm import tqdm
@@ -63,6 +64,10 @@ def parse_arguments():
                         help="Column to use for grouping x-axis in plots")
     parser.add_argument("--group_hue_col", type=str, default=None,
                         help="Column to use for grouping hue in plots")
+    parser.add_argument("--highlight_multi", action='store_true',
+                        help="Highlight kmers that map to multiple genes in gene/kmer plots")
+    parser.add_argument("--network_top_kmers", type=int, default=50,
+                        help="Number of top kmers to include in the kmer-gene network plot")
     return parser.parse_args()
 
 def correct_deci_number(value):
@@ -331,20 +336,44 @@ class GAPlottingUtils:
         """
         Plot the annotated genes found in the entity specific dataframe (df)
         """
-        if entity_type == "bacterium":
-            gene_counts = df['gene'].value_counts()
-        elif entity_type == "phage":
-            gene_counts = df['product'].value_counts()
+        # Support highlighting kmers that map to multiple genes by producing stacked bars
+        key_col = 'gene' if entity_type == 'bacterium' else 'product'
+        # Determine kmer column
+        kmer_col = 'decoded_kmer' if 'decoded_kmer' in df.columns else ('kmer_in_seq' if 'kmer_in_seq' in df.columns else None)
+        if kmer_col is None:
+            logger.log(f"Warning: no kmer column found for plotting top genes for {entity_type}.")
+            return
 
-        # Limit number of x values to avoid overlapping labels
-        gene_counts = self._limit_series_top(gene_counts, max_items=40)
+        # Build mapping: for each kmer, which genes does it map to
+        km_map = df.groupby(kmer_col)[key_col].agg(lambda x: ';'.join(sorted(set([str(v) for v in x if pd.notna(v)])))).reset_index()
+        km_map['num_genes'] = km_map[key_col].apply(lambda s: 0 if pd.isna(s) or s == '' else len(str(s).split(';')))
 
-        plt.figure(figsize=(10, 6))
-        sns.barplot(x=gene_counts.index, y=gene_counts.values, palette='viridis')
-        plt.title(f'Top {title_suffix} {entity_type.capitalize()} Kmers Annotated Genes')
+        # Expand mapping for counting per gene
+        expanded = km_map.copy()
+        expanded = expanded[expanded[key_col].notna()]
+        expanded = expanded.assign(**{key_col: expanded[key_col].str.split(';')})
+        expanded = expanded.explode(key_col)
+
+        # Count single vs multi-mapped kmers per gene
+        expanded['is_multi'] = expanded['num_genes'] > 1
+        gene_multi = expanded.groupby(key_col)['is_multi'].sum().rename('multi_count')
+        gene_total = expanded.groupby(key_col).size().rename('total_count')
+        gene_counts_df = pd.concat([gene_total, gene_multi], axis=1).fillna(0)
+        gene_counts_df['single_count'] = gene_counts_df['total_count'] - gene_counts_df['multi_count']
+
+        # Limit to top genes by total_count
+        gene_counts_df = gene_counts_df.sort_values('total_count', ascending=False).head(40)
+
+        # Plot stacked bars (single vs multi)
+        plt.figure(figsize=(12, 7))
+        ind = range(len(gene_counts_df))
+        plt.bar(ind, gene_counts_df['single_count'], color='tab:blue', label='single-mapped kmers')
+        plt.bar(ind, gene_counts_df['multi_count'], bottom=gene_counts_df['single_count'], color='tab:red', label='multi-mapped kmers')
+        plt.xticks(ind, gene_counts_df.index, rotation=45, ha='right')
+        plt.ylabel('Kmer Count')
         plt.xlabel('Gene')
-        plt.ylabel('Count')
-        plt.xticks(rotation=45, ha='right')
+        plt.title(f'Top {title_suffix} {entity_type.capitalize()} Kmers Annotated Genes (single vs multi-mapped)')
+        plt.legend()
         plt.tight_layout()
         plt.savefig(self.outdir + f'top_genes_{entity_type}.png')
         plt.close()
@@ -353,23 +382,85 @@ class GAPlottingUtils:
         """
         Plot the distribution of k-mers across different genes for the given entity type
         """
-        gene_kmer_counts = df['kmer_in_seq'].value_counts()
+        # Use decoded_kmer if available, else kmer_in_seq
+        kmer_col = 'decoded_kmer' if 'decoded_kmer' in df.columns else ('kmer_in_seq' if 'kmer_in_seq' in df.columns else None)
+        if kmer_col is None:
+            logger.log(f"Warning: no kmer column found for plotting kmer distribution for {entity_type}.")
+            return
+
+        gene_kmer_counts = df[kmer_col].value_counts()
+        # Build set of multi-mapped kmers
+        km_map = df.groupby(kmer_col).agg({ 'gene' if entity_type=='bacterium' else 'product': lambda x: ';'.join(sorted(set([str(v) for v in x if pd.notna(v)]))) })
+        km_map = km_map.reset_index()
+        map_col = 'gene' if entity_type=='bacterium' else 'product'
+        km_map['num_genes'] = km_map[map_col].apply(lambda s: 0 if pd.isna(s) or s == '' else len(str(s).split(';')))
+        multi_kmers = set(km_map[km_map['num_genes'] > 1][kmer_col].tolist())
 
         # Limit number of x values to avoid overlapping labels
         gene_kmer_counts = self._limit_series_top(gene_kmer_counts, max_items=40)
-        plt.figure(figsize=(10, 6))
-        sns.barplot(x=gene_kmer_counts.index, y=gene_kmer_counts.values, palette='magma')
-        plt.title(f'Distribution of Top {title_suffix} {entity_type.capitalize()} Kmers')
+        plt.figure(figsize=(12, 6))
+        colors = ['crimson' if k in multi_kmers else 'steelblue' for k in gene_kmer_counts.index]
+        plt.bar(range(len(gene_kmer_counts)), gene_kmer_counts.values, color=colors)
+        plt.xticks(range(len(gene_kmer_counts)), gene_kmer_counts.index, rotation=45, ha='right')
+        plt.title(f'Distribution of Top {title_suffix} {entity_type.capitalize()} Kmers (multi-mapped highlighted)')
         plt.xlabel('Kmers')
         plt.ylabel('Kmer Count')
-        plt.xticks(rotation=45, ha='right')
+        # create legend manually
+        from matplotlib.patches import Patch
+        legend_patches = [Patch(color='steelblue', label='single-mapped'), Patch(color='crimson', label='multi-mapped')]
+        plt.legend(handles=legend_patches)
         plt.tight_layout()
         plt.savefig(self.outdir + f'kmer_distribution_{entity_type}.png')
+        plt.close()
+
+    def plot_kmer_gene_network(self, df: pd.DataFrame, entity_type: str, top_kmers: int = 200):
+        """
+        Plot a bipartite network showing kmers connected to gene/product nodes.
+        Limits to top_kmers by frequency to keep the plot readable.
+        """
+        kmer_col = 'decoded_kmer' if 'decoded_kmer' in df.columns else ('kmer_in_seq' if 'kmer_in_seq' in df.columns else None)
+        key_col = 'gene' if entity_type == 'bacterium' else 'product'
+        if kmer_col is None or key_col not in df.columns:
+            logger.log(f"Cannot create network: missing columns for {entity_type}.")
+            return
+
+        # select top kmers by occurrence
+        top_k = df[kmer_col].value_counts().head(top_kmers).index.tolist()
+        sub = df[df[kmer_col].isin(top_k)][[kmer_col, key_col]].dropna()
+
+        G = nx.Graph()
+        # add kmer nodes prefixed
+        for k in set(sub[kmer_col].unique()):
+            G.add_node(f'k:{k}', bipartite=0, label=k)
+        for g in set(sub[key_col].unique()):
+            G.add_node(f'g:{g}', bipartite=1, label=g)
+        # add edges
+        for _, r in sub.iterrows():
+            G.add_edge(f'k:{r[kmer_col]}', f'g:{r[key_col]}')
+
+        plt.figure(figsize=(14, 10))
+        try:
+            pos = nx.spring_layout(G, k=0.5, iterations=50)
+        except Exception:
+            pos = nx.spring_layout(G)
+
+        k_nodes = [n for n in G.nodes() if n.startswith('k:')]
+        g_nodes = [n for n in G.nodes() if n.startswith('g:')]
+        nx.draw_networkx_nodes(G, pos, nodelist=k_nodes, node_color='lightgreen', node_size=50, label='kmers')
+        nx.draw_networkx_nodes(G, pos, nodelist=g_nodes, node_color='lightblue', node_size=120, label='genes')
+        nx.draw_networkx_edges(G, pos, alpha=0.4)
+        # draw a subset of labels for readability
+        labels = {n: G.nodes[n]['label'] for n in list(g_nodes)[:100] + list(k_nodes)[:100]}
+        nx.draw_networkx_labels(G, pos, labels=labels, font_size=8)
+        plt.title(f'Kmer -> Gene Network ({entity_type})')
+        plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(self.outdir + f'kmer_gene_network_{entity_type}.png')
         plt.close()
     
     def plot_kmer_against_ups_or_pfi(self, df: pd.DataFrame, entity_type: str, sort_by = 'UPS'):
         """
-        Plot the relationship between k-mer counts and the Unified Performance Score (UPS) for the given entity type
+        Plot the relationship between k-mer counts and the Unified Performance Score (UPS) or Pairwise Feature Interaction Score (PFI) for the given entity type
         """
         if sort_by not in df.columns:
             logger.log("Column not found in dataframe. Cannot plot k-mer against UPS or PFI.")
@@ -377,11 +468,11 @@ class GAPlottingUtils:
         
         plt.figure(figsize=(10, 6))
         title_part = "Unified Performance Score (UPS)" if sort_by == 'UPS' else "PFI Score"
-        ax = sns.scatterplot(x='kmer_in_seq', y=sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'product', palette='coolwarm')
+        ax = sns.scatterplot(x='kmer_in_seq', y=sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'phage', palette='coolwarm')
         plt.title(f'Kmer Count vs {title_part} for {entity_type.capitalize()} Kmers')
         plt.xlabel('Kmer Count')
         plt.ylabel(title_part)
-        plt.legend(title='Gene' if entity_type == 'bacterium' else 'Product', bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.legend(title='Gene' if entity_type == 'bacterium' else 'phage', bbox_to_anchor=(1.05, 1), loc='upper left')
 
         # Reduce number of x-axis tick labels to at most 50 to avoid overlap
         try:
@@ -1024,12 +1115,14 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             if not bact_kmers_df.empty:
                 plotting_utils.plot_top_genes(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
+                plotting_utils.plot_kmer_gene_network(bact_annot_df, entity_type="bacterium", top_kmers=args.network_top_kmers)
                 if args.weight_pfi:
                     plotting_utils.plot_kmer_against_ups_or_pfi(bact_annot_df, entity_type="bacterium", sort_by=sort_by)
 
             if not phage_kmers_df.empty:
                 plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
+                plotting_utils.plot_kmer_gene_network(phage_annot_df, entity_type="phage", top_kmers=args.network_top_kmers)
                 if args.weight_pfi:
                     plotting_utils.plot_kmer_against_ups_or_pfi(phage_annot_df, entity_type="phage", sort_by=sort_by)
                     
@@ -1049,6 +1142,56 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             elif not phage_kmers_df.empty:
                 phage_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
                 logger.log("Phage Kmers Annotations CSV saved as top_kmers_annotations.csv")
+            
+            # Additionally: build a mapping of decoded_kmer -> annotated genes/products
+            try:
+                mapping_frames = []
+                # Bacterium mapping: 'decoded_kmer' -> 'gene'
+                if not bact_kmers_df.empty and 'bact_annot_df' in locals():
+                    if 'decoded_kmer' in bact_annot_df.columns and 'gene' in bact_annot_df.columns:
+                        df_bmap = bact_annot_df[['decoded_kmer', 'gene']].dropna()
+                        if not df_bmap.empty:
+                            df_bmap = df_bmap.groupby('decoded_kmer')['gene'].agg(lambda x: ';'.join(sorted(set(x)))).reset_index()
+                            df_bmap = df_bmap.rename(columns={'gene': 'mapped_genes'})
+                            df_bmap['organism'] = 'bacterium'
+                            mapping_frames.append(df_bmap)
+
+                # Phage mapping: 'decoded_kmer' -> 'product'
+                if not phage_kmers_df.empty and 'phage_annot_df' in locals():
+                    if 'decoded_kmer' in phage_annot_df.columns and 'product' in phage_annot_df.columns:
+                        df_pmap = phage_annot_df[['decoded_kmer', 'product']].dropna()
+                        if not df_pmap.empty:
+                            df_pmap = df_pmap.groupby('decoded_kmer')['product'].agg(lambda x: ';'.join(sorted(set(x)))).reset_index()
+                            df_pmap = df_pmap.rename(columns={'product': 'mapped_genes'})
+                            df_pmap['organism'] = 'phage'
+                            mapping_frames.append(df_pmap)
+
+                if mapping_frames:
+                    kmer_map_df = pd.concat(mapping_frames, ignore_index=True, sort=False)
+                    # Count how many distinct genes/products each kmer maps to
+                    kmer_map_df['num_genes'] = kmer_map_df['mapped_genes'].apply(lambda s: 0 if pd.isna(s) or s == '' else len(str(s).split(';')))
+                    # Save mapping CSV for user inspection
+                    kmer_map_df.to_csv(outdir + 'kmer_to_genes_mapping.csv', index=False)
+                    logger.log("Saved kmer-to-genes mapping CSV: kmer_to_genes_mapping.csv")
+
+                    # Write a short human-readable summary with examples of multi-mapping kmers
+                    total_kmers = len(kmer_map_df)
+                    multi_map_count = int((kmer_map_df['num_genes'] > 1).sum())
+                    examples = kmer_map_df[kmer_map_df['num_genes'] > 1].head(20)
+                    summary_lines = [f"Total unique annotated kmers: {total_kmers}", f"Kmers mapping to multiple genes/products: {multi_map_count}", "\nExamples of kmers mapping to multiple genes/products (up to 20):"]
+                    for _, r in examples.iterrows():
+                        summary_lines.append(f"{r.get('decoded_kmer','<unknown kmer>')} ({r['organism']}): {r['mapped_genes']}")
+                    with open(outdir + 'top_kmers_mapping_summary.txt', 'w') as summary_f:
+                        summary_f.write('\n'.join(summary_lines))
+                    logger.log("Saved human-readable mapping summary: top_kmers_mapping_summary.txt")
+
+                    # Log concise counts for immediate visibility
+                    logger.log(f"Kmer mapping summary: {total_kmers} unique kmers; {multi_map_count} map to multiple genes/products.")
+
+                    # (Agent-only TODO tracking completed outside of runtime)
+
+            except Exception as e:
+                logger.log(f"Warning: Failed to build/save kmer->genes mapping: {e}")
         except Exception as e:
             raise ValueError(f"Error saving top k-mers annotations: {e}")
 

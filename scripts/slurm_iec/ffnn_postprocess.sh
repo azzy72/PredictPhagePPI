@@ -72,6 +72,8 @@ python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}/" \
     --show_cm_bar_percentage \
     --weight_pfi \
+    --highlight_multi \
+    --network_top_kmers 40 \
     --top_kmers 200
 
 echo ""
@@ -81,5 +83,7 @@ python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_harsh/" \
     --show_cm_bar_percentage \
     --weight_pfi \
+    --highlight_multi \
+    --network_top_kmers 40 \
     --top_kmers 200 \
     --filter_harsh
