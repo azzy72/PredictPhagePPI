@@ -3,6 +3,7 @@ Bio
 biopython
 captum
 dask
+joblib
 imbalanced_learn
 imblearn
 matplotlib
