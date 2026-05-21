@@ -174,9 +174,9 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
     
     try:
         phage_minhash_data = load_minhash_sketches(phage_minhash_dir, 
-                                                   TS=False, output_as_np=True)
+                                                   TS=TS, output_as_np=True)
         bact_minhash_data = load_minhash_sketches(bact_minhash_dir, 
-                                                  TS=False, output_as_np=True)
+                                                  TS=TS, output_as_np=True)
     except Exception as e:
         print(f"Error loading minhash sketches: {e}")
         return None, None, None, None, None

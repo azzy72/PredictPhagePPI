@@ -23,7 +23,7 @@ fi
 N="${1:-500}"
 K="${2:-12}"
 DOWNDIR="${3:-encoded_sketches}"
-MAX_PARALLEL="${4:-$(nproc)}"
+MAX_PARALLEL="${4:-1}"
 
 # ── Paths (mirrors the slurm scripts) ─────────────────────────────────────────
 ROOT_DIR=$(git rev-parse --show-toplevel)
@@ -37,6 +37,13 @@ LOG_DIR="$ROOT_DIR/tmp/local_logs_${DOWNDIR}_n${N}_k${K}"
 CUSTOM_PARENT_DIR="IterExcl_${DOWNDIR}_n${N}_k${K}"
 
 mkdir -p "$ROOT_DIR/tmp" "$ACC_DIR" "$LOG_DIR"
+
+# ── Python interpreter ────────────────────────────────────────────────────────
+# Defaults to the 'python' on your PATH (i.e. the one 'which python' shows).
+# Override by setting the env var before running:
+#   PYTHON=/usr/bin/python3.9 bash run_iter_excl_local.sh
+PYTHON="${PYTHON:-$(which python3)}"
+echo "Using Python: $PYTHON  ($(${PYTHON} --version 2>&1))"
 
 # ── Flags derived from DOWNDIR (mirrors ffnn_train_task.sh) ───────────────────
 ENCODED_FLAG=""
@@ -88,7 +95,7 @@ run_training_task() {
 
         local CUSTOM_OUT="$CUSTOM_PARENT_DIR/cluster_b${bcluster_num}_p${pcluster_num}"
 
-        python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
+        $PYTHON "$ROOT_DIR/scripts/FFNN_inner.py" \
             --nk "$N" "$K" \
             --cv \
             --kf_n_splits 4 \
@@ -175,7 +182,7 @@ fi
 # ── 4. Collecting results ─────────────────────────────────────────────────────
 echo ""
 echo "📊 Collecting results..."
-python3 "$ROOT_DIR/scripts/collect_iterres.py" \
+$PYTHON "$ROOT_DIR/scripts/collect_iterres.py" \
     --base_dir "$DIR_IN_NN_RUN" \
     --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}/" \
     --show_cm_bar_percentage \
@@ -186,7 +193,7 @@ python3 "$ROOT_DIR/scripts/collect_iterres.py" \
 
 echo ""
 echo "📊 Collecting results with harsh filtering..."
-python3 "$ROOT_DIR/scripts/collect_iterres.py" \
+$PYTHON "$ROOT_DIR/scripts/collect_iterres.py" \
     --base_dir "$DIR_IN_NN_RUN" \
     --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_harsh/" \
     --show_cm_bar_percentage \
