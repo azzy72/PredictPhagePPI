@@ -6,6 +6,9 @@ import ast
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
+import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator 
 import networkx as nx
 import seaborn as sns
 import numpy as np
@@ -17,6 +20,7 @@ from datetime import datetime
 from paths import data_prod_path, path_to_nn_runs
 from analysis import GeneAnalysis, PFI_Lookup
 import json
+import joblib
 outdir_default = data_prod_path + "iterExclClus/"
 
 # Global logger for capturing both stdout and file output
@@ -117,6 +121,14 @@ def calculate_unified_score(metrics_dict):
     )
     
     return round(final_score, 4)
+
+def _normalize_for_combine(df, species_col, entity_col, organism_label):
+    """Rename species/entity-label columns to a shared schema, add organism tag."""
+    out = df.copy()
+    out['species'] = out[species_col]
+    out['entity_label'] = out[entity_col]   # gene name for bact, product for phage
+    out['organism'] = organism_label
+    return out
 
 def extract_metrics_from_log(file_path):
     """Parses a single log file for key performance metrics."""
@@ -369,7 +381,7 @@ class GAPlottingUtils:
         ind = range(len(gene_counts_df))
         plt.bar(ind, gene_counts_df['single_count'], color='tab:blue', label='single-mapped kmers')
         plt.bar(ind, gene_counts_df['multi_count'], bottom=gene_counts_df['single_count'], color='tab:red', label='multi-mapped kmers')
-        plt.xticks(ind, gene_counts_df.index, rotation=45, ha='right')
+        plt.xticks(ind, gene_counts_df.index, rotation=90, ha='right')
         plt.ylabel('Kmer Count')
         plt.xlabel('Gene')
         plt.title(f'Top {title_suffix} {entity_type.capitalize()} Kmers Annotated Genes (single vs multi-mapped)')
@@ -380,7 +392,7 @@ class GAPlottingUtils:
     
     def plot_kmer_distribution(self, df : pd.DataFrame, entity_type : str, title_suffix: str = ""):
         """
-        Plot the distribution of k-mers across different genes for the given entity type
+        Plot the distribution of kmers across different genes for the given entity type
         """
         # Use decoded_kmer if available, else kmer_in_seq
         kmer_col = 'decoded_kmer' if 'decoded_kmer' in df.columns else ('kmer_in_seq' if 'kmer_in_seq' in df.columns else None)
@@ -401,7 +413,7 @@ class GAPlottingUtils:
         plt.figure(figsize=(12, 6))
         colors = ['crimson' if k in multi_kmers else 'steelblue' for k in gene_kmer_counts.index]
         plt.bar(range(len(gene_kmer_counts)), gene_kmer_counts.values, color=colors)
-        plt.xticks(range(len(gene_kmer_counts)), gene_kmer_counts.index, rotation=45, ha='right')
+        plt.xticks(range(len(gene_kmer_counts)), gene_kmer_counts.index, rotation=90, ha='right')
         plt.title(f'Distribution of Top {title_suffix} {entity_type.capitalize()} Kmers (multi-mapped highlighted)')
         plt.xlabel('Kmers')
         plt.ylabel('Kmer Count')
@@ -415,47 +427,250 @@ class GAPlottingUtils:
 
     def plot_kmer_gene_network(self, df: pd.DataFrame, entity_type: str, top_kmers: int = 200):
         """
-        Plot a bipartite network showing kmers connected to gene/product nodes.
+        Plot a bipartite network showing kmers (left) connected to gene/product nodes (right).
+        Uses nx.bipartite_layout to enforce the two-column structure.
         Limits to top_kmers by frequency to keep the plot readable.
         """
-        kmer_col = 'decoded_kmer' if 'decoded_kmer' in df.columns else ('kmer_in_seq' if 'kmer_in_seq' in df.columns else None)
+        kmer_col = 'decoded_kmer' if 'decoded_kmer' in df.columns else (
+            'kmer_in_seq' if 'kmer_in_seq' in df.columns else None
+        )
         key_col = 'gene' if entity_type == 'bacterium' else 'product'
         if kmer_col is None or key_col not in df.columns:
             logger.log(f"Cannot create network: missing columns for {entity_type}.")
             return
 
-        # select top kmers by occurrence
+        # 1. Prepare Data and Subsample -------------------------------------------------
+        # Select top kmers by occurrence
         top_k = df[kmer_col].value_counts().head(top_kmers).index.tolist()
-        sub = df[df[kmer_col].isin(top_k)][[kmer_col, key_col]].dropna()
+        top_k_set = set(top_k)
+        sub = df[df[kmer_col].isin(top_k)][[kmer_col, key_col]].dropna().copy()
 
+        if len(sub) == 0:
+            logger.log(f"No kmer-{key_col} pairs remain after filtering. Plotting aborted.")
+            return
+
+        # Node sizes should reflect how often each item appears in the plotted data.
+        kmer_counts = sub[kmer_col].value_counts()
+        gene_counts = sub[key_col].value_counts()
+        all_counts = pd.concat([kmer_counts, gene_counts], axis=0)
+        all_counts = pd.to_numeric(all_counts, errors='coerce').dropna()
+        if all_counts.empty:
+            logger.log("No finite node counts available for sizing. Plotting aborted.")
+            return
+        count_min = float(all_counts.min())
+        count_max = float(all_counts.max())
+
+        def scale_node_sizes(count_values, min_size=250, max_size=1300):
+            if len(count_values) == 0:
+                return np.array([])
+            count_values = np.asarray(count_values, dtype=float)
+            count_values = np.nan_to_num(count_values, nan=count_min)
+            if count_max > count_min:
+                normalized = (count_values - count_min) / (count_max - count_min)
+                sizes = min_size + normalized * (max_size - min_size)
+            else:
+                sizes = np.full(len(count_values), (min_size + max_size) / 2.0)
+            return np.clip(np.nan_to_num(sizes, nan=min_size), min_size, max_size)
+
+        # Unique node lists — order kmers by their score_col values so the layout
+        # --- Pick the scoring column, if any ---
+        score_col = next((c for c in ('UPS', 'PFI') if c in df.columns), None)
+        if score_col is not None:
+            # Aggregate one score per kmer. .mean() is a sensible default;
+            # swap for .max() or .median() if that matches the metric's semantics better.
+            kmer_scores = (
+                df[df[kmer_col].isin(top_k_set)]
+                .groupby(kmer_col)[score_col]
+                .mean()
+            )
+            # Order: highest score first; tie-break by first appearance in df for stability.
+            appearance_order = {k: i for i, k in enumerate(pd.unique(df[kmer_col]))}
+            ordered_kmers = sorted(
+                (k for k in kmer_scores.index if k in top_k_set),
+                key=lambda k: (-kmer_scores.loc[k], appearance_order.get(k, 0)),
+            )
+            # Any top-k kmers with no score (e.g. all-NaN UPS/PFI rows) go to the end,
+            # preserving their original appearance order.
+            scored = set(ordered_kmers)
+            ordered_kmers += [k for k in pd.unique(df[kmer_col])
+                            if k in top_k_set and k not in scored]
+            logger.log(f"Ordering kmers by {score_col} (descending, aggregated by mean).")
+        else:
+            ordered_kmers = [k for k in pd.unique(df[kmer_col]) if k in top_k_set]
+
+        kmers = [f'k:{k}' for k in ordered_kmers]
+        ordered_kmers = [k for k in kmer_scores.index if k in top_k_set]
+        kmers = [f'k:{k}' for k in ordered_kmers]
+        genes = [f'g:{g}' for g in sub[key_col].unique()]
+
+        # 2. Build the Graph ------------------------------------------------------------
         G = nx.Graph()
-        # add kmer nodes prefixed
-        for k in set(sub[kmer_col].unique()):
-            G.add_node(f'k:{k}', bipartite=0, label=k)
-        for g in set(sub[key_col].unique()):
-            G.add_node(f'g:{g}', bipartite=1, label=g)
-        # add edges
-        for _, r in sub.iterrows():
-            G.add_edge(f'k:{r[kmer_col]}', f'g:{r[key_col]}')
+        G.add_nodes_from(kmers, bipartite=0, label='Kmer')
+        G.add_nodes_from(genes, bipartite=1, label='Gene' if entity_type == 'bacterium' else 'Product')
 
-        plt.figure(figsize=(14, 10))
-        try:
-            pos = nx.spring_layout(G, k=0.5, iterations=50)
-        except Exception:
-            pos = nx.spring_layout(G)
+        # Track edge weight (co-occurrence count)
+        edge_counts = sub.groupby([kmer_col, key_col]).size().reset_index(name='weight')
+        for _, r in edge_counts.iterrows():
+            G.add_edge(f'k:{r[kmer_col]}', f'g:{r[key_col]}', weight=r['weight'])
 
-        k_nodes = [n for n in G.nodes() if n.startswith('k:')]
-        g_nodes = [n for n in G.nodes() if n.startswith('g:')]
-        nx.draw_networkx_nodes(G, pos, nodelist=k_nodes, node_color='lightgreen', node_size=50, label='kmers')
-        nx.draw_networkx_nodes(G, pos, nodelist=g_nodes, node_color='lightblue', node_size=120, label='genes')
-        nx.draw_networkx_edges(G, pos, alpha=0.4)
-        # draw a subset of labels for readability
-        labels = {n: G.nodes[n]['label'] for n in list(g_nodes)[:100] + list(k_nodes)[:100]}
-        nx.draw_networkx_labels(G, pos, labels=labels, font_size=8)
-        plt.title(f'Kmer -> Gene Network ({entity_type})')
-        plt.axis('off')
+        # Store readable labels on the nodes
+        for k in ordered_kmers:
+            G.nodes[f'k:{k}']['display'] = k
+        for g in sub[key_col].unique():
+            G.nodes[f'g:{g}']['display'] = g
+        
+        isolates = list(nx.isolates(G))
+        if isolates:
+            G.remove_nodes_from(isolates)
+            logger.log(f"Removed {len(isolates)} isolated nodes from the network.")
+
+        # Rebuild partition lists from what's left in G, preserving the order we set.
+        kmers = [n for n in kmers if n in G]
+        genes = [n for n in genes if n in G]
+
+        if not kmers or not genes:
+            logger.log("Graph has no edges after pruning isolates. Plotting aborted.")
+            return
+
+        # 3. Node Sizing (scaled by dataset occurrence count) --------------------------
+        k_sizes = scale_node_sizes([kmer_counts.get(k.replace('k:', ''), 0) for k in kmers])
+        g_sizes = scale_node_sizes([gene_counts.get(g.replace('g:', ''), 0) for g in genes])
+
+        # 4. Edge Widths and Colors ----------------------------------------------------
+        edges = list(G.edges(data='weight', default=1))
+        edge_list = [(u, v) for u, v, _ in edges]
+        edge_weights = np.array([w for _, _, w in edges])
+        w_min, w_max = edge_weights.min(), edge_weights.max()
+        if w_max > w_min:
+            edge_widths = 1.2 + (edge_weights - w_min) / (w_max - w_min) * 2.3
+        else:
+            edge_widths = np.full(len(edge_weights), 1.5)
+
+        # 5. Bipartite Layout (kmers on left, genes on right) --------------------------
+        # bipartite_layout places `nodes` on the left and the rest on the right by default.
+        pos = nx.bipartite_layout(G, kmers, align='vertical', scale=2.0, aspect_ratio=0.6)
+
+        # 6. Draw the Graph ------------------------------------------------------------
+        fig, ax = plt.subplots(figsize=(16, 22))  # tall figure suits a vertical bipartite layout
+        ax.set_title(
+            f'Kmer → {"Gene" if entity_type == "bacterium" else "Product"} '
+            f'Bipartite Network ({entity_type}) — top {len(kmers)} kmers',
+            fontsize=14, fontweight='bold', pad=15
+        )
+
+        if w_max > w_min:
+            c_vmin, c_vmax = w_min, w_max
+        else:
+            # All edges share the same weight — pick a tight integer band around it
+            # so the single value sits at the centre of the bar.
+            c_vmin, c_vmax = w_min - 1, w_min + 1
+
+        nx.draw_networkx_edges(
+            G, pos,
+            edgelist=edge_list,
+            width=edge_widths,
+            edge_color=edge_weights,
+            edge_cmap=plt.cm.viridis_r,
+            edge_vmin=c_vmin,       
+            edge_vmax=c_vmax,        
+            alpha=1,
+            ax=ax
+        )
+
+        # Kmer nodes (left column)
+        nx.draw_networkx_nodes(
+            G, pos, nodelist=kmers,
+            node_color='#2ecc71',
+            node_size=k_sizes,
+            alpha=0.88,
+            linewidths=0.8,
+            edgecolors='#1a8a4a',
+            ax=ax
+        )
+        # Gene/product nodes (right column)
+        nx.draw_networkx_nodes(
+            G, pos, nodelist=genes,
+            node_color='#3498db',
+            node_size=g_sizes,
+            alpha=0.90,
+            linewidths=0.8,
+            edgecolors='#1a5276',
+            ax=ax
+        )
+
+        # 7. Labels --------------------------------------------------------------------
+        all_labels = {n: G.nodes[n].get('display', n) for n in G.nodes()}
+        nx.draw_networkx_labels(
+            G, pos, labels=all_labels,
+            font_size=6.5,
+            font_color='#111111',
+            bbox=dict(boxstyle='round,pad=0.15', fc='white', alpha=0.50, lw=0),
+            ax=ax
+        )
+
+        # 8. Legend --------------------------------------------------------------------
+        gene_label = 'genes' if entity_type == 'bacterium' else 'products'
+        legend_handles = [
+            mpatches.Patch(facecolor='#2ecc71', edgecolor='#1a8a4a',
+                        linewidth=1.2, label='kmers'),
+            mpatches.Patch(facecolor='#3498db', edgecolor='#1a5276',
+                        linewidth=1.2, label=f'{gene_label}'),
+        ]
+        color_legend = ax.legend(
+            handles=legend_handles,
+            loc='upper left',
+            fontsize=10,
+            frameon=True,
+            framealpha=0.9,
+            edgecolor='#cccccc',
+            handlelength=1.5,
+            handleheight=1.5,
+        )
+        ax.add_artist(color_legend)
+
+        # Size legend: show how marker area maps to raw occurrence counts.
+        size_example_counts = np.unique(np.linspace(count_min, count_max, num=3, dtype=int))
+        size_handles = []
+        for count in size_example_counts:
+            size_value = scale_node_sizes(np.array([count]))[0]
+            size_handles.append(
+                Line2D(
+                    [0], [0],
+                    marker='o',
+                    linestyle='None',
+                    markerfacecolor='#666666',
+                    markeredgecolor='#333333',
+                    alpha=0.65,
+                    markersize=np.sqrt(size_value) / 2.0,
+                    label=f'{count} occurrence' if count == 1 else f'{count} occurrences',
+                )
+            )
+        ax.legend(
+            handles=size_handles,
+            title='Node size scale\n(occurrences)',
+            loc='lower left',
+            fontsize=9,
+            title_fontsize=10,
+            frameon=True,
+            framealpha=0.9,
+            edgecolor='#cccccc',
+        )
+
+        # 9. Colorbar for edge weights -------------------------------------------------
+        sm = plt.cm.ScalarMappable(
+            cmap=plt.cm.viridis_r,
+            norm=plt.Normalize(vmin=c_vmin, vmax=c_vmax),
+        )
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.45, pad=0.01)
+        cbar.locator = MaxNLocator(integer=True)
+        cbar.update_ticks()
+        cbar.set_label('Edge weight (occurrences)', fontsize=9)
+
+        ax.axis('off')
         plt.tight_layout()
-        plt.savefig(self.outdir + f'kmer_gene_network_{entity_type}.png')
+        plt.savefig(self.outdir + f'kmer_gene_network_{entity_type}.png',
+                    dpi=150, bbox_inches='tight')
         plt.close()
     
     def plot_kmer_against_ups_or_pfi(self, df: pd.DataFrame, entity_type: str, sort_by = 'UPS'):
@@ -481,13 +696,73 @@ class GAPlottingUtils:
                 idx = np.linspace(0, len(unique_x) - 1, num=40, dtype=int)
                 tick_vals = unique_x[idx]
                 ax.set_xticks(tick_vals)
-                ax.set_xticklabels([str(v) for v in tick_vals], rotation=45, ha='right')
+                ax.set_xticklabels([str(v) for v in tick_vals], rotation=90, ha='right')
         except Exception:
             pass
 
         plt.tight_layout()
         plt.savefig(self.outdir + f'kmer_vs_{sort_by.lower()}_{entity_type}.png')
         plt.close()
+
+    def plot_species_distribution_grid(self, collected_df: pd.DataFrame,
+                                    value_col: str,
+                                    kmer_col: str = 'decoded_kmer',
+                                    top_n: int = 30,
+                                    figsize=(16, 10),
+                                    filename_suffix: str = ''):
+        """
+        Heatmap of `value_col` (e.g. 'decoded_kmer' or 'entity_label') against `species`.
+
+        Cell value = number of rows in `collected_df` where that species and that
+        k-mer/gene co-occur. `top_n` caps the column count to the most frequent
+        values overall, so the grid stays readable.
+        """
+        if collected_df.empty or value_col not in collected_df.columns \
+                or 'species' not in collected_df.columns:
+            logger.log(f"plot_species_distribution_grid: missing data for {value_col}.")
+            return
+
+        df = collected_df[['species', 'organism', value_col]].dropna()
+        if df.empty:
+            return
+
+        # Keep only the top_n most frequent values overall, so the grid is readable
+        top_values = df[value_col].value_counts().head(top_n).index
+        df = df[df[value_col].isin(top_values)]
+
+        pivot = (df.groupby(['species', value_col]).size()
+                .unstack(fill_value=0)
+                .reindex(columns=top_values))     # preserve frequency order
+
+        # Sort species rows by total count desc; group by organism if both present
+        if 'organism' in collected_df.columns:
+            species_organism = (collected_df[['species', 'organism']]
+                                .dropna().drop_duplicates()
+                                .set_index('species')['organism'])
+            pivot = pivot.assign(_organism=species_organism.reindex(pivot.index),
+                                _total=pivot.sum(axis=1))
+            pivot = pivot.sort_values(['_organism', '_total'],
+                                    ascending=[True, False])
+            pivot = pivot.drop(columns=['_organism', '_total'])
+
+        fig, ax = plt.subplots(figsize=figsize)
+        sns.heatmap(
+            pivot, ax=ax,
+            cmap='viridis_r', cbar_kws={'label': 'Co-occurrence count'},
+            linewidths=0.3, linecolor='#ffffff',
+            annot=pivot.values if pivot.size <= 400 else False,  # annotate only if small
+            fmt='d',
+        )
+        ax.set_title(f'Distribution of top {len(top_values)} {value_col} across species',
+                    fontsize=13, fontweight='bold')
+        ax.set_xlabel(value_col)
+        ax.set_ylabel('Species')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(self.outdir + f'species_distribution_{value_col}{filename_suffix}.png',
+                    dpi=150, bbox_inches='tight')
+        plt.close()
+
 
 class MetricPlottingUtils:
     def __init__(self, df, outdir, x_col = None, hue_col = None, x_col_by_cluster = False, x_col_by_phage = False):
@@ -675,7 +950,7 @@ class MetricPlottingUtils:
                 y=y_col, 
                 edgecolor='black'
             )
-            plt.xticks(rotation=45, ha='right')
+            plt.xticks(rotation=90, ha='right')
 
         plt.title(title, fontsize=15, pad=15)
         plt.ylabel(ylabel, fontsize=12)
@@ -1108,6 +1383,14 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         except Exception as e:
             raise ValueError(f"Error during gene annotation: {e}")
 
+        # Log annotation results for inspection
+        if not bact_kmers_df.empty and 'bact_annot_df' in locals():
+            logger.log(f"Bacterium annotation sample:\n{bact_annot_df.head()}")
+            logger.log(f"Succes/Total rate of kmer in bact df: {len(bact_annot_df)}/{len(bact_kmers_df)}")
+        if not phage_kmers_df.empty and 'phage_annot_df' in locals():
+            logger.log(f"Phage annotation sample:\n{phage_annot_df.head()}")
+            logger.log(f"Succes/Total rate of kmer in phage df: {len(phage_annot_df)}/{len(phage_kmers_df)}")
+
         # Gene Annot Plotting
         try:
             title_suffix = "(PFI)" if args.weight_pfi else "(UPS)"
@@ -1128,6 +1411,36 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                     
         except Exception as e:
             raise ValueError(f"Error during gene annotation plotting: {e}")
+
+        ### Combined plotting
+        frames = []
+        if not bact_kmers_df.empty and 'bact_annot_df' in locals():
+            frames.append(_normalize_for_combine(
+                bact_annot_df, species_col='bact', entity_col='gene',
+                organism_label='bacterium'))
+        if not phage_kmers_df.empty and 'phage_annot_df' in locals():
+            frames.append(_normalize_for_combine(
+                phage_annot_df, species_col='entity', entity_col='product',
+                organism_label='phage'))
+
+        if frames:
+            collected_df = pd.concat(frames, ignore_index=True, sort=False)
+            collected_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
+            logger.log(f"Combined annotation frame: {len(collected_df)} rows, "
+                    f"{collected_df['species'].nunique()} species, "
+                    f"{collected_df['organism'].nunique()} organism types.")
+        else:
+            collected_df = pd.DataFrame()
+            logger.log("No annotated rows to combine.")
+        
+        try:
+            if not collected_df.empty:
+                plotting_utils.plot_species_distribution_grid(
+                    collected_df, value_col='decoded_kmer', top_n=30)
+                plotting_utils.plot_species_distribution_grid(
+                    collected_df, value_col='entity_label', top_n=30)
+        except Exception as e:
+            raise ValueError(f"Error during combined annotation plotting: {e}")
 
         # Concatenate annotation results and save
         try: 

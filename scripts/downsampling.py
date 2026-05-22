@@ -54,6 +54,12 @@ def main():
             par_outdir = "SM_sketches_data2/"
         else:
             par_outdir = "SM_sketches/"
+        
+        all_phages = False
+        if pn.lower() == "all":
+            par_outdir.rstrip("/") += "_allphages/"
+            all_phages = True
+            pn = 10**1000000000 # Effectively infinite n for all phages
 
         try:
             ### Phage Minhash Sketch Construction ###
@@ -92,6 +98,11 @@ def main():
         try:
             codec = KmerCodec()
             ohe_outdir = f"encoded_sketches/" if not args.data2 else f"encoded_sketches_data2/"
+            all_phages = False
+            if pn.lower() == "all":
+                ohe_outdir.rstrip("/") += "_allphages/"
+                all_phages = True
+                pn = 10**1000000000 # Effectively infinite n for all phages
             with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+ohe_outdir, entity_type="phage", sourmash_like=True,
                            custom_dir_name=phage_outdir, hash_func=args.hash) as decompose_phage:
                 decompose_phage.decompose(raw_in=phage_in_path)

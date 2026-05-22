@@ -1157,6 +1157,14 @@ def main():
 
             # Filter idx_to_minhash to only include the top X interaction pairs
             top_pairs = sorted(interaction_pairs.items(), key=lambda x: expected_interactions.get(x[0], 0), reverse=True)[:args.top_kmers_num] # Get top {args.top_kmers_num} pairs by expected interactions score
+            
+            #Construct pair specific list of hashes
+            top_pairs_expected = [(pair, expected_interactions.get(pair, 0)) for pair, _ in top_pairs]
+            top_pairs_expected_df = pd.DataFrame(top_pairs_expected, columns=["pair", "expected_interaction_score"])
+            top_pairs_expected_df.to_csv(outdir+"top_interaction_pairs_expected_interactions.csv", index=False)
+            if args.logging: logging.info(f'Saved top interaction pairs with expected interaction scores to {outdir+"top_interaction_pairs_expected_interactions.csv"}')
+            
+            #Prep hash specific list of decoded kmers
             top_minhashes = set()
             minhash_expected_interactions = {}
             for (phage_hash, bact_hash), score in top_pairs:
@@ -1179,22 +1187,61 @@ def main():
                     pfi_failed = True
                     raise Exception("regain_kmers() failed")
                 if args.logging: logging.info(f'Decoded k-mers for top interaction pairs: {list(pfi_top_kmers_decoded.values())}')
+
+                # --- Build a single hash -> info lookup, reused for both dataframes ---
+                def _classify(entity):
+                    if entity in bact_minhash_data_full:
+                        return "bacterium"
+                    if entity in phage_minhash_data_full:
+                        return "phage"
+                    return "unknown"
+
+                hash_to_info = {}
+                for idx, decoded in pfi_top_kmers_decoded.items():
+                    mh = filtered_idx_to_minhash.get(idx)
+                    if mh is None:
+                        continue
+                    entity = idx_to_entity.get(idx, "unknown")
+                    hash_to_info[mh] = {
+                        "entity": entity,
+                        "organism": _classify(entity),
+                        "decoded_kmer": decoded,
+                    }
+
+                def _info(h, key):
+                    return hash_to_info.get(h, {}).get(key, "unknown")
+
+                # --- pfi_top_kmers_df (now uses the same lookup) ---
                 pfi_top_avg_expected_interaction = [
                     float(np.mean(minhash_expected_interactions.get(filtered_idx_to_minhash.get(idx), [0])))
                     for idx in pfi_top_idx.keys()
                 ]
                 pfi_top_kmers_df = pd.DataFrame({
                     "feature_index": list(pfi_top_kmers_decoded.keys()),
-                    "entity": [idx_to_entity.get(idx, "unknown") for idx in pfi_top_kmers_decoded.keys()],
-                    "organism": ["bacterium" if idx_to_entity.get(idx, "unknown") in bact_minhash_data_full.keys() else ("phage" if idx_to_entity.get(idx, "unknown") in phage_minhash_data_full.keys() else "unknown") for idx in pfi_top_kmers_decoded.keys()],
+                    "entity":   [_info(filtered_idx_to_minhash.get(idx), "entity")        for idx in pfi_top_kmers_decoded.keys()],
+                    "organism": [_info(filtered_idx_to_minhash.get(idx), "organism")      for idx in pfi_top_kmers_decoded.keys()],
                     "decoded_kmer": list(pfi_top_kmers_decoded.values()),
-                    "avg_expected_interaction": pfi_top_avg_expected_interaction
+                    "avg_expected_interaction": pfi_top_avg_expected_interaction,
                 })
                 pfi_top_kmers_df.to_csv(outdir+"top_expected_interaction_pair_kmers.csv", index=False)
                 if args.logging: logging.info(f'Saved decoded k-mers for top interaction pairs to {outdir+"top_expected_interaction_pair_kmers.csv"}')
+
+                # --- Enrich top_pairs_expected_df with per-side entity/organism/decoded_kmer ---
+                # NOTE: matches the unpacking order used above: pair[0]=phage_hash, pair[1]=bact_hash
+                for side, idx_in_pair in (("phage", 0), ("bact", 1)):
+                    for key in ("entity", "organism", "decoded_kmer"):
+                        top_pairs_expected_df[f"{side}_{key}"] = top_pairs_expected_df["pair"].map(
+                            lambda p, i=idx_in_pair, k=key: _info(p[i], k)
+                        )
+
+                top_pairs_expected_df.to_csv(outdir+"top_interaction_pairs_expected_interactions.csv", index=False)
+                if args.logging: logging.info(f'Saved enriched top interaction pairs to {outdir+"top_interaction_pairs_expected_interactions.csv"}')
+
             except Exception as e:
                 logging.error(f"Error during k-mer regaining for top interaction pairs: {e}")
                 pfi_failed = True
+                # Fallback: still save the un-enriched pair df so you don't lose it on failure
+                top_pairs_expected_df.to_csv(outdir+"top_interaction_pairs_expected_interactions.csv", index=False)
             
             #Plot the top k-mers for interaction pairs
             if pfi_top_kmers_df is not None and not pfi_top_kmers_df.empty:
@@ -1210,7 +1257,7 @@ def main():
                     plt.tight_layout()
                     plt.savefig(outdir + outname)
                     logging.info(f'Saved plot of top k-mers for interaction pairs to {outdir + outname}')
-    
+
     ### Gene Annotation of Kmers ###
     # If PFI was performed and yielded results, use those top k-mers with annotations for GeneAnalysisNCBI. Otherwise, regain the top k-mers from the model feature importance and use those for GeneAnalysisNCBI.
     if args.perform_ga:

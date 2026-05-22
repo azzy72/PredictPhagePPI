@@ -1375,9 +1375,9 @@ class GeneAnalysis():
 
         pharokka_dirs = [p for p in pharokka_root.rglob("*") if p.is_dir() and strain_name in p.name]
         phold_dirs = [p for p in phold_root.rglob("*") if p.is_dir() and strain_name in p.name]
-        if not pharokka_dirs:
+        if not pharokka_dirs or len(pharokka_dirs) == 0:
             raise FileNotFoundError(f"No pharokka directory found for strain '{strain_name}' under {pharokka_root}")
-        if not phold_dirs:
+        if not phold_dirs or len(phold_dirs) == 0:
             raise FileNotFoundError(f"No phold directory found for strain '{strain_name}' under {phold_root}")
 
         pharokka_dir = pharokka_dirs[0]
@@ -1403,6 +1403,7 @@ class GeneAnalysis():
         ]
 
         if not matching_cds_ids:
+            raise ValueError(f"No matching CDS IDs found for kmer '{kmer}' in strain '{strain_name}'.\npharokka_dirs: {pharokka_dirs}\nphold_dirs: {phold_dirs}\nffn_files: {ffn_files}\ntsv_files: {tsv_files}")
             return pd.DataFrame(columns=cols)
 
         ann_df = pd.read_csv(tsv_files[0], sep="\t")
@@ -1414,43 +1415,88 @@ class GeneAnalysis():
         result = ann_df[ann_df["cds_id"].astype(str).isin(matching_cds_ids)][cols].copy()
         return result.reset_index(drop=True)
 
-    def batch_bact_annotate(self, bkmers : list, bact_names : list, data_prod_path : str) -> pd.DataFrame:
+    def batch_bact_annotate(self, bact_df : pd.DataFrame, kmer_col : str, entity_col : str, data_prod_path : str) -> pd.DataFrame:
         bact_annotations = pd.DataFrame(columns=["bact", "locus_tag", "kmer_in_seq", "length_bp", "gene", "product"])
-        with tqdm(total=len(bact_names)*len(bkmers), desc="Annotating bacteria-kmer pairs") as pbar:
-            for bact in bact_names:
-                for kmer in bkmers:
-                    try:
-                        bact_genes = self.extract_bacteria_genes_for_kmer(kmer, bact, data_prod_path)
-                        if bact_genes.empty:
-                            if self.TS: print("No bacterial genes found containing this kmer.")
-                        else:
-                            bact_annotations = pd.concat([bact_annotations, bact_genes], ignore_index=True)
-                    except Exception as e:
-                        if self.TS: print(f"Error extracting bacterial genes for kmer '{kmer}': {e}")
-                    pbar.update(1)
+        score_cols = [col for col in ["UPS", "PFI"] if col in bact_df.columns]
+        with tqdm(total=len(bact_df), desc="Annotating bacteria-kmer pairs") as pbar:
+            for _, row in bact_df.iterrows():
+                bact = row[entity_col]
+                kmer = row[kmer_col]
+                try:
+                    bact_genes = self.extract_bacteria_genes_for_kmer(kmer, bact, data_prod_path)
+                    if bact_genes.empty:
+                        if self.TS: print("No bacterial genes found containing this kmer.")
+                    else:
+                        for col in score_cols:
+                            bact_genes[col] = row[col]
+                        bact_annotations = pd.concat([bact_annotations, bact_genes], ignore_index=True)
+                except Exception as e:
+                    if self.TS: print(f"Error extracting bacterial genes for kmer '{kmer}': {e}")
+                pbar.update(1)
 
         return bact_annotations
 
-    def batch_phage_annotate(self, pkmers : list, phage_names : list, data_prod_path : str) -> pd.DataFrame:
+    def batch_phage_annotate(self, phage_df : pd.DataFrame, kmer_col : str, entity_col : str, data_prod_path : str) -> pd.DataFrame:
         phage_annotations = pd.DataFrame(columns=[
                 "contig_id", "cds_id", "kmer_in_seq", "start", "end", "phrog", "function", "product",
                 "annotation_method", "annotation_confidence", "tophit_protein",
-                "function_with_highest_bitscore_proportion", "prostt5_confidence"
-            ])
-        with tqdm(total=len(phage_names)*len(pkmers), desc="Annotating phage-kmer pairs") as pbar:
-            for phage in phage_names:
-                for kmer in pkmers:
-                    try:
-                        phage_genes = self.extract_phage_genes_for_kmer(kmer, phage, data_prod_path)
-                        if phage_genes.empty:
-                            if self.TS: print("No phage genes found containing this kmer.")
-                        else:
-                            phage_annotations = pd.concat([phage_annotations, phage_genes], ignore_index=True)
-                    except Exception as e:
-                        if self.TS: print(f"Error extracting phage genes for kmer '{kmer}': {e}")
-                    pbar.update(1)
+                "function_with_highest_bitscore_proportion", "prostt5_confidence"])
+        score_cols = [col for col in ["UPS", "PFI"] if col in phage_df.columns]
+        with tqdm(total=len(phage_df), desc="Annotating phage-kmer pairs") as pbar:
+            for _, row in phage_df.iterrows():
+                phage = row[entity_col]
+                kmer = row[kmer_col]
+                try:
+                    phage_genes = self.extract_phage_genes_for_kmer(kmer, phage, data_prod_path)
+                    if phage_genes.empty:
+                        if self.TS: print("No phage genes found containing this kmer.")
+                    else:
+                        for col in score_cols:
+                            phage_genes[col] = row[col]
+                        phage_annotations = pd.concat([phage_annotations, phage_genes], ignore_index=True)
+                except Exception as e:
+                    if self.TS: print(f"Error extracting phage genes for kmer '{kmer}': {e}")
+                pbar.update(1)
 
         return phage_annotations
+
+    # def batch_bact_annotate(self, bkmers : list, bact_names : list, data_prod_path : str) -> pd.DataFrame:
+    #     bact_annotations = pd.DataFrame(columns=["bact", "locus_tag", "kmer_in_seq", "length_bp", "gene", "product"])
+    #     with tqdm(total=len(bact_names)*len(bkmers), desc="Annotating bacteria-kmer pairs") as pbar:
+    #         for bact in bact_names:
+    #             for kmer in bkmers:
+    #                 try:
+    #                     bact_genes = self.extract_bacteria_genes_for_kmer(kmer, bact, data_prod_path)
+    #                     if bact_genes.empty:
+    #                         if self.TS: print("No bacterial genes found containing this kmer.")
+    #                     else:
+    #                         bact_annotations = pd.concat([bact_annotations, bact_genes], ignore_index=True)
+    #                 except Exception as e:
+    #                     if self.TS: print(f"Error extracting bacterial genes for kmer '{kmer}': {e}")
+    #                 pbar.update(1)
+
+    #     return bact_annotations
+
+    # def batch_phage_annotate(self, pkmers : list, phage_names : list, data_prod_path : str) -> pd.DataFrame:
+    #     phage_annotations = pd.DataFrame(columns=[
+    #             "contig_id", "cds_id", "kmer_in_seq", "start", "end", "phrog", "function", "product",
+    #             "annotation_method", "annotation_confidence", "tophit_protein",
+    #             "function_with_highest_bitscore_proportion", "prostt5_confidence"
+    #         ])
+    #     with tqdm(total=len(phage_names)*len(pkmers), desc="Annotating phage-kmer pairs") as pbar:
+    #         for phage in phage_names:
+    #             for kmer in pkmers:
+    #                 try:
+    #                     phage_genes = self.extract_phage_genes_for_kmer(kmer, phage, data_prod_path)
+    #                     if phage_genes.empty:
+    #                         if self.TS: print("No phage genes found containing this kmer.")
+    #                     else:
+    #                         phage_annotations = pd.concat([phage_annotations, phage_genes], ignore_index=True)
+    #                 except Exception as e:
+    #                     if self.TS: print(f"Error extracting phage genes for kmer '{kmer}': {e}")
+    #                 pbar.update(1)
+
+    #     return phage_annotations
 
 class GeneAnalysisNCBI():
     def __init__(self, logfile, logging_on : bool, outdir : str):
