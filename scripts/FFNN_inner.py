@@ -900,6 +900,10 @@ def main():
         # 1. Load lookup data
         hostrange_pdf = pd.read_excel(raw_data_path+"phagehost_KU/Hostrange_data_all_crisp_iso.xlsx", sheet_name="sum_hostrange", header=1)
         id_lookup_bact = hostrange_pdf[["Seq ID", "Species"]].rename(columns={"Seq ID": "Bacterium_Name"})
+        try:
+            id_lookup_bact["Bacterium_Name"] = id_lookup_bact["Bacterium_Name"].apply(clean_bact_names)
+        except Exception as e:
+            logging.warning(f"Error occurred while cleaning bacterium names in id_lookup_bact for bipartite bact-phage interaction analysis: {e}")
 
         model.eval()
         with torch.no_grad():
@@ -1214,8 +1218,8 @@ def main():
                 # --- pfi_top_kmers_df (now uses the same lookup) ---
                 pfi_top_avg_expected_interaction = [
                     float(np.mean(minhash_expected_interactions.get(filtered_idx_to_minhash.get(idx), [0])))
-                    for idx in pfi_top_idx.keys()
-                ]
+                    for idx in pfi_top_idx]
+                
                 pfi_top_kmers_df = pd.DataFrame({
                     "feature_index": list(pfi_top_kmers_decoded.keys()),
                     "entity":   [_info(filtered_idx_to_minhash.get(idx), "entity")        for idx in pfi_top_kmers_decoded.keys()],
