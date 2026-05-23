@@ -5,16 +5,16 @@
 # Encoding/sketch directories to process.
 # Each must contain BactMinhash_n{n}_k{k}/ and PhageMinhash_n{n}_k{k}/ subdirs.
 sketch_dirs:
-- /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches
-#  - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches
-#  - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches_data2
-#  - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches_data2 
+# - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches_allphages
+# - /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches_allphages
+# - /home/projects/s215045/PredictPhagePPI/data_prod/SM_sketches_data2_allphages
+- /home/projects/s215045/PredictPhagePPI/data_prod/encoded_sketches_data2_allphages
 
 # Downsampling parameter sweep
 # n_values: [50, 100, 300, 500, 1000, 5000]
 # k_values: [6, 9, 12, 15, 18, 24, 32, 51]
-n_values: [500]
-k_values: [12]
+n_values: [300, 500, 1000]
+k_values: [9, 12, 15, 32]
 
 
 # Bacteria genus-lookup CSV (produced externally; used for label prefixing)
@@ -24,12 +24,12 @@ bact_labels_csv: /home/projects/s215045/PredictPhagePPI/data_prod/bact_clusters_
 prefix_script: /home/projects/s215045/PredictPhagePPI/scripts/annotation_scripts/prefix_bact_labels.sh
 
 # Dendrogram cut-points (passed to sourmash scripts plot2 --cut-point)
-bact_cut_point:  [0.01, 0.04, 1.32, 1.35, 1.37, 1.39, 1.36, 1.35] # dataset1 - SM_sketches & encoded_sketches
-#bact_cut_point:  [0.01, 0.02, 0.7, 0.725, 0.75, 0.775, 0.8, 1.0] # dataset2 - encoded_sketches
+#bact_cut_point:  [0.01, 0.04, 1.32, 1.35, 1.37, 1.39, 1.36, 1.35] # dataset1 - SM_sketches & encoded_sketches
+bact_cut_point:  [0.01, 0.02, 0.7, 0.725, 0.75, 0.775, 0.8, 1.0] # dataset2 - encoded_sketches
 #bact_cut_point:  [0.01, 0.015, 0.2, 0.3, 0.375, 0.4, 0.5, 0.6] # dataset2 - SM_sketches
 
-phage_cut_point: [1.15] # dataset1
-#phage_cut_point: [1.3] # dataset2
+#phage_cut_point: [1.15] # dataset1
+phage_cut_point: [1.3] # dataset2
 
 # Figure dimensions
 figsize_x: 20

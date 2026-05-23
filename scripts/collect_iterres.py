@@ -327,9 +327,10 @@ def extract_metrics_from_log(file_path):
     return metrics, run_info
 
 class GAPlottingUtils:
-    def __init__(self, df, outdir):
+    def __init__(self, df, outdir, sort_by="PFI"):
         self.df = df
         self.outdir = outdir
+        self.sort_by = sort_by
 
     def _limit_series_top(self, series: pd.Series, max_items: int = 40) -> pd.Series:
         """
@@ -472,15 +473,14 @@ class GAPlottingUtils:
                 sizes = np.full(len(count_values), (min_size + max_size) / 2.0)
             return np.clip(np.nan_to_num(sizes, nan=min_size), min_size, max_size)
 
-        # Unique node lists — order kmers by their score_col values so the layout
+        # Unique node lists — order kmers by their self.sort_by values so the layout
         # --- Pick the scoring column, if any ---
-        score_col = next((c for c in ('UPS', 'PFI') if c in df.columns), None)
-        if score_col is not None:
+        if self.sort_by in df.columns:
             # Aggregate one score per kmer. .mean() is a sensible default;
             # swap for .max() or .median() if that matches the metric's semantics better.
             kmer_scores = (
                 df[df[kmer_col].isin(top_k_set)]
-                .groupby(kmer_col)[score_col]
+                .groupby(kmer_col)[self.sort_by]
                 .mean()
             )
             # Order: highest score first; tie-break by first appearance in df for stability.
@@ -494,8 +494,9 @@ class GAPlottingUtils:
             scored = set(ordered_kmers)
             ordered_kmers += [k for k in pd.unique(df[kmer_col])
                             if k in top_k_set and k not in scored]
-            logger.log(f"Ordering kmers by {score_col} (descending, aggregated by mean).")
+            logger.log(f"Ordering kmers by {self.sort_by} (descending, aggregated by mean).")
         else:
+            logger.log(f"No valid sort column found for {self.sort_by}. Using original kmer order.")
             ordered_kmers = [k for k in pd.unique(df[kmer_col]) if k in top_k_set]
 
         kmers = [f'k:{k}' for k in ordered_kmers]
@@ -673,17 +674,18 @@ class GAPlottingUtils:
                     dpi=150, bbox_inches='tight')
         plt.close()
     
-    def plot_kmer_against_ups_or_pfi(self, df: pd.DataFrame, entity_type: str, sort_by = 'UPS'):
+    def plot_kmer_against_ups_or_pfi(self, df: pd.DataFrame, entity_type: str):
         """
-        Plot the relationship between k-mer counts and the Unified Performance Score (UPS) or Pairwise Feature Interaction Score (PFI) for the given entity type
+        Plot the relationship between k-mer counts and the Unified Performance Score (UPS), Pairwise Feature Interaction Score (PFI) 
+        or Weighted PFI Score (WPFI) for the given entity type
         """
-        if sort_by not in df.columns:
+        if self.sort_by not in df.columns:
             logger.log("Column not found in dataframe. Cannot plot k-mer against UPS or PFI.")
             return
         
         plt.figure(figsize=(10, 6))
-        title_part = "Unified Performance Score (UPS)" if sort_by == 'UPS' else "PFI Score"
-        ax = sns.scatterplot(x='kmer_in_seq', y=sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'phage', palette='coolwarm')
+        title_part = "Unified Performance Score (UPS)" if self.sort_by == 'UPS' else "PFI Score" if self.sort_by == 'PFI' else "WPFI Score"
+        ax = sns.scatterplot(x='kmer_in_seq', y=self.sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'phage', palette='coolwarm')
         plt.title(f'Kmer Count vs {title_part} for {entity_type.capitalize()} Kmers')
         plt.xlabel('Kmer Count')
         plt.ylabel(title_part)
@@ -701,7 +703,7 @@ class GAPlottingUtils:
             pass
 
         plt.tight_layout()
-        plt.savefig(self.outdir + f'kmer_vs_{sort_by.lower()}_{entity_type}.png')
+        plt.savefig(self.outdir + f'kmer_vs_{self.sort_by.lower()}_{entity_type}.png')
         plt.close()
 
     def plot_species_distribution_grid(self, collected_df: pd.DataFrame,
@@ -762,7 +764,6 @@ class GAPlottingUtils:
         plt.savefig(self.outdir + f'species_distribution_{value_col}{filename_suffix}.png',
                     dpi=150, bbox_inches='tight')
         plt.close()
-
 
 class MetricPlottingUtils:
     def __init__(self, df, outdir, x_col = None, hue_col = None, x_col_by_cluster = False, x_col_by_phage = False):
@@ -1183,7 +1184,6 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                     try:
                         df_kmers = pd.read_csv(top_kmers_path)
                         df_kmers['folder'] = folder_name
-                        df_kmers["UPS"] = calculate_unified_score(metrics)
                         top_int_kmer_success = True
                     except Exception as e:
                         logger.log(f"Error reading {top_kmers_path}: {e}")
@@ -1202,16 +1202,49 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 logger.log(f"Skipping PFI calculation for {folder_name}. Reason: top_kmers={top_int_kmer_success}, hk_lookup={kmer_to_gene is not None}")
             
             if top_int_kmer_success:
+                df_kmers["UPS"] = calculate_unified_score(metrics)
+                df_kmers["test_accuracy"] = metrics.get("test_accuracy", None)
                 top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
         logger.log(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Folder processed: {folder_name}")
         logger.log("#" * 50)
 
     ### Sorting top_kmers_df by weighted PFI score (if weight_pfi flag is set)
+    sort_by = "UPS"
+    title_suffix = "(UPS)"
+    if "expected_interaction_score" in top_kmers_df.columns:
+        top_kmers_df = top_kmers_df.rename(columns={"expected_interaction_score": "PFI"})
+
     if not top_kmers_df.empty:
         top_kmers_go = True
-        if args.weight_pfi and "UPS" in top_kmers_df.columns:
+        if "PFI" in top_kmers_df.columns:
+            if args.weight_pfi:
+                #scale PFI by run test accuracy then sort
+                if "test_accuracy" in top_kmers_df.columns:
+                    top_kmers_df["WPFI"] = top_kmers_df["PFI"] * top_kmers_df["test_accuracy"]
+                    top_kmers_df = top_kmers_df.sort_values(by="WPFI", ascending=False)
+                    logger.log("Sorted top_kmers_df by weighted PFI score (expected interaction score scaled by test accuracy).")
+                    sort_by = "WPFI"
+                    title_suffix = "(WPFI)"
+
+                else:
+                    logger.log("Warning: 'test_accuracy' column not found in top_kmers_df. Cannot weight PFI score by test accuracy. Sorting by PFI instead.")
+                    top_kmers_df = top_kmers_df.sort_values(by="PFI", ascending=False)
+                    logger.log("Sorted top_kmers_df by PFI score (expected interaction score) without weighting.")
+                    sort_by = "PFI"
+                    title_suffix = "(PFI)"
+            else:
+                #sort by PFI without weighting
+                top_kmers_df = top_kmers_df.sort_values(by="PFI", ascending=False)
+                logger.log("Sorted top_kmers_df by weighted PFI score (expected interaction score).")
+                sort_by = "PFI"
+                title_suffix = "(PFI)"
+
+        elif "UPS" in top_kmers_df.columns:
             top_kmers_df = top_kmers_df.sort_values(by="UPS", ascending=False)
             logger.log("Sorted top_kmers_df by Unified Performance Score (UPS).")
+            sort_by = "UPS"
+            title_suffix = "(UPS)"
+
         else:
             logger.log("Warning: 'UPS' column not found in top_kmers_df. Skipping sorting by UPS.")
     else:
@@ -1316,14 +1349,30 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         logger.log(f"Value counts for 'organism' column:\n{top_kmers_df['organism'].value_counts()}")
 
         # Split by "entity" column 
-        bact_kmers_df = top_kmers_df[top_kmers_df['organism'] == 'bacterium']
-        phage_kmers_df = top_kmers_df[top_kmers_df['organism'] == 'phage']
+        bact_kmers_df = top_kmers_df[["bact_entity", "bact_organism", "bact_decoded_kmer", "PFI", "UPS", "test_accuracy", "folder"]].copy()
+        bact_kmers_df = bact_kmers_df.rename(columns={
+            "bact_entity": "entity",
+            "bact_organism": "organism",
+            "bact_decoded_kmer": "decoded_kmer"
+        })
+        bact_kmers_df.insert(0, 'hash', top_kmers_df['pair'].str.extract(r'np\.int64\((\d+)\)').astype('int64'))
+        if "WPFI" in top_kmers_df.columns:
+            bact_kmers_df["WPFI"] = top_kmers_df["WPFI"]
+
+        phage_kmers_df = top_kmers_df[["phage_entity", "phage_organism", "phage_decoded_kmer", "PFI", "UPS", "test_accuracy", "folder"]].copy()
+        phage_kmers_df = phage_kmers_df.rename(columns={
+            "phage_entity": "entity",
+            "phage_organism": "organism",
+            "phage_decoded_kmer": "decoded_kmer"
+        })
+        phage_kmers_df.insert(0, 'hash', top_kmers_df['pair'].str.extract(r'np\.int64\(\d+\).*?np\.int64\((\d+)\)').astype('int64'))
+        if "WPFI" in top_kmers_df.columns:
+            phage_kmers_df["WPFI"] = top_kmers_df["WPFI"]
+
         bact_len_before = len(bact_kmers_df)
         phage_len_before = len(phage_kmers_df)
         logger.log(f"Bacterium k-mers sample:\n{bact_kmers_df.head()}")
         logger.log(f"Phage k-mers sample:\n{phage_kmers_df.head()}")
-
-        sort_by = 'UPS' if not args.weight_pfi else 'avg_expected_interaction'
 
         # Keep only args.top_kmers number of kkmers per entity per folder based on UPS score
         if not bact_kmers_df.empty:
@@ -1354,10 +1403,6 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         else:
             logger.log(f"No valid phage k-mers data found for {sort_by} sorting.")
             phage_len_after = 0
-
-        # Obtain pfi scores for kmers and add them to the dataframes if weight_pfi flag is set, then sort by pfi scores instead of UPS scores
-        if args.weight_pfi:
-            pass
         
         logger.log(f"Reduced bacterium k-mers from {bact_len_before} to {bact_len_after} based on top_kmers and sorting criteria.")
         logger.log(f"Reduced phage k-mers from {phage_len_before} to {phage_len_after} based on top_kmers and sorting criteria.")
@@ -1384,41 +1429,43 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             raise ValueError(f"Error during gene annotation: {e}")
 
         # Log annotation results for inspection
-        if not bact_kmers_df.empty and 'bact_annot_df' in locals():
+        if not bact_annot_df.empty:
             logger.log(f"Bacterium annotation sample:\n{bact_annot_df.head()}")
             logger.log(f"Succes/Total rate of kmer in bact df: {len(bact_annot_df)}/{len(bact_kmers_df)}")
-        if not phage_kmers_df.empty and 'phage_annot_df' in locals():
+        else:
+            logger.log("Bacterium annotation dataframe is empty. No successful annotations for bacterium k-mers.")
+
+        if not phage_annot_df.empty:
             logger.log(f"Phage annotation sample:\n{phage_annot_df.head()}")
             logger.log(f"Succes/Total rate of kmer in phage df: {len(phage_annot_df)}/{len(phage_kmers_df)}")
+        else:
+            logger.log("Phage annotation dataframe is empty. No successful annotations for phage k-mers.")
 
         # Gene Annot Plotting
         try:
-            title_suffix = "(PFI)" if args.weight_pfi else "(UPS)"
-            plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir))
-            if not bact_kmers_df.empty:
+            plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir), sort_by=sort_by)
+            if not bact_annot_df.empty:
                 plotting_utils.plot_top_genes(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_gene_network(bact_annot_df, entity_type="bacterium", top_kmers=args.network_top_kmers)
-                if args.weight_pfi:
-                    plotting_utils.plot_kmer_against_ups_or_pfi(bact_annot_df, entity_type="bacterium", sort_by=sort_by)
+                plotting_utils.plot_kmer_against_ups_or_pfi(bact_annot_df, entity_type="bacterium")
 
-            if not phage_kmers_df.empty:
+            if not phage_annot_df.empty:
                 plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_gene_network(phage_annot_df, entity_type="phage", top_kmers=args.network_top_kmers)
-                if args.weight_pfi:
-                    plotting_utils.plot_kmer_against_ups_or_pfi(phage_annot_df, entity_type="phage", sort_by=sort_by)
+                plotting_utils.plot_kmer_against_ups_or_pfi(phage_annot_df, entity_type="phage")
                     
         except Exception as e:
             raise ValueError(f"Error during gene annotation plotting: {e}")
 
         ### Combined plotting
         frames = []
-        if not bact_kmers_df.empty and 'bact_annot_df' in locals():
+        if not bact_annot_df.empty:
             frames.append(_normalize_for_combine(
                 bact_annot_df, species_col='bact', entity_col='gene',
                 organism_label='bacterium'))
-        if not phage_kmers_df.empty and 'phage_annot_df' in locals():
+        if not phage_annot_df.empty:
             frames.append(_normalize_for_combine(
                 phage_annot_df, species_col='entity', entity_col='product',
                 organism_label='phage'))
@@ -1444,15 +1491,15 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
 
         # Concatenate annotation results and save
         try: 
-            if not bact_kmers_df.empty and not phage_kmers_df.empty:
+            if not bact_annot_df.empty and not phage_annot_df.empty:
                 combined_annot_df = pd.concat([bact_annot_df, phage_annot_df], ignore_index=True)
                 combined_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
                 logger.log("Top Kmers Annotations CSV saved as top_kmers_annotations.csv")
             
-            elif not bact_kmers_df.empty:
+            elif not bact_annot_df.empty:
                 bact_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
                 logger.log("Bacterium Kmers Annotations CSV saved as top_kmers_annotations.csv")
-            elif not phage_kmers_df.empty:
+            elif not phage_annot_df.empty:
                 phage_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
                 logger.log("Phage Kmers Annotations CSV saved as top_kmers_annotations.csv")
             
@@ -1460,7 +1507,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             try:
                 mapping_frames = []
                 # Bacterium mapping: 'decoded_kmer' -> 'gene'
-                if not bact_kmers_df.empty and 'bact_annot_df' in locals():
+                if not bact_annot_df.empty:
                     if 'decoded_kmer' in bact_annot_df.columns and 'gene' in bact_annot_df.columns:
                         df_bmap = bact_annot_df[['decoded_kmer', 'gene']].dropna()
                         if not df_bmap.empty:
@@ -1470,7 +1517,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                             mapping_frames.append(df_bmap)
 
                 # Phage mapping: 'decoded_kmer' -> 'product'
-                if not phage_kmers_df.empty and 'phage_annot_df' in locals():
+                if not phage_annot_df.empty:
                     if 'decoded_kmer' in phage_annot_df.columns and 'product' in phage_annot_df.columns:
                         df_pmap = phage_annot_df[['decoded_kmer', 'product']].dropna()
                         if not df_pmap.empty:
