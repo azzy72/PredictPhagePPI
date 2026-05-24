@@ -42,11 +42,10 @@ Two datasets are supported, referred to throughout the code as **data1** (defaul
 
 | Path | Description |
 |------|-------------|
-| `SM_sketches/` | Sourmash/MurmurHash3 MinHash sketches (`BactMinhash_n<N>_k<K>/`, `PhageMinhash_n<N>_k<K>/`) |
+| `SM_sketches/` | Sourmash MinHash sketches (`BactMinhash_n<N>_k<K>/`, `PhageMinhash_n<N>_k<K>/`) - similar structure for Murmurhash3 / xxHash, but substitutes "SM" prefix with "encoded" |
 | `SM_sketches/sim_matrices/` | Pairwise Jaccard similarity matrices + cluster assignment CSVs |
 | `PresMat_*/` | Precomputed binary presence matrices used as NN input |
 | `IterExclClus_*/` | Collected results from iterative cluster-exclusion runs |
-| `FFNN_Test_PFI2_collected/` | Collected results with pairwise feature importance (PFI) analysis |
 | `NN_files/` | Train/test split definitions and saved model files |
 
 ---
