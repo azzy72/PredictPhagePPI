@@ -1,0 +1,6 @@
+Task map written: 36 pairs → /net/node07/home/projects/s215045/PredictPhagePPI/tmp/IterExcl_Taskmap_SM_sketches_data2_allphages_500_12.txt
+Submitted training array job: 818793  (36 tasks)
+Submitted post-processing job: 818794  (runs after 818793)
+
+Monitor with:
+  squeue -j 818793,818794

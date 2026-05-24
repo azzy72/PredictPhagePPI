@@ -5,8 +5,9 @@ import re
 import ast
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap, BoundaryNorm
+from matplotlib.colors import ListedColormap, BoundaryNorm, LogNorm, Normalize, LinearSegmentedColormap
 import matplotlib.patches as mpatches
+from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator 
 import networkx as nx
@@ -391,37 +392,81 @@ class GAPlottingUtils:
         plt.savefig(self.outdir + f'top_genes_{entity_type}.png')
         plt.close()
     
-    def plot_kmer_distribution(self, df : pd.DataFrame, entity_type : str, title_suffix: str = ""):
+    def plot_kmer_distribution(self, df: pd.DataFrame, entity_type: str, title_suffix: str = ""):
         """
-        Plot the distribution of kmers across different genes for the given entity type
+        Plot the distribution of kmers across different genes for the given entity type.
+        Bars are colored by the number of distinct genes the kmer maps to.
         """
-        # Use decoded_kmer if available, else kmer_in_seq
-        kmer_col = 'decoded_kmer' if 'decoded_kmer' in df.columns else ('kmer_in_seq' if 'kmer_in_seq' in df.columns else None)
+        kmer_col = 'decoded_kmer' if 'decoded_kmer' in df.columns else (
+            'kmer_in_seq' if 'kmer_in_seq' in df.columns else None)
         if kmer_col is None:
             logger.log(f"Warning: no kmer column found for plotting kmer distribution for {entity_type}.")
             return
 
-        gene_kmer_counts = df[kmer_col].value_counts()
-        # Build set of multi-mapped kmers
-        km_map = df.groupby(kmer_col).agg({ 'gene' if entity_type=='bacterium' else 'product': lambda x: ';'.join(sorted(set([str(v) for v in x if pd.notna(v)]))) })
-        km_map = km_map.reset_index()
-        map_col = 'gene' if entity_type=='bacterium' else 'product'
-        km_map['num_genes'] = km_map[map_col].apply(lambda s: 0 if pd.isna(s) or s == '' else len(str(s).split(';')))
-        multi_kmers = set(km_map[km_map['num_genes'] > 1][kmer_col].tolist())
+        map_col = 'gene' if entity_type == 'bacterium' else 'product'
 
-        # Limit number of x values to avoid overlapping labels
+        gene_kmer_counts = df[kmer_col].value_counts()
+
+        # Build kmer → number of distinct genes it maps to
+        kmer_to_num_genes = (
+            df.groupby(kmer_col)[map_col]
+            .agg(lambda x: len({str(v) for v in x if pd.notna(v)}))
+            .rename('num_genes')
+        )
+
+        # Limit x-axis to avoid label overlap
         gene_kmer_counts = self._limit_series_top(gene_kmer_counts, max_items=40)
+
+        # 1. Get your counts
+        num_genes_per_bar = [kmer_to_num_genes.get(k, 1) for k in gene_kmer_counts.index]
+        unique_counts = sorted(set(num_genes_per_bar))
+
+        # 2. Create a custom 3-color gradient (Low -> Mid -> High)
+        # Using high-contrast hex codes for the polar ends (e.g., Deep Blue to Bright Red)
+        custom_colors = ['#0055ff', '#e6e6e6', '#ff0044'] 
+        cmap = LinearSegmentedColormap.from_list('tri_gradient', custom_colors)
+
+        # 3. Choose your normalization
+        # If your max count is high, LogNorm makes the extreme ends stand out beautifully
+        # while smoothing out small differences in the middle.
+        if unique_counts[-1] > 10: 
+            # LogNorm requires vmin > 0, so we use max(1, ...) just in case
+            norm = LogNorm(vmin=max(1, unique_counts[0]), vmax=unique_counts[-1])
+        else:
+            norm = Normalize(vmin=unique_counts[0], vmax=unique_counts[-1])
+
+        # 4. Map colors
+        color_lookup = {n: cmap(norm(n)) for n in unique_counts}
+        colors = [color_lookup[n] for n in num_genes_per_bar]
+
+        # 5. Handle the Legend cleanly
+        # Quick tip: If you have dozens of unique counts, a traditional legend item 
+        # for every single number will overflow your plot. Let's sample 3-5 distinct points instead.
+        if len(unique_counts) > 5:
+            # Sample min, midpoints, and max for a clean display
+            legend_counts = [
+                unique_counts[0], 
+                unique_counts[len(unique_counts)//4],
+                unique_counts[len(unique_counts)//2], 
+                unique_counts[-1]
+            ]
+            # Remove duplicates if any overlap
+            legend_counts = sorted(list(set(legend_counts)))
+        else:
+            legend_counts = unique_counts
+
+        legend_patches = [
+            Patch(color=color_lookup[n], label=f'{n} gene{"s" if n != 1 else ""}')
+            for n in legend_counts
+        ]
+
         plt.figure(figsize=(12, 6))
-        colors = ['crimson' if k in multi_kmers else 'steelblue' for k in gene_kmer_counts.index]
         plt.bar(range(len(gene_kmer_counts)), gene_kmer_counts.values, color=colors)
         plt.xticks(range(len(gene_kmer_counts)), gene_kmer_counts.index, rotation=90, ha='right')
-        plt.title(f'Distribution of Top {title_suffix} {entity_type.capitalize()} Kmers (multi-mapped highlighted)')
+        plt.title(f'Distribution of Top {title_suffix} {entity_type.capitalize()} Kmers ')
         plt.xlabel('Kmers')
         plt.ylabel('Kmer Count')
-        # create legend manually
-        from matplotlib.patches import Patch
-        legend_patches = [Patch(color='steelblue', label='single-mapped'), Patch(color='crimson', label='multi-mapped')]
-        plt.legend(handles=legend_patches)
+        plt.legend(handles=legend_patches, title='Genes mapped to')
         plt.tight_layout()
         plt.savefig(self.outdir + f'kmer_distribution_{entity_type}.png')
         plt.close()
@@ -552,7 +597,9 @@ class GAPlottingUtils:
         pos = nx.bipartite_layout(G, kmers, align='vertical', scale=2.0, aspect_ratio=0.6)
 
         # 6. Draw the Graph ------------------------------------------------------------
-        fig, ax = plt.subplots(figsize=(16, 22))  # tall figure suits a vertical bipartite layout
+        # Scale the canvas with the filtered subgraph size so dense networks get more room.
+        size_scale = np.clip(np.sqrt(len(sub) / 25.0), 1.0, 3.0)
+        fig, ax = plt.subplots(figsize=(16 * size_scale, 22 * size_scale))  # tall figure suits a vertical bipartite layout
         ax.set_title(
             f'Kmer → {"Gene" if entity_type == "bacterium" else "Product"} '
             f'Bipartite Network ({entity_type}) — top {len(kmers)} kmers',
@@ -697,8 +744,10 @@ class GAPlottingUtils:
             if len(unique_x) > 40:
                 idx = np.linspace(0, len(unique_x) - 1, num=40, dtype=int)
                 tick_vals = unique_x[idx]
-                ax.set_xticks(tick_vals)
-                ax.set_xticklabels([str(v) for v in tick_vals], rotation=90, ha='right')
+            else:
+                tick_vals = unique_x
+            ax.set_xticks(tick_vals)
+            ax.set_xticklabels([str(v) for v in tick_vals], rotation=90, ha='right')
         except Exception:
             pass
 
@@ -787,6 +836,8 @@ class MetricPlottingUtils:
             df['p_value'] = None
 
         self.outdir = outdir
+        if not self.outdir.endswith('/'):
+            self.outdir += '/'
         self.failed_runs_flag = False
 
         # Automatically detect if all runs have the same 'n' and 'k' values
@@ -1118,32 +1169,25 @@ def balanced_top_k(df: pd.DataFrame, group_cols, sort_col: str, total_k: int) ->
 def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=None, group_x_col=None, group_hue_col=None):
     all_data = []
     top_kmers_df = pd.DataFrame() # Placeholder top_kmers_csv file
-    
+
     if not os.path.exists(base_dir):
         logger.log(f"Directory {base_dir} not found.")
-        return
     else:
         logger.log(f"Scanning directory: {base_dir}")
-    
+
     if not os.path.exists(outdir):
         os.makedirs(outdir, exist_ok=True)
         logger.log(f"Created output directory: {outdir}")
     else:
         logger.log(f"Output directory already exists: {outdir}")
-    
+
     logfile_path = os.path.join(outdir, "collect_iterres_log.txt")
     logfile = open(logfile_path, 'w')
     logger.set_logfile(logfile)
     logger.log(f"{datetime.now().strftime('[%Y-%m-%d %H:%M:%S] ')} collect_iterres started. Scanning {base_dir} for log files.")
 
-    # Try opening hk_lookup & pfi_lookup
-    if args.hk_lookup_path:
-        kmer_to_gene = open_hk_lookup(args.hk_lookup_path, reverse=True)
-    else:
-        logger.log("Note: HK lookup path not provided. Will attempt to deduce from log files.")
-        kmer_to_gene = None
-
     # Iterate through all folders in nn_runs
+    c = 0
     for folder_name in tqdm(os.listdir(base_dir), desc="Processing folders"):
         logger.log(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing folder: {folder_name}")
         folder_path = os.path.join(base_dir, folder_name)
@@ -1162,7 +1206,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                     all_data.append(metrics)
                     #print("run_info", run_info)
 
-                    if args.hk_lookup_path is None:
+                    if True:
                         #print("hk_lookup not provided. Attempting to deduce it from log info for encoded data2 run.")
                         # If hk_lookup is not provided, try to deduce it from the log info
                         try:
@@ -1178,26 +1222,27 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                             print(f"Error deducing hk_lookup from log info in {log_path}: {e}")
 
                 # Extract top kmers from pair_kmers.csv files
-                elif file.endswith("pair_kmers.csv"):
-                    logger.log(f"Found top kmers file: {file} in folder: {folder_name}")
-                    top_kmers_path = os.path.join(folder_path, file)
+                elif file.endswith("expected_interactions.csv"):
+                    logger.log(f"Found expected interactions file: {file} in folder: {folder_name}")
+                    expected_interactions_path = os.path.join(folder_path, file)
                     try:
-                        df_kmers = pd.read_csv(top_kmers_path)
+                        df_kmers = pd.read_csv(expected_interactions_path)
                         df_kmers['folder'] = folder_name
                         top_int_kmer_success = True
                     except Exception as e:
-                        logger.log(f"Error reading {top_kmers_path}: {e}")
-                
-                # Extract pfi lookup
-                # elif file.startswith("pfi_") and file.endswith(".txt"):
-                #     pfi_file_path = os.path.join(folder_path, file)
-                #     logger.log(f"Found PFI file: {file} in folder: {folder_name}")
+                        logger.log(f"Error reading {expected_interactions_path}: {e}")
+
+                # elif file.endswith("pair_kmers.csv"):
+                #     logger.log(f"Found top kmers file: {file} in folder: {folder_name}")
+                #     top_kmers_path = os.path.join(folder_path, file)
+                #     try:
+                #         df_kmers = pd.read_csv(top_kmers_path)
+                #         df_kmers['folder'] = folder_name
+                #         df_kmers["UPS"] = calculate_unified_score(metrics)
+                #         top_int_kmer_success = True
+                #     except Exception as e:
+                #         logger.log(f"Error reading {top_kmers_path}: {e}")
             
-            # if kmer_to_gene is not None and top_int_kmer_success:
-            #     pfi_lookup = pd.read_csv(pfi_file_path, sep="\t")
-            #     logger.log(f"Processing PFI lookup for {folder_name}...")
-            #     pfi_class = PFI_Lookup(kmer_to_gene, pfi_lookup, TS=True)
-            #     df_kmers = pfi_class.append_pfi_values(df_kmers, kmer_col="decoded_kmer")
             else:
                 logger.log(f"Skipping PFI calculation for {folder_name}. Reason: top_kmers={top_int_kmer_success}, hk_lookup={kmer_to_gene is not None}")
             
@@ -1207,6 +1252,9 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
         logger.log(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Folder processed: {folder_name}")
         logger.log("#" * 50)
+        # c += 1
+        # if c > 4:
+        #     break
 
     ### Sorting top_kmers_df by weighted PFI score (if weight_pfi flag is set)
     sort_by = "UPS"
@@ -1250,7 +1298,6 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
     else:
         logger.log("top_kmers_df is empty. No k-mer data to process or plot.")
         top_kmers_go = False
-
 
 
     ### Metrics Extraction Summary and Plotting ###
@@ -1342,11 +1389,12 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         logger.log("✓ Summary CSVs saved as all_runs_summary.csv and top_kmers_summary.csv")
     else:
         logger.log("No valid data found for Metrics Plotting.")
-    
+
+
     ### Top Kmers Annotation Summary and Plotting ###
     if top_kmers_go:
         logger.log(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Extracted top k-mers from {len(top_kmers_df['folder'].unique())} files.")
-        logger.log(f"Value counts for 'organism' column:\n{top_kmers_df['organism'].value_counts()}")
+        #logger.log(f"Value counts for 'organism' column:\n{top_kmers_df['organism'].value_counts()}")
 
         # Split by "entity" column 
         bact_kmers_df = top_kmers_df[["bact_entity", "bact_organism", "bact_decoded_kmer", "PFI", "UPS", "test_accuracy", "folder"]].copy()
@@ -1374,7 +1422,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         logger.log(f"Bacterium k-mers sample:\n{bact_kmers_df.head()}")
         logger.log(f"Phage k-mers sample:\n{phage_kmers_df.head()}")
 
-        # Keep only args.top_kmers number of kkmers per entity per folder based on UPS score
+        # Keep only top_kmers number of kkmers per entity per folder based on sort_by score
         if not bact_kmers_df.empty:
             bact_kmers_df = balanced_top_k(
                 df=bact_kmers_df,
@@ -1411,149 +1459,23 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         if phage_len_after > 0:
             logger.log(f"Final phage sample:\n{phage_kmers_df.head()}")
 
-
-        #return # for testing purposes, to check the outputs up to this point before proceeding with annotation and plotting
         # Gene analysis
         try:
             GA = GeneAnalysis()
             if not bact_kmers_df.empty:
-                bact_annot_df = GA.batch_bact_annotate(bkmers=bact_kmers_df['decoded_kmer'].tolist(), bact_names=bact_kmers_df['entity'].tolist(), data_prod_path=data_prod_path)
+                #bact_kmers_df = bact_kmers_df.reset_index()
+                bact_annot_df = GA.batch_bact_annotate(bact_df=bact_kmers_df, kmer_col='decoded_kmer', entity_col='entity', data_prod_path=data_prod_path)
+                #bact_annot_df = GA.batch_bact_annotate(bkmers=bact_kmers_df['decoded_kmer'].tolist(), bact_names=bact_kmers_df['entity'].tolist(), data_prod_path=data_prod_path)
             else:
                 logger.log("No valid bacterium k-mers data found for annotation.")
 
             if not phage_kmers_df.empty:
-                phage_annot_df = GA.batch_phage_annotate(pkmers=phage_kmers_df['decoded_kmer'].tolist(), phage_names=phage_kmers_df['entity'].tolist(), data_prod_path=data_prod_path)
+                phage_annot_df = GA.batch_phage_annotate(phage_df=phage_kmers_df, kmer_col='decoded_kmer', entity_col='entity', data_prod_path=data_prod_path)
+                #phage_annot_df = GA.batch_phage_annotate(pkmers=phage_kmers_df['decoded_kmer'].tolist(), phage_names=phage_kmers_df['entity'].tolist(), data_prod_path=data_prod_path)
             else:
                 logger.log("No valid phage k-mers data found for annotation.")
         except Exception as e:
             raise ValueError(f"Error during gene annotation: {e}")
-
-        # Log annotation results for inspection
-        if not bact_annot_df.empty:
-            logger.log(f"Bacterium annotation sample:\n{bact_annot_df.head()}")
-            logger.log(f"Succes/Total rate of kmer in bact df: {len(bact_annot_df)}/{len(bact_kmers_df)}")
-        else:
-            logger.log("Bacterium annotation dataframe is empty. No successful annotations for bacterium k-mers.")
-
-        if not phage_annot_df.empty:
-            logger.log(f"Phage annotation sample:\n{phage_annot_df.head()}")
-            logger.log(f"Succes/Total rate of kmer in phage df: {len(phage_annot_df)}/{len(phage_kmers_df)}")
-        else:
-            logger.log("Phage annotation dataframe is empty. No successful annotations for phage k-mers.")
-
-        # Gene Annot Plotting
-        try:
-            plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir), sort_by=sort_by)
-            if not bact_annot_df.empty:
-                plotting_utils.plot_top_genes(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
-                plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
-                plotting_utils.plot_kmer_gene_network(bact_annot_df, entity_type="bacterium", top_kmers=args.network_top_kmers)
-                plotting_utils.plot_kmer_against_ups_or_pfi(bact_annot_df, entity_type="bacterium")
-
-            if not phage_annot_df.empty:
-                plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
-                plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
-                plotting_utils.plot_kmer_gene_network(phage_annot_df, entity_type="phage", top_kmers=args.network_top_kmers)
-                plotting_utils.plot_kmer_against_ups_or_pfi(phage_annot_df, entity_type="phage")
-                    
-        except Exception as e:
-            raise ValueError(f"Error during gene annotation plotting: {e}")
-
-        ### Combined plotting
-        frames = []
-        if not bact_annot_df.empty:
-            frames.append(_normalize_for_combine(
-                bact_annot_df, species_col='bact', entity_col='gene',
-                organism_label='bacterium'))
-        if not phage_annot_df.empty:
-            frames.append(_normalize_for_combine(
-                phage_annot_df, species_col='entity', entity_col='product',
-                organism_label='phage'))
-
-        if frames:
-            collected_df = pd.concat(frames, ignore_index=True, sort=False)
-            collected_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
-            logger.log(f"Combined annotation frame: {len(collected_df)} rows, "
-                    f"{collected_df['species'].nunique()} species, "
-                    f"{collected_df['organism'].nunique()} organism types.")
-        else:
-            collected_df = pd.DataFrame()
-            logger.log("No annotated rows to combine.")
-        
-        try:
-            if not collected_df.empty:
-                plotting_utils.plot_species_distribution_grid(
-                    collected_df, value_col='decoded_kmer', top_n=30)
-                plotting_utils.plot_species_distribution_grid(
-                    collected_df, value_col='entity_label', top_n=30)
-        except Exception as e:
-            raise ValueError(f"Error during combined annotation plotting: {e}")
-
-        # Concatenate annotation results and save
-        try: 
-            if not bact_annot_df.empty and not phage_annot_df.empty:
-                combined_annot_df = pd.concat([bact_annot_df, phage_annot_df], ignore_index=True)
-                combined_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
-                logger.log("Top Kmers Annotations CSV saved as top_kmers_annotations.csv")
-            
-            elif not bact_annot_df.empty:
-                bact_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
-                logger.log("Bacterium Kmers Annotations CSV saved as top_kmers_annotations.csv")
-            elif not phage_annot_df.empty:
-                phage_annot_df.to_csv(outdir + 'top_kmers_annotations.csv', index=False)
-                logger.log("Phage Kmers Annotations CSV saved as top_kmers_annotations.csv")
-            
-            # Additionally: build a mapping of decoded_kmer -> annotated genes/products
-            try:
-                mapping_frames = []
-                # Bacterium mapping: 'decoded_kmer' -> 'gene'
-                if not bact_annot_df.empty:
-                    if 'decoded_kmer' in bact_annot_df.columns and 'gene' in bact_annot_df.columns:
-                        df_bmap = bact_annot_df[['decoded_kmer', 'gene']].dropna()
-                        if not df_bmap.empty:
-                            df_bmap = df_bmap.groupby('decoded_kmer')['gene'].agg(lambda x: ';'.join(sorted(set(x)))).reset_index()
-                            df_bmap = df_bmap.rename(columns={'gene': 'mapped_genes'})
-                            df_bmap['organism'] = 'bacterium'
-                            mapping_frames.append(df_bmap)
-
-                # Phage mapping: 'decoded_kmer' -> 'product'
-                if not phage_annot_df.empty:
-                    if 'decoded_kmer' in phage_annot_df.columns and 'product' in phage_annot_df.columns:
-                        df_pmap = phage_annot_df[['decoded_kmer', 'product']].dropna()
-                        if not df_pmap.empty:
-                            df_pmap = df_pmap.groupby('decoded_kmer')['product'].agg(lambda x: ';'.join(sorted(set(x)))).reset_index()
-                            df_pmap = df_pmap.rename(columns={'product': 'mapped_genes'})
-                            df_pmap['organism'] = 'phage'
-                            mapping_frames.append(df_pmap)
-
-                if mapping_frames:
-                    kmer_map_df = pd.concat(mapping_frames, ignore_index=True, sort=False)
-                    # Count how many distinct genes/products each kmer maps to
-                    kmer_map_df['num_genes'] = kmer_map_df['mapped_genes'].apply(lambda s: 0 if pd.isna(s) or s == '' else len(str(s).split(';')))
-                    # Save mapping CSV for user inspection
-                    kmer_map_df.to_csv(outdir + 'kmer_to_genes_mapping.csv', index=False)
-                    logger.log("Saved kmer-to-genes mapping CSV: kmer_to_genes_mapping.csv")
-
-                    # Write a short human-readable summary with examples of multi-mapping kmers
-                    total_kmers = len(kmer_map_df)
-                    multi_map_count = int((kmer_map_df['num_genes'] > 1).sum())
-                    examples = kmer_map_df[kmer_map_df['num_genes'] > 1].head(20)
-                    summary_lines = [f"Total unique annotated kmers: {total_kmers}", f"Kmers mapping to multiple genes/products: {multi_map_count}", "\nExamples of kmers mapping to multiple genes/products (up to 20):"]
-                    for _, r in examples.iterrows():
-                        summary_lines.append(f"{r.get('decoded_kmer','<unknown kmer>')} ({r['organism']}): {r['mapped_genes']}")
-                    with open(outdir + 'top_kmers_mapping_summary.txt', 'w') as summary_f:
-                        summary_f.write('\n'.join(summary_lines))
-                    logger.log("Saved human-readable mapping summary: top_kmers_mapping_summary.txt")
-
-                    # Log concise counts for immediate visibility
-                    logger.log(f"Kmer mapping summary: {total_kmers} unique kmers; {multi_map_count} map to multiple genes/products.")
-
-                    # (Agent-only TODO tracking completed outside of runtime)
-
-            except Exception as e:
-                logger.log(f"Warning: Failed to build/save kmer->genes mapping: {e}")
-        except Exception as e:
-            raise ValueError(f"Error saving top k-mers annotations: {e}")
 
     else:
         logger.log("No valid top k-mers data found.")

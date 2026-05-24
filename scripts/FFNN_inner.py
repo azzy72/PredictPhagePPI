@@ -45,6 +45,7 @@ def parse_arguments():
     # Data Source
     parser.add_argument("--use_encoded", action="store_true", help="Use encoded_sketches instead of SM_sketches")
     parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
+    parser.add_argument("--all_phages", action="store_true", help="Use all phages in the dataset, including those without interaction data in hostrange (these will be labeled as non-interactions).")
     parser.add_argument("--bits_encoded", type=str, default="4", help="(Optional) specify which type of bit encoding using in encoded_sketches (e.g. 4 for phage_encode4bit_n400_k12)")
     parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
     parser.add_argument("--sbatch_id", type=str, help="(Optional) sbatch job ID to include in output directory name for easier tracking")
@@ -63,8 +64,8 @@ def parse_arguments():
     # Exclusions
     parser.add_argument("--exclude_noninteractions", action="store_true", help="Exclude non-interacting pairs")
     parser.add_argument("--exclude_pairs", action="store_true", help="Exclude specified pairs of bacteria and phages, requires --exclude_bacts and --exclude_phages")
-    parser.add_argument("--exclude_bacts", nargs='+', default=["J26_21_reoriented"], help="List of bacteria to exclude")
-    parser.add_argument("--exclude_phages", nargs='+', default=["Abuela"], help="List of phages to exclude")
+    parser.add_argument("--exclude_bacts", nargs='+', default=[], help="List of bacteria to exclude")
+    parser.add_argument("--exclude_phages", nargs='+', default=[], help="List of phages to exclude")
     
     parser.add_argument("--exclude_clusters", action="store_true", help="Exclude all pairs involving bacteria in the specified clusters, requires --exclude_bact_clusters and --exclude_phage_clusters")
     parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="Array of bacterial strains to exclude in a cluster like manner")
@@ -176,6 +177,9 @@ def parse_arguments():
 
         # Make args.exclude_bact_clusters short names (e.g. J2_21) - phages stays the same
         args.exclude_bact_clusters = clean_bact_names(args.exclude_bact_clusters, data2=args.data2)
+        # Standardize phage names
+        if args.data2:
+            args.exclude_phage_clusters = [re.sub(r"^([A-Za-z]+)_[\w]+_host(\d+)$", r"\1_Host_\2", phage) for phage in args.exclude_phage_clusters]
 
     return args
 
@@ -227,6 +231,8 @@ def main():
     prefix = "encoded_sketches" if args.use_encoded else "SM_sketches"
     if args.data2:
         prefix = f"{prefix}_data2"
+    if args.all_phages:
+        prefix = f"{prefix}_allphages"
 
     #use regex to find directories with n{bn}_k{bk} and n{pn}_k{pk} in their names, since dir prefix depends on method
     files_prefix_dirs = os.listdir(os.path.join(data_prod_path, prefix))
@@ -251,7 +257,7 @@ def main():
     print(f"Recognized data paths\ninput_phage_path:\t{input_phage_path}\ninput_bact_path:\t{input_bact_path}\npresmat_path:\t{presmat_path}")
 
     ### 3. Load Data ###
-    bact_clusters = pd.read_csv(os.path.join(data_prod_path, "bact_clusters_with_genus.csv"), index_col=0)
+    bact_clusters = pd.read_csv(os.path.join(data_prod_path, f"{prefix}", "sim_matrices", f"combined_bact_clusters_n{n}_k{k}.csv"), index_col=0)
 
     # Load Presence Matrix
     full_presmat_path = os.path.join(data_prod_path, presmat_path)
@@ -303,7 +309,10 @@ def main():
             hk_translation_dict = None
 
     ### 4. Host Range Setup ###
-    bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"), data2=args.data2)
+    if args.data2:
+        bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/data2_EOP.xlsx"), sheet_name="Sheet1", data2=True)
+    else:
+        bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"), data2=False)
     host_range_data = binarize_host_range(hostrange_df_to_dict(host_range_df), continous=False)
     host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
 
@@ -357,8 +366,8 @@ def main():
     bacteria_names = list(bact_minhash_data.keys())
 
     # Correcting exclude_bacts and exclude_phages if they're not in the same format as hostrange
-    if args.exclude_clusters:
-        args.exclude_bacts = clean_bact_names(args.exclude_bacts)
+    if args.exclude_pairs:
+        args.exclude_bacts = clean_bact_names(args.exclude_bacts, data2=args.data2)
 
     if args.randomize:
         random.seed(42)
@@ -898,13 +907,9 @@ def main():
 
     try:
         # 1. Load lookup data
-        hostrange_pdf = pd.read_excel(raw_data_path+"phagehost_KU/Hostrange_data_all_crisp_iso.xlsx", sheet_name="sum_hostrange", header=1)
-        id_lookup_bact = hostrange_pdf[["Seq ID", "Species"]].rename(columns={"Seq ID": "Bacterium_Name"})
-        try:
-            id_lookup_bact["Bacterium_Name"] = id_lookup_bact["Bacterium_Name"].apply(clean_bact_names)
-        except Exception as e:
-            logging.warning(f"Error occurred while cleaning bacterium names in id_lookup_bact for bipartite bact-phage interaction analysis: {e}")
-
+        id_lookup_bact = pd.DataFrame(bact_lookup.items(), columns=["Bacterium_Name", "Species"])
+        id_lookup_bact["Bacterium_Name"] = id_lookup_bact["Bacterium_Name"].apply(clean_bact_names, data2=args.data2)
+        
         model.eval()
         with torch.no_grad():
             # Ensure X_test_t is your torch tensor for the test set

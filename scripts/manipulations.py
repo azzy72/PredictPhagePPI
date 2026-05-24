@@ -188,22 +188,52 @@ def short_species_name(full_name):
     else:
         return full_name.split(" ")[0][0] + ". " + full_name.split(" ")[1]
     
-def clean_bact_names(bact_name, data2 : bool = False):
+def clean_bact_names(bact_name, data2: bool = False):
     """
-    Clean bacteria names in a list to match hostrange short name (e.g. J2_21, or "Host 9" if data2)
+    Clean bacteria names in a list to match hostrange short name.
+    - data2=False: matches J-pattern (e.g. J2_21, FO3_21)
+    - data2=True:  matches H-pattern (e.g. "Host 9") or K-pattern (e.g. "Kp_KU7" -> "Host 7")
     """
-    J_pattern = r"((?:J|FO)\d+[A-Z]*_\d+)" if not data2 else r"(Host \d+)"
-    #fallback_J_pattern = r"(J\d+[A-Z]*_\d+)" if not data2 else r"(Host \d+)"
-    if type(bact_name) == list:
-        return [re.search(J_pattern, f).group(1) for f in bact_name if re.search(J_pattern, f)]
-    elif type(bact_name) == str:
-        match = re.search(J_pattern, bact_name)
-        if match:
-            return match.group(1)
-        else:
+    J_pattern = r"((?:J|FO)\d+[A-Z]*_\d+)"
+    H_pattern = r"(Host \d+)"
+    K_pattern = r"(Kp_KU(\d+))"
+
+    def _extract(name, pattern):
+        match = re.search(pattern, name)
+        return match if match else None
+
+    if not data2:
+        if isinstance(bact_name, list):
+            return [m.group(1) for f in bact_name if (m := _extract(f, J_pattern))]
+        elif isinstance(bact_name, str):
+            match = _extract(bact_name, J_pattern)
+            if match:
+                return match.group(1)
             raise ValueError(f"Could not extract bacteria name from: {bact_name}")
+        else:
+            raise TypeError(f"bact_name must be a string or list, got {type(bact_name)}")
+
     else:
-        raise ValueError(f"bact_name must be a string or list of strings, got {type(bact_name)}")
+        def _extract_data2(name):
+            if m := _extract(name, H_pattern):
+                return m.group(1)
+            if m := _extract(name, K_pattern):
+                return f"Host {m.group(2)}"  # Reformat Kp_KU7 -> Host 7
+            return None
+
+        if isinstance(bact_name, list):
+            results = [_extract_data2(f) for f in bact_name]
+            if not any(results):
+                raise ValueError(f"No names matched H- or K-pattern in list: {bact_name}")
+            return [r for r in results if r]
+        elif isinstance(bact_name, str):
+            result = _extract_data2(bact_name)
+            if result:
+                return result
+            raise ValueError(f"Could not extract bacteria name from: {bact_name}")
+        else:
+            raise TypeError(f"bact_name must be a string or list, got {type(bact_name)}")
+    
 
 def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=0.5, TS = False) -> dict:
     """
@@ -393,14 +423,14 @@ def get_max_dim(mh_dict):
     # Use max() over the lengths of all values
     return max(len(v) for v in mh_dict.values())
 
-def clean_dict_keys(in_dict : dict, sep : str = "_", take : str = "last") -> dict:
+def clean_dict_keys(in_dict : dict, sep : str = "_", take : str = "last", data2 : bool = False) -> dict:
     """
     Clean the keys in a dictionary by splitting by sep and taking the last/first val.
     If name can't be split, return name (do nothing)
     """
     out_dict = {}
     for key, val in in_dict.items():
-        if sep in key:
+        if sep in key and not data2:
             if take == "first":
                 out_dict[key.split("_")[0]] = val
             elif take == "last":
@@ -983,7 +1013,9 @@ class calc_PFI:
                 self.host_range_data[bact] = hostrange_bact(host_range_data, [bact], approach="acceptive", threshold=0.5, TS = False)
             
             self.host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in self.host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
-
+        else:
+            print("Using provided host range data.")
+            print("Example host range entry:", next(iter(self.host_range_data.items())))
 
         # Create out directory if it doesn't exist
         #outdir = self.outdir.rsplit("/", 1)[0] if self.outdir is not None else None
