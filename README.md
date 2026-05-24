@@ -131,13 +131,10 @@ python scripts/FFNN_inner.py --nk 500 12 --data2 --logging
 | `--data2` | Use the data2 EOP dataset |
 | `--use_encoded` | Use custom-encoded sketches instead of Sourmash sketches |
 | `--cv` / `--kf_n_splits` | K-Fold cross-validation |
-| `--smote` | SMOTE class-imbalance oversampling |
-| `--train_by_cluster` | Group data splits by bacterial cluster |
 | `--exclude_clusters` | Hold out entire clusters for out-of-distribution testing |
 | `--test_on_excluded` | Evaluate the held-out cluster as the test set |
 | `--test_on_unseen` | Evaluate on completely unseen (zero overlap) data |
 | `--perform_pfi` | Pairwise feature importance analysis |
-| `--perform_ga` | Gene annotation of top-ranked k-mers |
 | `--save_model` | Persist trained model to disk |
 | `--n_epochs` / `--learning_rate` / `--batch_size` | Hyperparameters |
 
@@ -145,7 +142,7 @@ Output goes to `nn_runs/<run_dir>/`.
 
 ### Step 4 — Iterative cluster-exclusion pipeline (`slurm_iec/`)
 
-Runs the full leave-one-cluster-out experiment: every (bacteria-cluster, phage-cluster) pair is excluded in turn, the model is trained on the remainder, and performance on the held-out pair is recorded. Results are aggregated by `collect_iterres.py`.
+Runs the full leave-one-cluster-out experiment (IterExcl): every (bacteria-cluster, phage-cluster) pair is excluded in turn, the model is trained on the remainder, and performance on the held-out pair is recorded. Results are aggregated by `collect_iterres.py`.
 
 ```bash
 # Submit the full array + postprocess job to Slurm
@@ -213,11 +210,11 @@ Exploratory Jupyter notebooks for each stage of the project:
 |--------|------|
 | `downsampling.py` | Genome → MinHash sketch (Sourmash / mmh3 / xxhash) |
 | `bact_downsampling.py` | Bacterial-specific downsampling (multi-contig support) |
-| `batch_downsampling.py` | Batch over multiple n/k configurations |
-| `compare_sigs.py` | Pairwise Jaccard similarity + clustering |
+| `batch_downsampling.py` | Batch over multiple configurations |
+| `compare_sigs.py` | Pairwise Jaccard similarity + (hierarchial) clustering |
 | `FFNN_inner.py` | **Core FFNN training & evaluation** |
 | `collect_iterres.py` | **Aggregate iterative-exclusion results** |
-| `decompositions.py` | k-mer decomposition, `KmerCodec` (4-bit encoding), `Decompose` class |
+| `decompositions.py` | k-mer decomposition opposing Sourmash, `KmerCodec` (4-bit encoding), `Decompose` class |
 | `io_operations.py` | Presence matrix I/O, host-range loading |
 | `manipulations.py` | Feature construction, host-range binarisation |
 | `analysis.py` | Feature importance, gene analysis, plotting |
