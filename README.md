@@ -2,7 +2,7 @@
 
 Predicting phage–host interactions from downsampled bacterial and bacteriophage genomes using machine learning.
 
-Given a phage genome and a bacterial genome, the model predicts whether the phage can infect that bacterium. Genome representation is achieved by downsampling each genome into a fixed-size MinHash sketch (k-mer set), either via [Sourmash](https://sourmash.readthedocs.io/) or a custom MurmurHash3 / xxHash implementation. The concatenated sketches form the input vector to a Feed-Forward Neural Network (FFNN).
+Given a phage genome and a bacterial genome, the model predicts whether the phage can infect that bacterium. Genome representation is achieved by downsampling each genome into a fixed-size MinHash sketch (k-mer set), either via [Sourmash](https://sourmash.readthedocs.io/) or a custom MurmurHash3 / xxHash implementation. The concatenated sketches in a constructed presence matrix format, form the input vector to a Feed-Forward Neural Network (FFNN), which is evaluated by a hostrange/EOP interaction set.
 
 ---
 
@@ -20,7 +20,7 @@ PredictPhagePPI/
 ├── Makefile                # Environment setup helpers
 └── README.md
 ```
-
+![Graphical pipeline](./Project_graphical.png)
 ---
 
 ## Data
