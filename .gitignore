@@ -16,5 +16,4 @@ scripts_ext/mike/
 .Rproj.user
 raw_data/
 logs/
-tmp/
-tmp_old/
+tmp*

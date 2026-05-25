@@ -1417,7 +1417,7 @@ class GeneAnalysis():
 
     def batch_bact_annotate(self, bact_df : pd.DataFrame, kmer_col : str, entity_col : str, data_prod_path : str) -> pd.DataFrame:
         bact_annotations = pd.DataFrame(columns=["bact", "locus_tag", "kmer_in_seq", "length_bp", "gene", "product"])
-        score_cols = [col for col in ["UPS", "PFI"] if col in bact_df.columns]
+        score_cols = [col for col in ["UPS", "PFI", "WPFI"] if col in bact_df.columns]
         with tqdm(total=len(bact_df), desc="Annotating bacteria-kmer pairs") as pbar:
             for _, row in bact_df.iterrows():
                 bact = row[entity_col]
@@ -1441,7 +1441,7 @@ class GeneAnalysis():
                 "contig_id", "cds_id", "kmer_in_seq", "start", "end", "phrog", "function", "product",
                 "annotation_method", "annotation_confidence", "tophit_protein",
                 "function_with_highest_bitscore_proportion", "prostt5_confidence"])
-        score_cols = [col for col in ["UPS", "PFI"] if col in phage_df.columns]
+        score_cols = [col for col in ["UPS", "PFI", "WPFI"] if col in phage_df.columns]
         with tqdm(total=len(phage_df), desc="Annotating phage-kmer pairs") as pbar:
             for _, row in phage_df.iterrows():
                 phage = row[entity_col]
