@@ -52,9 +52,9 @@ def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool 
                 bact_lookup[bact] = host_range_df.loc[bact, "Species"]
         host_range_df["phage"] = host_range_df["phage"].apply(lambda x: clean_bact_names(x, data2=True))  # Keep only the first word of the phage name
 
-        # Clean phage names in columns: e.g. "Ravello_2_host1" -> "Ravello_Host_1"
+        # Clean phage names in columns: keep only the first part before the first underscore
         host_range_df.rename(
-            columns=lambda c: re.sub(r"^([A-Za-z]+)_[\w]+_host(\d+)$", r"\1_Host_\2", c),
+            columns=lambda c: str(c).split('_')[0],
             inplace=True
         )
 
@@ -98,6 +98,9 @@ def load_minhash_sketches(in_dir : str, TS : bool = False, output_as_np : bool =
     from sourmash import load_one_signature
     minhash_data = {}
     for filename in os.listdir(in_dir):
+        if "surprisus" in filename.lower():
+            print(f"Warning: Skipping file {filename} as it has not host range data available in the dataset.")
+            continue
         if filename.endswith(('.sig', '.json')): # sourmash signature files
             filepath = os.path.join(in_dir, filename)
             if TS: print(f"filepath: {filepath}")

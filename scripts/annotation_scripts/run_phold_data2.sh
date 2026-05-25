@@ -18,27 +18,26 @@ INPUT_DIR="$ROOT_DIR/raw_data/phagehost_KU/data2_phages"
 PHAROKKA_OUTDIR="$ROOT_DIR/data_prod/pharokka"
 PHOLD_OUTDIR="$ROOT_DIR/data_prod/phold"
 
-FILES=($INPUT_DIR/*.fasta)
-INDEX=$((SLURM_ARRAY_TASK_ID - 1))
-INPUT_FASTA=${FILES[$INDEX]}
-PHAGE_NAME=$(basename "$INPUT_FASTA" .fasta)
-
-PHAROKKA_GBK="$PHAROKKA_OUTDIR/${PHAGE_NAME}_pharokka_output/pharokka.gbk"
-
-if [ ! -f "$PHAROKKA_GBK" ]; then
-    echo "ERROR: Pharokka GBK not found for $PHAGE_NAME — run pharokka first" >&2
-    exit 1
-fi
-
-echo "[$SLURM_ARRAY_TASK_ID] Running Phold for: $PHAGE_NAME"
-
 mkdir -p "$PHOLD_OUTDIR"
 
-phold run \
-    -i "$PHAROKKA_GBK" \
-    -o "$PHOLD_OUTDIR/${PHAGE_NAME}_phold_output" \
-    -t $SLURM_CPUS_PER_TASK \
-    -p "$PHAGE_NAME" \
-    --foldseek_gpu
+for INPUT_FASTA in "$INPUT_DIR"/*.fasta; do
+    PHAGE_NAME=$(basename "$INPUT_FASTA" .fasta)
+    PHAROKKA_GBK="$PHAROKKA_OUTDIR/${PHAGE_NAME}_pharokka_output/pharokka.gbk"
 
-echo "Finished: $PHAGE_NAME"
+    if [ ! -f "$PHAROKKA_GBK" ]; then
+        echo "ERROR: Pharokka GBK not found for $PHAGE_NAME — skipping" >&2
+        continue
+    fi
+
+    echo "Running Phold for: $PHAGE_NAME"
+
+    phold run \
+        -i "$PHAROKKA_GBK" \
+        -o "$PHOLD_OUTDIR/${PHAGE_NAME}_phold_output" \
+        -t 8 \
+        -p "$PHAGE_NAME" \
+        -f \
+        --foldseek_gpu
+
+    echo "Finished: $PHAGE_NAME"
+done

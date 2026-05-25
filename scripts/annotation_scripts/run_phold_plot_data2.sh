@@ -18,25 +18,24 @@ INPUT_DIR="$ROOT_DIR/raw_data/phagehost_KU/data2_phages"
 PHOLD_OUTDIR="$ROOT_DIR/data_prod/phold"
 PLOT_OUTDIR="$ROOT_DIR/data_prod/phold_plots"
 
-FILES=($INPUT_DIR/*.fasta)
-INDEX=$((SLURM_ARRAY_TASK_ID - 1))
-INPUT_FASTA=${FILES[$INDEX]}
-PHAGE_NAME=$(basename "$INPUT_FASTA" .fasta)
-
-PHOLD_GBK="$PHOLD_OUTDIR/${PHAGE_NAME}_phold_output/${PHAGE_NAME}.gbk"
-
-if [ ! -f "$PHOLD_GBK" ]; then
-    echo "ERROR: Phold GBK not found for $PHAGE_NAME — run phold first" >&2
-    exit 1
-fi
-
-echo "[$SLURM_ARRAY_TASK_ID] Plotting: $PHAGE_NAME"
-
 mkdir -p "$PLOT_OUTDIR"
 
-phold plot \
-    -i "$PHOLD_GBK" \
-    -o "$PLOT_OUTDIR/${PHAGE_NAME}_phold_plot" \
-    -t "$PHAGE_NAME"
+for INPUT_FASTA in "$INPUT_DIR"/*.fasta; do
+    PHAGE_NAME=$(basename "$INPUT_FASTA" .fasta)
+    PHOLD_GBK="$PHOLD_OUTDIR/${PHAGE_NAME}_phold_output/${PHAGE_NAME}.gbk"
 
-echo "Finished: $PHAGE_NAME"
+    if [ ! -f "$PHOLD_GBK" ]; then
+        echo "ERROR: Phold GBK not found for $PHAGE_NAME — skipping" >&2
+        continue
+    fi
+
+    echo "Plotting: $PHAGE_NAME"
+
+    phold plot \
+        -i "$PHOLD_GBK" \
+        -o "$PLOT_OUTDIR/${PHAGE_NAME}_phold_plot" \
+        -t "$PHAGE_NAME" \
+        -f
+
+    echo "Finished: $PHAGE_NAME"
+done

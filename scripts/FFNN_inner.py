@@ -49,6 +49,7 @@ def parse_arguments():
     parser.add_argument("--bits_encoded", type=str, default="4", help="(Optional) specify which type of bit encoding using in encoded_sketches (e.g. 4 for phage_encode4bit_n400_k12)")
     parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
     parser.add_argument("--sbatch_id", type=str, help="(Optional) sbatch job ID to include in output directory name for easier tracking")
+    parser.add_argument("--force_presmat", action="store_true", help="Force recalculation of presence matrix even if pre-saved files are available.")
 
     # Analysis Options
     parser.add_argument("--logging", action="store_true", help="Enable logging and saving")
@@ -180,6 +181,8 @@ def parse_arguments():
         # Standardize phage names
         if args.data2:
             args.exclude_phage_clusters = [re.sub(r"^([A-Za-z]+)_[\w]+_host(\d+)$", r"\1_Host_\2", phage) for phage in args.exclude_phage_clusters]
+            if "surprisus" in [phage.lower() for phage in args.exclude_phage_clusters]:
+                args.exclude_phage_clusters = [phage for phage in args.exclude_phage_clusters if "surprisus" not in phage.lower()]
 
     return args
 
@@ -261,7 +264,8 @@ def main():
 
     # Load Presence Matrix
     full_presmat_path = os.path.join(data_prod_path, presmat_path)
-    if not os.path.exists(full_presmat_path):
+    
+    if args.force_presmat or not os.path.exists(full_presmat_path):
         print("Reconstructing presence_matrix...")
         binary_matrix, entity_to_index, minhash_to_index, phage_minhash_data, bact_minhash_data = presence_matrix(
             phage_minhash_dir=os.path.join(data_prod_path, input_phage_path),
@@ -817,7 +821,14 @@ def main():
             test_unseen_probs = torch.sigmoid(test_unseen_logits)
             test_unseen_preds = (test_unseen_probs >= 0.5).float()
             test_unseen_acc = (test_unseen_preds.to(device) == y_test_unseen_t).float().mean().item()
-            test_unseen_ba = balanced_accuracy_score(y_test_unseen_t.cpu().numpy(), test_unseen_preds.cpu().numpy())
+            try:
+                test_unseen_ba = balanced_accuracy_score(y_test_unseen_t.cpu().numpy(), test_unseen_preds.cpu().numpy())
+            except ValueError as e:
+                logging.warning(f"Error occurred while calculating balanced accuracy for truly unseen test set: {e}")
+                logging.warning(f"X_test_unseen_t shape: {X_test_unseen_t.shape}, y_test_unseen_t shape: {y_test_unseen_t.shape}, test_unseen_preds shape: {test_unseen_preds.shape}")
+                logging.warning(f"y_test_unseen_t: {y_test_unseen_t.cpu().numpy()}, test_unseen_preds: {test_unseen_preds.cpu().numpy()}")
+                raise e
+                return None
 
         if args.logging: 
             logging.info(f'Tested on truly unseen subset of excluded set')
