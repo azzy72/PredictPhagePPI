@@ -73,6 +73,10 @@ def parse_arguments():
                         help="Highlight kmers that map to multiple genes in gene/kmer plots")
     parser.add_argument("--network_top_kmers", type=int, default=50,
                         help="Number of top kmers to include in the kmer-gene network plot")
+    parser.add_argument("--hostrange_excel", type=str, default=None,
+                        help="Path to the hostrange/EOP Excel file for hostrange heatmap plots")
+    parser.add_argument("--hostrange_sheet", type=str, default="Sheet1",
+                        help="Sheet name in the hostrange Excel file (default: Sheet1)")
     return parser.parse_args()
 
 def correct_deci_number(value):
@@ -358,20 +362,22 @@ class GAPlottingUtils:
             logger.log(f"Warning: no kmer column found for plotting top genes for {entity_type}.")
             return
 
-        # Build mapping: for each kmer, which genes does it map to
-        km_map = df.groupby(kmer_col)[key_col].agg(lambda x: ';'.join(sorted(set([str(v) for v in x if pd.notna(v)])))).reset_index()
-        km_map['num_genes'] = km_map[key_col].apply(lambda s: 0 if pd.isna(s) or s == '' else len(str(s).split(';')))
+        # Determine per unique kmer how many distinct genes it maps to (for multi-mapping flag).
+        # This is done on unique kmer sequences, not on individual rows.
+        km_to_num_genes = (
+            df.groupby(kmer_col)[key_col]
+            .agg(lambda x: len(set(str(v) for v in x if pd.notna(v))))
+            .rename('num_genes')
+        )
 
-        # Expand mapping for counting per gene
-        expanded = km_map.copy()
-        expanded = expanded[expanded[key_col].notna()]
-        expanded = expanded.assign(**{key_col: expanded[key_col].str.split(';')})
-        expanded = expanded.explode(key_col)
+        # Work on a row-level copy so we count actual occurrences per gene, not unique kmers.
+        df_work = df[[kmer_col, key_col]].dropna(subset=[key_col]).copy()
+        df_work['num_genes'] = df_work[kmer_col].map(km_to_num_genes).fillna(1)
+        df_work['is_multi']  = df_work['num_genes'] > 1
 
-        # Count single vs multi-mapped kmers per gene
-        expanded['is_multi'] = expanded['num_genes'] > 1
-        gene_multi = expanded.groupby(key_col)['is_multi'].sum().rename('multi_count')
-        gene_total = expanded.groupby(key_col).size().rename('total_count')
+        # Count rows per gene (reflects true frequency across all bacteria/runs)
+        gene_multi = df_work[df_work['is_multi']].groupby(key_col).size().rename('multi_count')
+        gene_total = df_work.groupby(key_col).size().rename('total_count')
         gene_counts_df = pd.concat([gene_total, gene_multi], axis=1).fillna(0)
         gene_counts_df['single_count'] = gene_counts_df['total_count'] - gene_counts_df['multi_count']
 
@@ -732,7 +738,7 @@ class GAPlottingUtils:
         
         plt.figure(figsize=(10, 6))
         title_part = "Unified Performance Score (UPS)" if self.sort_by == 'UPS' else "PFI Score" if self.sort_by == 'PFI' else "WPFI Score"
-        ax = sns.scatterplot(x='kmer_in_seq', y=self.sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'phage', palette='coolwarm')
+        ax = sns.scatterplot(x='kmer_in_seq', y=self.sort_by, data=df, hue='gene' if entity_type == 'bacterium' else 'product', palette='coolwarm')
         plt.title(f'Kmer Count vs {title_part} for {entity_type.capitalize()} Kmers')
         plt.xlabel('Kmer Count')
         plt.ylabel(title_part)
@@ -1231,14 +1237,15 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                         top_int_kmer_success = True
                     except Exception as e:
                         logger.log(f"Error reading {expected_interactions_path}: {e}")
-
-            else:
-                logger.log(f"Skipping PFI calculation for {folder_name}. Reason: top_kmers={top_int_kmer_success}, hk_lookup={kmer_to_gene is not None}")
             
             if top_int_kmer_success:
                 df_kmers["UPS"] = calculate_unified_score(metrics)
                 df_kmers["test_accuracy"] = metrics.get("test_accuracy", None)
                 top_kmers_df = pd.concat([top_kmers_df, df_kmers], ignore_index=True)
+            
+            else:
+                logger.log(f"Skipping PFI calculation for {folder_name}. Reason: top_kmers={top_int_kmer_success}, hk_lookup={kmer_to_gene is not None}")
+
         logger.log(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Folder processed: {folder_name}")
         logger.log("#" * 50)
         # c += 1
@@ -1448,6 +1455,12 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         if phage_len_after > 0:
             logger.log(f"Final phage sample:\n{phage_kmers_df.head()}")
 
+        if True:
+            # save phage_kmers_df["decoded_kmer"] and bact_kmers_df["decoded_kmer"] to text files for inspection
+            bact_kmers_df["decoded_kmer"].to_csv(outdir + 'bacterium_kmers.txt', index=False, header=False)
+            phage_kmers_df["decoded_kmer"].to_csv(outdir + 'phage_kmers.txt', index=False, header=False)
+            logger.log("Saved decoded k-mers to bacterium_kmers.txt and phage_kmers.txt for inspection.")
+
         # Gene analysis
         try:
             GA = GeneAnalysis()
@@ -1483,13 +1496,43 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_gene_network(bact_annot_df, entity_type="bacterium", top_kmers=args.network_top_kmers)
                 plotting_utils.plot_kmer_against_ups_or_pfi(bact_annot_df, entity_type="bacterium")
+                GA.plot_annotation_pca(
+                    annot_df=bact_annot_df,
+                    entity_type="bacterium",
+                    entity_col="bact",
+                    gene_col="gene",
+                    score_col=sort_by if sort_by in bact_annot_df.columns else None,
+                    outdir=str(outdir),
+                    title_suffix=title_suffix
+                )
 
             if not phage_annot_df.empty:
                 plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_gene_network(phage_annot_df, entity_type="phage", top_kmers=args.network_top_kmers)
                 plotting_utils.plot_kmer_against_ups_or_pfi(phage_annot_df, entity_type="phage")
-                    
+                GA.plot_annotation_pca(
+                    annot_df=phage_annot_df,
+                    entity_type="phage",
+                    entity_col="entity",
+                    gene_col="product",
+                    score_col=sort_by if sort_by in phage_annot_df.columns else None,
+                    outdir=str(outdir),
+                    title_suffix=title_suffix,
+                )
+
+            # Hostrange heatmaps (requires --hostrange_excel)
+            if args.hostrange_excel:
+                GA.plot_gene_hostrange_heatmaps(
+                    bact_annot_df=bact_annot_df if not bact_annot_df.empty else pd.DataFrame(),
+                    phage_annot_df=phage_annot_df if not phage_annot_df.empty else pd.DataFrame(),
+                    input_excel=args.hostrange_excel,
+                    sheet_name=args.hostrange_sheet,
+                    outdir=str(outdir),
+                    top_n=2,
+                )
+
+
         except Exception as e:
             raise ValueError(f"Error during gene annotation plotting: {e}")
 

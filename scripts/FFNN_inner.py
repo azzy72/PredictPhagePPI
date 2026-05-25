@@ -1038,11 +1038,20 @@ def main():
     # normalize column names (strip whitespace) then reorder columns to the requested phage order
     pred_matrix = pred_matrix.rename(columns=lambda x: x.strip())
 
-    phage_order = [
-        "Ymer","Taid","Poppous","Koroua","Abuela","Amona","Sabo","Mimer","Crus",
-        "Gander","Guf","Hoejben","Magnum","Vims","Echoes","Galvinrad","Uther",
-        "Rip","Rup","Slaad","Pantea","Rap","Zann"
-    ]
+    if args.data2:
+        phage_order = [
+            "Grebano", "Ravello", "Etui", "Maxentius", "Licinius", "Jovian", "Arcadius", "Avitus", "Marcian", "Libius", "Anthemius",
+            "Olybrius", "Phocas", "Caracalla", "Geta", "Leonitus", "Artabasdos", "Rangabe", "Staurakios", "Bardicus", "Quintillus", "Heraclius", 
+            "Heraclonas", "Anivius", "Komnenos", "Eudokia", "Doukas", "Arruntis", "Hostillian", "Pacatian", "Quartinus", "Bonosus", "Rozzorie",
+            "Brede", "Didius", "Septimius", "Diadumenian", "Elagabalus", "Pius", "Pupienus", "Nepotimus", "Balbinus", "Decius", "Trebonianus",
+            "Skandal", "Balder", "Herennius", "Silbannacus", "Volusianus", "Galleinus", "Salolinus", "Carinus", "Galerius" 
+        ]
+    else:
+        phage_order = [
+            "Ymer","Taid","Poppous","Koroua","Abuela","Amona","Sabo","Mimer","Crus",
+            "Gander","Guf","Hoejben","Magnum","Vims","Echoes","Galvinrad","Uther",
+            "Rip","Rup","Slaad","Pantea","Rap","Zann"
+        ]
 
     # keep only those desired that actually exist, then append any extra columns that were not listed
     cols_in_order = [c for c in phage_order if c in pred_matrix.columns]

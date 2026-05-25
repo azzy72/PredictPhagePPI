@@ -1312,6 +1312,10 @@ class GeneAnalysis():
     def _normalize_kmer(self, kmer: str) -> str:
         return str(kmer).strip().upper()
 
+    def _rc(self, seq: str) -> str:
+        """Return the reverse complement of a DNA sequence."""
+        return seq[::-1].translate(str.maketrans('ACGTN', 'TGCAN'))
+
 
     def extract_bacteria_genes_for_kmer(self, kmer: str, strain_name: str, root_dir: str) -> pd.DataFrame:
         """Return bacterial gene annotations for records whose sequence contains `kmer`.
@@ -1358,62 +1362,148 @@ class GeneAnalysis():
         return result.reset_index(drop=True)
     
     def extract_phage_genes_for_kmer(self, kmer: str, strain_name: str, root_dir: str) -> pd.DataFrame:
-        """Return phage gene annotations for records whose sequence contains `kmer`.
+        """Return phage gene annotations for CDS features overlapping the genomic
+        position(s) of `kmer` (searched on both strands).
 
-        Searches for:
-        - a `phanotate.ffn` file under the pharokka results for the strain
-        - a `*_per_cds_predictions.tsv` file under the phold results for the strain
-
-        The matching FASTA record IDs are matched against the `cds_id` column in the
-        PHOLD table.
+        Strategy
+        --------
+        1. Locate the phold GBK for the strain (falls back to the pharokka GBK).
+           The full genome sequence in the GBK is used to find the kmer position(s),
+           avoiding the limitation of only searching CDS sequences.
+        2. CDS features are read from the GBK to identify which genes overlap each
+           kmer hit by coordinate.
+        3. phold ``*_per_cds_predictions.tsv`` annotations are used preferentially
+           (structure-based, more sensitive for divergent phage proteins).
+        4. For any matched CDS not covered by phold, the pharokka
+           ``pharokka_cds_final_merged_output.tsv`` is used as a fallback, with its
+           columns mapped to the shared output schema.
         """
         root_dir = Path(root_dir)
         kmer = self._normalize_kmer(kmer)
+        kmer_rc = self._rc(kmer)
+        kmer_len = len(kmer)
+
+        # Output schema shared by phold and pharokka-fallback rows
+        OUT_COLS = [
+            "entity", "contig_id", "cds_id", "kmer_in_seq", "start", "end",
+            "phrog", "function", "product",
+            "annotation_method", "annotation_confidence", "tophit_protein",
+            "function_with_highest_bitscore_proportion", "prostt5_confidence",
+            "annotation_source",
+        ]
 
         pharokka_root = root_dir / "pharokka"
-        phold_root = root_dir / "phold"
+        phold_root    = root_dir / "phold"
 
         pharokka_dirs = [p for p in pharokka_root.rglob("*") if p.is_dir() and strain_name in p.name]
-        phold_dirs = [p for p in phold_root.rglob("*") if p.is_dir() and strain_name in p.name]
-        if not pharokka_dirs or len(pharokka_dirs) == 0:
+        phold_dirs    = [p for p in phold_root.rglob("*")    if p.is_dir() and strain_name in p.name]
+
+        if not pharokka_dirs:
             raise FileNotFoundError(f"No pharokka directory found for strain '{strain_name}' under {pharokka_root}")
-        if not phold_dirs or len(phold_dirs) == 0:
+        if not phold_dirs:
             raise FileNotFoundError(f"No phold directory found for strain '{strain_name}' under {phold_root}")
 
         pharokka_dir = pharokka_dirs[0]
-        phold_dir = phold_dirs[0]
+        phold_dir    = phold_dirs[0]
 
-        ffn_files = sorted(pharokka_dir.glob("**/phanotate.ffn"))
-        if not ffn_files:
-            raise FileNotFoundError(f"No phanotate.ffn file found in {pharokka_dir}")
+        # ── 1. Load genome sequence from GBK (phold preferred, pharokka fallback) ──
+        gbk_files = sorted(phold_dir.glob("*.gbk"))
+        if not gbk_files:
+            gbk_files = sorted(pharokka_dir.glob("*.gbk"))
+        if not gbk_files:
+            raise FileNotFoundError(
+                f"No GBK file found for '{strain_name}' in phold ({phold_dir}) "
+                f"or pharokka ({pharokka_dir})"
+            )
 
-        tsv_files = sorted(phold_dir.glob("**/*_per_cds_predictions.tsv"))
-        if not tsv_files:
-            raise FileNotFoundError(f"No *_per_cds_predictions.tsv file found in {phold_dir}")
+        genome_record = next(SeqIO.parse(str(gbk_files[0]), "genbank"))
+        genome_seq = str(genome_record.seq).upper()
 
+        # ── 2. Find all kmer hit positions (0-based) on both strands ──
+        kmer_positions = set()
+        for i in range(len(genome_seq) - kmer_len + 1):
+            sub = genome_seq[i: i + kmer_len]
+            if sub == kmer or sub == kmer_rc:
+                kmer_positions.add(i)
+
+        if not kmer_positions:
+            if self.TS:
+                print(f"Kmer '{kmer}' (or its RC) not found in genome of '{strain_name}'.")
+            return pd.DataFrame(columns=OUT_COLS)
+
+        # ── 3. Find CDS features whose coordinates overlap any kmer position ──
         matching_cds_ids = []
-        for record in SeqIO.parse(str(ffn_files[0]), "fasta"):
-            if kmer in str(record.seq).upper():
-                matching_cds_ids.append(record.id)
-
-        cols = [
-            "contig_id", "cds_id", "kmer_in_seq", "start", "end", "phrog", "function", "product",
-            "annotation_method", "annotation_confidence", "tophit_protein",
-            "function_with_highest_bitscore_proportion", "prostt5_confidence"
-        ]
+        for feature in genome_record.features:
+            if feature.type != "CDS":
+                continue
+            # BioPython converts GBK 1-based coords to 0-based half-open [start, end)
+            cds_start = int(feature.location.start)
+            cds_end   = int(feature.location.end)
+            cds_id = (
+                feature.qualifiers.get("locus_tag") or
+                feature.qualifiers.get("ID") or
+                [None]
+            )[0]
+            if cds_id is None:
+                continue
+            for pos in kmer_positions:
+                if cds_start <= pos and (pos + kmer_len) <= cds_end:
+                    matching_cds_ids.append(cds_id)
+                    break  # one hit per CDS is sufficient
 
         if not matching_cds_ids:
-            raise ValueError(f"No matching CDS IDs found for kmer '{kmer}' in strain '{strain_name}'.\npharokka_dirs: {pharokka_dirs}\nphold_dirs: {phold_dirs}\nffn_files: {ffn_files}\ntsv_files: {tsv_files}")
-            return pd.DataFrame(columns=cols)
+            if self.TS:
+                print(f"Kmer '{kmer}' found in genome of '{strain_name}' but falls outside all CDS features.")
+            return pd.DataFrame(columns=OUT_COLS)
 
-        ann_df = pd.read_csv(tsv_files[0], sep="\t")
-        ann_df["kmer_in_seq"] = kmer
-        missing = [c for c in cols if c not in ann_df.columns]
-        if missing:
-            raise KeyError(f"Missing expected columns in {tsv_files[0]}: {missing}")
+        matching_set = set(matching_cds_ids)
 
-        result = ann_df[ann_df["cds_id"].astype(str).isin(matching_cds_ids)][cols].copy()
-        return result.reset_index(drop=True)
+        # ── 4. phold annotations (priority) ──
+        phold_hits = pd.DataFrame()
+        phold_tsv_files = sorted(phold_dir.glob("**/*_per_cds_predictions.tsv"))
+        if phold_tsv_files:
+            df_phold = pd.read_csv(phold_tsv_files[0], sep="\t")
+            df_phold["kmer_in_seq"] = kmer
+            df_phold["entity"]      = strain_name
+            df_phold["annotation_source"] = "phold"
+            phold_hits = df_phold[df_phold["cds_id"].astype(str).isin(matching_set)].copy()
+
+        covered_by_phold = set(phold_hits["cds_id"].astype(str)) if not phold_hits.empty else set()
+
+        # ── 5. Pharokka annotations (fallback for CDS not covered by phold) ──
+        pharokka_hits = pd.DataFrame()
+        remaining = matching_set - covered_by_phold
+        if remaining:
+            pharokka_tsv_files = sorted(pharokka_dir.glob("**/pharokka_cds_final_merged_output.tsv"))
+            if pharokka_tsv_files:
+                df_pharokka = pd.read_csv(pharokka_tsv_files[0], sep="\t")
+                df_pharokka["kmer_in_seq"]       = kmer
+                df_pharokka["entity"]            = strain_name
+                df_pharokka["annotation_source"] = "pharokka_fallback"
+                # Map pharokka column names to shared output schema
+                df_pharokka = df_pharokka.rename(columns={
+                    "gene":     "cds_id",
+                    "stop":     "end",
+                    "contig":   "contig_id",
+                    "annot":    "product",
+                    "category": "function",
+                    "Method":   "annotation_method",
+                })
+                pharokka_hits = df_pharokka[
+                    df_pharokka["cds_id"].astype(str).isin(remaining)
+                ].copy()
+
+        # ── 6. Combine and normalise to shared output schema ──
+        frames = [f for f in [phold_hits, pharokka_hits] if not f.empty]
+        if not frames:
+            return pd.DataFrame(columns=OUT_COLS)
+
+        result = pd.concat(frames, ignore_index=True)
+        # Keep only columns that exist in this result; fill any gaps with NaN
+        for col in OUT_COLS:
+            if col not in result.columns:
+                result[col] = None
+        return result[OUT_COLS].reset_index(drop=True)
 
     def batch_bact_annotate(self, bact_df : pd.DataFrame, kmer_col : str, entity_col : str, data_prod_path : str) -> pd.DataFrame:
         bact_annotations = pd.DataFrame(columns=["bact", "locus_tag", "kmer_in_seq", "length_bp", "gene", "product"])
@@ -1437,11 +1527,17 @@ class GeneAnalysis():
         return bact_annotations
 
     def batch_phage_annotate(self, phage_df : pd.DataFrame, kmer_col : str, entity_col : str, data_prod_path : str) -> pd.DataFrame:
-        phage_annotations = pd.DataFrame(columns=[
-                "contig_id", "cds_id", "kmer_in_seq", "start", "end", "phrog", "function", "product",
-                "annotation_method", "annotation_confidence", "tophit_protein",
-                "function_with_highest_bitscore_proportion", "prostt5_confidence"])
+        OUT_COLS = [
+            "entity", "contig_id", "cds_id", "kmer_in_seq", "start", "end",
+            "phrog", "function", "product",
+            "annotation_method", "annotation_confidence", "tophit_protein",
+            "function_with_highest_bitscore_proportion", "prostt5_confidence",
+            "annotation_source",
+        ]
+        phage_annotations = pd.DataFrame(columns=OUT_COLS)
         score_cols = [col for col in ["UPS", "PFI", "WPFI"] if col in phage_df.columns]
+        n_no_match = 0
+        n_error = 0
         with tqdm(total=len(phage_df), desc="Annotating phage-kmer pairs") as pbar:
             for _, row in phage_df.iterrows():
                 phage = row[entity_col]
@@ -1449,54 +1545,567 @@ class GeneAnalysis():
                 try:
                     phage_genes = self.extract_phage_genes_for_kmer(kmer, phage, data_prod_path)
                     if phage_genes.empty:
-                        if self.TS: print("No phage genes found containing this kmer.")
+                        n_no_match += 1
                     else:
                         for col in score_cols:
                             phage_genes[col] = row[col]
                         phage_annotations = pd.concat([phage_annotations, phage_genes], ignore_index=True)
                 except Exception as e:
-                    if self.TS: print(f"Error extracting phage genes for kmer '{kmer}': {e}")
+                    n_error += 1
+                    logging.warning(f"Error annotating phage kmer '{kmer}' for '{phage}': {e}")
                 pbar.update(1)
 
+        total = len(phage_df)
+        annotated = total - n_no_match - n_error
+        logging.info(
+            f"Phage annotation summary: {annotated}/{total} kmer-entity pairs annotated "
+            f"({n_no_match} no genomic match, {n_error} errors)."
+        )
         return phage_annotations
 
-    # def batch_bact_annotate(self, bkmers : list, bact_names : list, data_prod_path : str) -> pd.DataFrame:
-    #     bact_annotations = pd.DataFrame(columns=["bact", "locus_tag", "kmer_in_seq", "length_bp", "gene", "product"])
-    #     with tqdm(total=len(bact_names)*len(bkmers), desc="Annotating bacteria-kmer pairs") as pbar:
-    #         for bact in bact_names:
-    #             for kmer in bkmers:
-    #                 try:
-    #                     bact_genes = self.extract_bacteria_genes_for_kmer(kmer, bact, data_prod_path)
-    #                     if bact_genes.empty:
-    #                         if self.TS: print("No bacterial genes found containing this kmer.")
-    #                     else:
-    #                         bact_annotations = pd.concat([bact_annotations, bact_genes], ignore_index=True)
-    #                 except Exception as e:
-    #                     if self.TS: print(f"Error extracting bacterial genes for kmer '{kmer}': {e}")
-    #                 pbar.update(1)
+    def plot_annotation_pca(
+        self,
+        annot_df: pd.DataFrame,
+        entity_type: str,
+        entity_col: str,
+        gene_col: str,
+        score_col: str = None,
+        outdir: str = None,
+        top_n_genes: int = 50,
+        n_loading_arrows: int = 10,
+        title_suffix: str = "",
+    ) -> None:
+        """PCA biplot of entities (strains) in gene-space.
 
-    #     return bact_annotations
+        Feature matrix
+        --------------
+        Rows    = unique entities (bacterial or phage strains).
+        Columns = top ``top_n_genes`` most frequent genes/products.
+        Values  = mean ``score_col`` per (entity, gene) cell when a score column is
+                  provided; otherwise raw occurrence counts.
 
-    # def batch_phage_annotate(self, pkmers : list, phage_names : list, data_prod_path : str) -> pd.DataFrame:
-    #     phage_annotations = pd.DataFrame(columns=[
-    #             "contig_id", "cds_id", "kmer_in_seq", "start", "end", "phrog", "function", "product",
-    #             "annotation_method", "annotation_confidence", "tophit_protein",
-    #             "function_with_highest_bitscore_proportion", "prostt5_confidence"
-    #         ])
-    #     with tqdm(total=len(phage_names)*len(pkmers), desc="Annotating phage-kmer pairs") as pbar:
-    #         for phage in phage_names:
-    #             for kmer in pkmers:
-    #                 try:
-    #                     phage_genes = self.extract_phage_genes_for_kmer(kmer, phage, data_prod_path)
-    #                     if phage_genes.empty:
-    #                         if self.TS: print("No phage genes found containing this kmer.")
-    #                     else:
-    #                         phage_annotations = pd.concat([phage_annotations, phage_genes], ignore_index=True)
-    #                 except Exception as e:
-    #                     if self.TS: print(f"Error extracting phage genes for kmer '{kmer}': {e}")
-    #                 pbar.update(1)
+        Points  = one per entity, coloured by their per-entity mean score (continuous
+                  colourmap) or a single colour when no score is available.
+        Arrows  = top ``n_loading_arrows`` genes by combined PC1+PC2 loading magnitude.
+        Labels  = entity names, de-cluttered with adjustText.
+        """
+        if annot_df is None or annot_df.empty:
+            logging.warning(f"plot_annotation_pca: empty dataframe for {entity_type}, skipping.")
+            return
+        if entity_col not in annot_df.columns or gene_col not in annot_df.columns:
+            logging.warning(
+                f"plot_annotation_pca: required columns '{entity_col}' / '{gene_col}' "
+                f"not found in {entity_type} annotation df."
+            )
+            return
 
-    #     return phage_annotations
+        # ── 1. Build entity × gene feature matrix ──────────────────────────────
+        extra = [score_col] if (score_col and score_col in annot_df.columns) else []
+        df = annot_df[[entity_col, gene_col] + extra].dropna(subset=[entity_col, gene_col]).copy()
+        df[gene_col]   = df[gene_col].astype(str).str.strip()
+        df[entity_col] = df[entity_col].astype(str).str.strip()
+
+        if extra:
+            pivot = (
+                df.groupby([entity_col, gene_col])[score_col]
+                .mean()
+                .unstack(fill_value=0)
+            )
+        else:
+            pivot = (
+                df.groupby([entity_col, gene_col])
+                .size()
+                .unstack(fill_value=0)
+            )
+
+        # Restrict to top_n_genes most frequent genes globally
+        if pivot.shape[1] > top_n_genes:
+            top_genes = pivot.sum(axis=0).nlargest(top_n_genes).index
+            pivot = pivot[top_genes]
+
+        if pivot.shape[0] < 2 or pivot.shape[1] < 2:
+            logging.warning(
+                f"plot_annotation_pca: pivot too small "
+                f"({pivot.shape[0]} entities × {pivot.shape[1]} genes) for {entity_type}, skipping."
+            )
+            return
+
+        # ── 2. Standardise and run PCA ─────────────────────────────────────────
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(pivot.values)
+
+        n_comp = min(2, pivot.shape[0] - 1, pivot.shape[1])
+        if n_comp < 2:
+            logging.warning(f"plot_annotation_pca: too few components for {entity_type}, skipping.")
+            return
+
+        pca      = PCA(n_components=2, random_state=42)
+        scores   = pca.fit_transform(X_scaled)   # (n_entities, 2)
+        loadings = pca.components_.T              # (n_genes,    2)
+        var_exp  = pca.explained_variance_ratio_
+
+        entity_labels = pivot.index.tolist()
+        gene_labels   = pivot.columns.tolist()
+
+        # ── 3. Per-entity colour value (mean score_col) ────────────────────────
+        if extra:
+            entity_scores = (
+                annot_df.groupby(entity_col)[score_col]
+                .mean()
+                .reindex(entity_labels)
+                .values
+            )
+            use_color = True
+        else:
+            entity_scores = None
+            use_color = False
+
+        # ── 4. Select top loading arrows by combined magnitude ─────────────────
+        magnitudes = np.sqrt(loadings[:, 0] ** 2 + loadings[:, 1] ** 2)
+        n_arrows   = min(n_loading_arrows, len(gene_labels))
+        top_idx    = np.argsort(magnitudes)[-n_arrows:]
+        arrow_scale = (np.max(np.abs(scores)) * 0.82) / (magnitudes.max() + 1e-9)
+
+        # ── 5. Draw ────────────────────────────────────────────────────────────
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        if use_color and entity_scores is not None:
+            sc = ax.scatter(
+                scores[:, 0], scores[:, 1],
+                c=entity_scores, cmap='viridis',
+                s=70, alpha=0.88, zorder=3, edgecolors='white', linewidths=0.5,
+            )
+            cbar = plt.colorbar(sc, ax=ax, pad=0.02, shrink=0.72)
+            cbar.set_label(f'Mean {score_col}', fontsize=10)
+        else:
+            ax.scatter(
+                scores[:, 0], scores[:, 1],
+                s=70, alpha=0.88, zorder=3,
+                color='#2980b9', edgecolors='white', linewidths=0.5,
+            )
+
+        # Entity labels (de-cluttered)
+        texts = [
+            ax.text(scores[i, 0], scores[i, 1], lbl, fontsize=7, alpha=0.85)
+            for i, lbl in enumerate(entity_labels)
+        ]
+        try:
+            adjust_text(texts, ax=ax, arrowprops=dict(arrowstyle='-', color='#aaaaaa', lw=0.4))
+        except Exception:
+            pass  # adjust_text is optional
+
+        # Loading arrows + gene labels
+        arrow_label_texts = []
+        for idx in top_idx:
+            x_tip = loadings[idx, 0] * arrow_scale
+            y_tip = loadings[idx, 1] * arrow_scale
+            ax.annotate(
+                '', xy=(x_tip, y_tip), xytext=(0, 0),
+                arrowprops=dict(arrowstyle='->', color='#c0392b', lw=1.5),
+                zorder=4,
+            )
+            arrow_label_texts.append(
+                ax.text(x_tip * 1.06, y_tip * 1.06, gene_labels[idx],
+                        fontsize=8, color='#c0392b', fontweight='bold', zorder=5)
+            )
+
+        if arrow_label_texts:
+            try:
+                adjust_text(
+                    arrow_label_texts,
+                    ax=ax,
+                    expand_text=(1.15, 1.25),
+                    expand_points=(1.15, 1.25),
+                    force_text=(0.3, 0.4),
+                    force_points=(0.2, 0.3),
+                    lim=200,
+                    arrowprops=dict(arrowstyle='-', color='#c0392b', lw=0.6, alpha=0.7),
+                )
+            except Exception:
+                pass
+
+        ax.axhline(0, color='grey', lw=0.5, linestyle='--', alpha=0.45)
+        ax.axvline(0, color='grey', lw=0.5, linestyle='--', alpha=0.45)
+        ax.set_xlabel(f'PC1  ({var_exp[0]:.1%} variance)', fontsize=12)
+        ax.set_ylabel(f'PC2  ({var_exp[1]:.1%} variance)', fontsize=12)
+
+        value_desc = f'mean {score_col}' if use_color else 'kmer count'
+        suffix_str = f', {title_suffix}' if title_suffix else ''
+        ax.set_title(
+            f'PCA Biplot — {entity_type.capitalize()} Strains × Gene Space\n'
+            f'(cell value: {value_desc}{suffix_str})',
+            fontsize=13, fontweight='bold',
+        )
+        ax.grid(True, linestyle='--', alpha=0.28)
+        plt.tight_layout()
+
+        if outdir:
+            out_path = os.path.join(str(outdir), f'pca_biplot_{entity_type}.png')
+            plt.savefig(out_path, dpi=150, bbox_inches='tight')
+            logging.info(f"Saved PCA biplot for {entity_type}: {out_path}")
+        plt.close()
+
+    def _plot_bact_gene_heatmap(
+        self,
+        gene: str,
+        bact_annot_df: pd.DataFrame,
+        phage_annot_df: pd.DataFrame,
+        bacteria_order: list,
+        phage_order: list,
+        outdir: str = None,
+    ) -> None:
+        """Heatmap (bacteria rows × phage columns) for a single bacterium gene.
+
+        Row colour (row-constant) = kmer count of *gene* for the bacterium.
+        Bottom strip = stacked bars of phage product counts for each phage column.
+        """
+        n_bact  = len(bacteria_order)
+        n_phage = len(phage_order)
+
+        # Per-bacterium kmer count for this gene
+        bact_counts: dict = {}
+        if bact_annot_df is not None and not bact_annot_df.empty:
+            sub = bact_annot_df[
+                bact_annot_df['gene'].astype(str).str.strip() == gene
+            ]
+            for b in bacteria_order:
+                bact_counts[b] = int((sub['bact'].astype(str).str.strip() == b).sum())
+        else:
+            for b in bacteria_order:
+                bact_counts[b] = 0
+
+        # Build (n_bact × n_phage) matrix — row-constant
+        mat = np.array(
+            [[bact_counts.get(b, 0)] * n_phage for b in bacteria_order],
+            dtype=float,
+        )
+        mat[mat == 0] = np.nan  # grey out zero cells
+
+        # Per-phage product counters for the strip
+        phage_product_counts: dict = {}
+        if phage_annot_df is not None and not phage_annot_df.empty:
+            for ph in phage_order:
+                sub_ph = phage_annot_df[
+                    phage_annot_df['entity'].astype(str).str.strip() == ph
+                ]
+                phage_product_counts[ph] = Counter(
+                    sub_ph['product'].dropna().astype(str).str.strip().tolist()
+                )
+        all_phage_products = sorted({
+            prod for cntr in phage_product_counts.values() for prod in cntr
+        })
+        phage_palette = {
+            prod: col
+            for prod, col in zip(
+                all_phage_products,
+                sns.color_palette("tab20", max(len(all_phage_products), 1)),
+            )
+        }
+
+        # ── Figure layout ────────────────────────────────────────────────────
+        has_strip   = bool(all_phage_products)
+        h_ratios    = [max(3, n_bact * 0.4), max(1.5, 1.5)] if has_strip else [1]
+        n_rows      = 2 if has_strip else 1
+        fig_h       = sum(h_ratios) + 1.5
+        fig_w       = max(12, n_phage * 0.55 + 3)
+
+        fig = plt.figure(figsize=(fig_w, fig_h))
+        if has_strip:
+            gs       = fig.add_gridspec(2, 1, height_ratios=h_ratios, hspace=0.06)
+            ax_main  = fig.add_subplot(gs[0])
+            ax_strip = fig.add_subplot(gs[1], sharex=ax_main)
+        else:
+            gs      = fig.add_gridspec(1, 1)
+            ax_main = fig.add_subplot(gs[0])
+            ax_strip = None
+
+        # ── Main heatmap ─────────────────────────────────────────────────────
+        cmap_main = plt.cm.YlOrRd.copy()
+        cmap_main.set_bad(color='#e8e8e8')
+        im = ax_main.imshow(
+            mat,
+            aspect='auto',
+            cmap=cmap_main,
+            origin='upper',
+            extent=[-0.5, n_phage - 0.5, n_bact - 0.5, -0.5],
+        )
+        ax_main.set_yticks(range(n_bact))
+        ax_main.set_yticklabels(bacteria_order, fontsize=7)
+        ax_main.set_xticks(range(n_phage))
+        if not has_strip:
+            ax_main.set_xticklabels(phage_order, fontsize=7, rotation=45, ha='right')
+        else:
+            plt.setp(ax_main.get_xticklabels(), visible=False)
+        ax_main.set_ylabel('Bacterium', fontsize=9)
+        ax_main.set_title(
+            f'Bacterium gene: "{gene}" — kmer count per bacterium',
+            fontsize=11, fontweight='bold',
+        )
+        cb = fig.colorbar(im, ax=ax_main, shrink=0.65, pad=0.02)
+        cb.set_label('kmer count', fontsize=9)
+
+        # ── Bottom strip ─────────────────────────────────────────────────────
+        if has_strip and ax_strip is not None:
+            bottoms = np.zeros(n_phage)
+            handles = []
+            for prod in all_phage_products:
+                heights = np.array([
+                    phage_product_counts.get(ph, {}).get(prod, 0)
+                    for ph in phage_order
+                ], dtype=float)
+                ax_strip.bar(
+                    range(n_phage), heights, bottom=bottoms,
+                    color=phage_palette[prod], width=0.85, label=prod,
+                )
+                handles.append(mpatches.Patch(color=phage_palette[prod], label=prod))
+                bottoms += heights
+            ax_strip.set_ylabel('product\ncount', fontsize=8)
+            ax_strip.set_xlabel('Phage', fontsize=9)
+            ax_strip.set_xticks(range(n_phage))
+            ax_strip.set_xticklabels(phage_order, fontsize=7, rotation=45, ha='right')
+            ax_strip.set_xlim(-0.5, n_phage - 0.5)
+            if handles:
+                ax_strip.legend(
+                    handles=handles, title='Phage product',
+                    bbox_to_anchor=(1.01, 1), loc='upper left',
+                    fontsize=7, title_fontsize=8, framealpha=0.85,
+                )
+
+        plt.tight_layout()
+        if outdir:
+            safe = "".join(c if c.isalnum() or c in '-_' else '_' for c in str(gene))
+            out_path = os.path.join(str(outdir), f'hostrange_heatmap_bact_gene_{safe}.png')
+            plt.savefig(out_path, dpi=150, bbox_inches='tight')
+            logging.info(f"Saved bacterium-gene hostrange heatmap: {out_path}")
+        plt.close()
+
+    def _plot_phage_product_heatmap(
+        self,
+        product: str,
+        bact_annot_df: pd.DataFrame,
+        phage_annot_df: pd.DataFrame,
+        bacteria_order: list,
+        phage_order: list,
+        outdir: str = None,
+    ) -> None:
+        """Heatmap (bacteria rows × phage columns) for a single phage product.
+
+        Column colour (column-constant) = kmer count of *product* for the phage.
+        Right strip = horizontal stacked bars of bacterium gene counts per bacteria row.
+        """
+        n_bact  = len(bacteria_order)
+        n_phage = len(phage_order)
+
+        # Per-phage kmer count for this product
+        phage_counts: dict = {}
+        if phage_annot_df is not None and not phage_annot_df.empty:
+            sub = phage_annot_df[
+                phage_annot_df['product'].astype(str).str.strip() == product
+            ]
+            for ph in phage_order:
+                phage_counts[ph] = int(
+                    (sub['entity'].astype(str).str.strip() == ph).sum()
+                )
+        else:
+            for ph in phage_order:
+                phage_counts[ph] = 0
+
+        # Build (n_bact × n_phage) matrix — column-constant
+        mat = np.array(
+            [[phage_counts.get(ph, 0) for ph in phage_order]] * n_bact,
+            dtype=float,
+        )
+        mat[mat == 0] = np.nan  # grey out zero cells
+
+        # Per-bacteria gene counters for the strip
+        bact_gene_counts: dict = {}
+        if bact_annot_df is not None and not bact_annot_df.empty:
+            for b in bacteria_order:
+                sub_b = bact_annot_df[
+                    bact_annot_df['bact'].astype(str).str.strip() == b
+                ]
+                bact_gene_counts[b] = Counter(
+                    sub_b['gene'].dropna().astype(str).str.strip().tolist()
+                )
+        all_bact_genes = sorted({
+            g for cntr in bact_gene_counts.values() for g in cntr
+        })
+        bact_palette = {
+            g: col
+            for g, col in zip(
+                all_bact_genes,
+                sns.color_palette("tab20b", max(len(all_bact_genes), 1)),
+            )
+        }
+
+        # ── Figure layout ────────────────────────────────────────────────────
+        has_strip   = bool(all_bact_genes)
+        w_ratios    = [max(4, n_phage * 0.5), max(1.5, 1.5)] if has_strip else [1]
+        fig_w       = sum(w_ratios) + 2.0
+        fig_h       = max(7, n_bact * 0.4 + 2.5)
+
+        fig = plt.figure(figsize=(fig_w, fig_h))
+        if has_strip:
+            gs       = fig.add_gridspec(1, 2, width_ratios=w_ratios, wspace=0.06)
+            ax_main  = fig.add_subplot(gs[0])
+            ax_strip = fig.add_subplot(gs[1], sharey=ax_main)
+        else:
+            gs      = fig.add_gridspec(1, 1)
+            ax_main = fig.add_subplot(gs[0])
+            ax_strip = None
+
+        # ── Main heatmap ─────────────────────────────────────────────────────
+        cmap_main = plt.cm.PuBuGn.copy()
+        cmap_main.set_bad(color='#e8e8e8')
+        im = ax_main.imshow(
+            mat,
+            aspect='auto',
+            cmap=cmap_main,
+            origin='upper',
+            extent=[-0.5, n_phage - 0.5, n_bact - 0.5, -0.5],
+        )
+        ax_main.set_yticks(range(n_bact))
+        ax_main.set_yticklabels(bacteria_order, fontsize=7)
+        ax_main.set_xticks(range(n_phage))
+        ax_main.set_xticklabels(phage_order, fontsize=7, rotation=45, ha='right')
+        ax_main.set_ylabel('Bacterium', fontsize=9)
+        ax_main.set_xlabel('Phage', fontsize=9)
+        ax_main.set_title(
+            f'Phage product: "{product}" — kmer count per phage',
+            fontsize=11, fontweight='bold',
+        )
+        cb = fig.colorbar(im, ax=ax_main, shrink=0.65, pad=0.02)
+        cb.set_label('kmer count', fontsize=9)
+
+        # ── Right strip ──────────────────────────────────────────────────────
+        if has_strip and ax_strip is not None:
+            lefts = np.zeros(n_bact)
+            handles = []
+            for g in all_bact_genes:
+                widths = np.array([
+                    bact_gene_counts.get(b, {}).get(g, 0)
+                    for b in bacteria_order
+                ], dtype=float)
+                ax_strip.barh(
+                    range(n_bact), widths, left=lefts,
+                    color=bact_palette[g], height=0.85, label=g,
+                )
+                handles.append(mpatches.Patch(color=bact_palette[g], label=g))
+                lefts += widths
+            ax_strip.set_xlabel('gene\ncount', fontsize=8)
+            ax_strip.set_ylim(n_bact - 0.5, -0.5)
+            ax_strip.set_yticks(range(n_bact))
+            plt.setp(ax_strip.get_yticklabels(), visible=False)
+            if handles:
+                ax_strip.legend(
+                    handles=handles, title='Bact gene',
+                    bbox_to_anchor=(1.01, 1), loc='upper left',
+                    fontsize=7, title_fontsize=8, framealpha=0.85,
+                )
+
+        plt.tight_layout()
+        if outdir:
+            safe = "".join(c if c.isalnum() or c in '-_' else '_' for c in str(product))
+            out_path = os.path.join(str(outdir), f'hostrange_heatmap_phage_product_{safe}.png')
+            plt.savefig(out_path, dpi=150, bbox_inches='tight')
+            logging.info(f"Saved phage-product hostrange heatmap: {out_path}")
+        plt.close()
+
+    def plot_gene_hostrange_heatmaps(
+        self,
+        bact_annot_df: pd.DataFrame,
+        phage_annot_df: pd.DataFrame,
+        input_excel: str,
+        sheet_name: str = "Sheet1",
+        outdir: str = None,
+        top_n: int = 2,
+    ) -> None:
+        """Produce hostrange-structured heatmaps for the top *top_n* bacteria genes
+        and top *top_n* phage products.
+
+        The bacteria/phage axis order is read from *input_excel* / *sheet_name*
+        using the same layout as ``color_sheet_from_matrix``:
+          • Bacteria names  : ``sheet.iloc[2:,  1]``  (col B, rows 3+)
+          • Phage names     : ``sheet.iloc[1, 5:28]``  (row 2, cols F–AB)
+
+        For each top bacterium gene → calls ``_plot_bact_gene_heatmap()``.
+        For each top phage product  → calls ``_plot_phage_product_heatmap()``.
+        """
+        # ── Read axis ordering from the hostrange Excel ──────────────────────
+        try:
+            df_sheet = pd.read_excel(input_excel, sheet_name=sheet_name, header=None)
+        except Exception as e:
+            logging.warning(f"plot_gene_hostrange_heatmaps: cannot read '{input_excel}': {e}")
+            return
+
+        bacteria_order = (
+            df_sheet.iloc[2:, 1]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
+        phage_order = (
+            df_sheet.iloc[1, 5:28]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
+        if not bacteria_order or not phage_order:
+            logging.warning(
+                "plot_gene_hostrange_heatmaps: empty bacteria or phage list from Excel, skipping."
+            )
+            return
+        logging.info(
+            f"plot_gene_hostrange_heatmaps: {len(bacteria_order)} bacteria × "
+            f"{len(phage_order)} phages from '{input_excel}' sheet '{sheet_name}'"
+        )
+
+        # ── Helper: top N items by frequency in a column ────────────────────
+        def _top_items(df, col, n):
+            if df is None or df.empty or col not in df.columns:
+                return []
+            return (
+                df[col].dropna().astype(str).str.strip()
+                .value_counts()
+                .head(n)
+                .index.tolist()
+            )
+
+        top_bact_genes     = _top_items(bact_annot_df,  'gene',    top_n)
+        top_phage_products = _top_items(phage_annot_df, 'product', top_n)
+
+        logging.info(
+            f"plot_gene_hostrange_heatmaps: top bact genes = {top_bact_genes}; "
+            f"top phage products = {top_phage_products}"
+        )
+
+        for gene in top_bact_genes:
+            try:
+                self._plot_bact_gene_heatmap(
+                    gene=gene,
+                    bact_annot_df=bact_annot_df,
+                    phage_annot_df=phage_annot_df,
+                    bacteria_order=bacteria_order,
+                    phage_order=phage_order,
+                    outdir=outdir,
+                )
+            except Exception as e:
+                logging.warning(f"plot_gene_hostrange_heatmaps: bact gene '{gene}' failed: {e}")
+
+        for product in top_phage_products:
+            try:
+                self._plot_phage_product_heatmap(
+                    product=product,
+                    bact_annot_df=bact_annot_df,
+                    phage_annot_df=phage_annot_df,
+                    bacteria_order=bacteria_order,
+                    phage_order=phage_order,
+                    outdir=outdir,
+                )
+            except Exception as e:
+                logging.warning(f"plot_gene_hostrange_heatmaps: phage product '{product}' failed: {e}")
 
 class GeneAnalysisNCBI():
     def __init__(self, logfile, logging_on : bool, outdir : str):
