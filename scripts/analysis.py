@@ -6,7 +6,7 @@
 ##### Imports -----------
 import pandas as pd
 from pathlib import Path
-import os
+import os, re
 import logging
 import json
 from Bio.Blast import NCBIWWW, NCBIXML
@@ -949,15 +949,6 @@ class PFI_Lookup():
         print(f"Cache statistics: {len(self._cache)} unique k-mers cached.")
         return df
 
-# def append_pfi_values(df, hk_lookup_rev : dict, pfi_lookup : pd.DataFrame, kmer_col : str ='decoded_kmer'):
-#     """
-#     Takes a dataframe with decoded_kmer column (kmer_col) and appends a new column 'PFI' with the corresponding PFI scores.
-#     Uses hk_lookup to map k-mers to hash values, then matches those hash values against both phage_hash and bact_hash
-#     in pfi_lookup and returns the sum of expected_interaction for all matched rows.
-#     """
-#     df['PFI'] = df[kmer_col].apply(lambda kmer: get_pfi(kmer, hk_lookup_rev, pfi_lookup))
-#     return df
-
 class FeatureImportance():
     def __init__(self, model, outdir, metadata_test, id_lookup_bact, host_range_data, raw_data_path, data_prod_path, logfile, logging_on : bool, TS : bool = False):
         self.raw_data_path = raw_data_path
@@ -1329,18 +1320,23 @@ class GeneAnalysis():
         """
         root_dir = Path(root_dir)
         kmer = self._normalize_kmer(kmer)
+        # if strain name matches "Host X" where X is a number, rewrite it to Kp_KUX to match the directory naming convention
+        data2 = False
+        if re.match(r"Host\s+\d+", strain_name):
+            strain_name = "Kp_KU" + re.findall(r"\d+", strain_name)[0]
+            data2 = True
 
         strain_dirs = [p for p in (root_dir / "prokka_bacts").rglob("*") if p.is_dir() and strain_name in p.name]
         if not strain_dirs:
             raise FileNotFoundError(f"No bacteria directory found for strain '{strain_name}' under {root_dir / 'prokka_bacts'}")
 
         strain_dir = strain_dirs[0]
-        ffn_files = sorted(strain_dir.glob("*_merged.ffn"))
-        tsv_files = sorted(strain_dir.glob("*_merged.tsv"))
+        ffn_files = sorted(strain_dir.glob("*.ffn"))
+        tsv_files = sorted(strain_dir.glob("*.tsv"))
         if not ffn_files:
-            raise FileNotFoundError(f"No *_merged.ffn file found in {strain_dir}")
+            raise FileNotFoundError(f"No *.ffn file found in {strain_dir}")
         if not tsv_files:
-            raise FileNotFoundError(f"No *_merged.tsv file found in {strain_dir}")
+            raise FileNotFoundError(f"No *.tsv file found in {strain_dir}")
 
         matching_locus_tags = []
         for record in SeqIO.parse(str(ffn_files[0]), "fasta"):
@@ -1352,8 +1348,9 @@ class GeneAnalysis():
             return pd.DataFrame(columns=cols)
 
         ann_df = pd.read_csv(tsv_files[0], sep="\t")
+        ann_df = ann_df[ann_df["ftype"] == "CDS"] 
         ann_df["kmer_in_seq"] = kmer
-        ann_df["bact"] = clean_bact_names(strain_name)
+        ann_df["bact"] = clean_bact_names(strain_name, data2=data2)
         missing = [c for c in cols if c not in ann_df.columns]
         if missing:
             raise KeyError(f"Missing expected columns in {tsv_files[0]}: {missing}")
@@ -1382,14 +1379,13 @@ class GeneAnalysis():
         kmer = self._normalize_kmer(kmer)
         kmer_rc = self._rc(kmer)
         kmer_len = len(kmer)
+        strain_name = strain_name.strip()
 
         # Output schema shared by phold and pharokka-fallback rows
         OUT_COLS = [
             "entity", "contig_id", "cds_id", "kmer_in_seq", "start", "end",
             "phrog", "function", "product",
-            "annotation_method", "annotation_confidence", "tophit_protein",
-            "function_with_highest_bitscore_proportion", "prostt5_confidence",
-            "annotation_source",
+            "annotation_method"
         ]
 
         pharokka_root = root_dir / "pharokka"
@@ -1451,9 +1447,9 @@ class GeneAnalysis():
                     matching_cds_ids.append(cds_id)
                     break  # one hit per CDS is sufficient
 
+        
         if not matching_cds_ids:
-            if self.TS:
-                print(f"Kmer '{kmer}' found in genome of '{strain_name}' but falls outside all CDS features.")
+            print(f"Kmer '{kmer}' found in genome of '{strain_name}' but falls outside all CDS features.")
             return pd.DataFrame(columns=OUT_COLS)
 
         matching_set = set(matching_cds_ids)
@@ -1496,7 +1492,7 @@ class GeneAnalysis():
         # ── 6. Combine and normalise to shared output schema ──
         frames = [f for f in [phold_hits, pharokka_hits] if not f.empty]
         if not frames:
-            return pd.DataFrame(columns=OUT_COLS)
+            raise ValueError(f"CDS IDs {matching_set} found in genome of '{strain_name}' but no annotations retrieved from phold or pharokka.")
 
         result = pd.concat(frames, ignore_index=True)
         # Keep only columns that exist in this result; fill any gaps with NaN
@@ -1506,6 +1502,7 @@ class GeneAnalysis():
         return result[OUT_COLS].reset_index(drop=True)
 
     def batch_bact_annotate(self, bact_df : pd.DataFrame, kmer_col : str, entity_col : str, data_prod_path : str) -> pd.DataFrame:
+        print(f"Starting batch annotation of bacteria-kmer pairs for {len(bact_df)} rows...")
         bact_annotations = pd.DataFrame(columns=["bact", "locus_tag", "kmer_in_seq", "length_bp", "gene", "product"])
         score_cols = [col for col in ["UPS", "PFI", "WPFI"] if col in bact_df.columns]
         with tqdm(total=len(bact_df), desc="Annotating bacteria-kmer pairs") as pbar:
@@ -1521,7 +1518,7 @@ class GeneAnalysis():
                             bact_genes[col] = row[col]
                         bact_annotations = pd.concat([bact_annotations, bact_genes], ignore_index=True)
                 except Exception as e:
-                    if self.TS: print(f"Error extracting bacterial genes for kmer '{kmer}': {e}")
+                    print(f"Error extracting bacterial genes for kmer '{kmer}': {e}")
                 pbar.update(1)
 
         return bact_annotations
@@ -1530,9 +1527,7 @@ class GeneAnalysis():
         OUT_COLS = [
             "entity", "contig_id", "cds_id", "kmer_in_seq", "start", "end",
             "phrog", "function", "product",
-            "annotation_method", "annotation_confidence", "tophit_protein",
-            "function_with_highest_bitscore_proportion", "prostt5_confidence",
-            "annotation_source",
+            "annotation_method", 
         ]
         phage_annotations = pd.DataFrame(columns=OUT_COLS)
         score_cols = [col for col in ["UPS", "PFI", "WPFI"] if col in phage_df.columns]
@@ -1552,6 +1547,7 @@ class GeneAnalysis():
                         phage_annotations = pd.concat([phage_annotations, phage_genes], ignore_index=True)
                 except Exception as e:
                     n_error += 1
+                    print(f"Error extracting phage genes for kmer '{kmer}' and phage '{phage}': {e}")
                     logging.warning(f"Error annotating phage kmer '{kmer}' for '{phage}': {e}")
                 pbar.update(1)
 

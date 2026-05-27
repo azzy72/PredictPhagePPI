@@ -294,9 +294,6 @@ def main():
         minhash_to_index=minhash_to_index
     )
 
-    #Create inverse mapping: entity_name to column_index
-    entity_to_idx = {v: k for k, v in idx_to_entity.items()}
-
     #Load hash kmer lookup dict, if use_encoded and current n/k values
     if args.use_encoded:
         hash_kmer_dict_path = os.path.join(data_prod_path, f"{prefix}/hk_lookup_n{n}_k{k}.json")
@@ -1195,14 +1192,39 @@ def main():
             
             #Prep hash specific list of decoded kmers
             top_minhashes = set()
+            # Accumulate per-side expected interaction scores
+            phage_minhash_expected = {}
+            bact_minhash_expected = {}
+            for (bact_hash, phage_hash), score in top_pairs:
+                pair_expected_interaction = expected_interactions.get((bact_hash, phage_hash), 0)
+                phage_minhash_expected.setdefault(phage_hash, []).append(pair_expected_interaction)
+                bact_minhash_expected.setdefault(bact_hash, []).append(pair_expected_interaction)
+
+            # Rank each side independently by mean expected interaction, take top N/2 each
+            n_per_side = args.top_kmers_num // 2
+            top_phage_hashes = set(
+                sorted(phage_minhash_expected, key=lambda h: np.mean(phage_minhash_expected[h]), reverse=True)[:n_per_side]
+            )
+            top_bact_hashes = set(
+                sorted(bact_minhash_expected,  key=lambda h: np.mean(bact_minhash_expected[h]),  reverse=True)[:n_per_side]
+            )
+            top_minhashes = top_phage_hashes | top_bact_hashes
+
+            # Build combined minhash_expected_interactions for avg score lookup downstream
+            # (a shared hash that ranked on both sides collects scores from both)
             minhash_expected_interactions = {}
-            for (phage_hash, bact_hash), score in top_pairs:
-                pair_expected_interaction = expected_interactions.get((phage_hash, bact_hash), 0)
-                top_minhashes.add(phage_hash)
-                top_minhashes.add(bact_hash)
-                minhash_expected_interactions.setdefault(phage_hash, []).append(pair_expected_interaction)
-                minhash_expected_interactions.setdefault(bact_hash, []).append(pair_expected_interaction)
-            
+            for h, scores in phage_minhash_expected.items():
+                if h in top_minhashes:
+                    minhash_expected_interactions.setdefault(h, []).extend(scores)
+            for h, scores in bact_minhash_expected.items():
+                if h in top_minhashes:
+                    minhash_expected_interactions.setdefault(h, []).extend(scores)
+
+            if args.logging:
+                logging.info(f'Balanced hash selection: {len(top_phage_hashes)} phage hashes, '
+                            f'{len(top_bact_hashes)} bact hashes '
+                            f'({len(top_minhashes)} unique after union — overlap implies shared k-mers)')
+
             filtered_idx_to_minhash = {idx: mh for idx, mh in idx_to_minhash.items() if mh in top_minhashes}
 
             # Regain k-mers for the top interaction pairs
@@ -1218,46 +1240,64 @@ def main():
                 if args.logging: logging.info(f'Decoded k-mers for top interaction pairs: {list(pfi_top_kmers_decoded.values())}')
 
                 # --- Build a single hash -> info lookup, reused for both dataframes ---
-                def _classify(entity):
-                    if entity in bact_minhash_data_full:
-                        return "bacterium"
-                    if entity in phage_minhash_data_full:
-                        return "phage"
-                    return "unknown"
+                def _classify(entities):
+                    if isinstance(entities, str):
+                        entities = {entities}
+                    types = set()
+                    for e in entities:
+                        if e in bact_minhash_data_full:
+                            types.add("bacterium")
+                        if e in phage_minhash_data_full:
+                            types.add("phage")
+                    if types == {"bacterium", "phage"}:
+                        return "both"
+                    return types.pop() if types else "unknown"
 
                 hash_to_info = {}
                 for idx, decoded in pfi_top_kmers_decoded.items():
                     mh = filtered_idx_to_minhash.get(idx)
                     if mh is None:
                         continue
-                    entity = idx_to_entity.get(idx, "unknown")
+                    entity = idx_to_entity.get(idx, None)
+                    if entity is None or entity == "unknown":   # ensure always a set
+                        entity = {"unknown"}
+                    elif isinstance(entity, str):
+                        entity = {entity}
                     hash_to_info[mh] = {
-                        "entity": entity,
-                        "organism": _classify(entity),
+                        "entity": entity,                       # always a set
+                        "organism": _classify(entity),          # may be "both"; discarded after explode
                         "decoded_kmer": decoded,
                     }
 
                 def _info(h, key):
-                    return hash_to_info.get(h, {}).get(key, "unknown")
+                    return hash_to_info.get(h, {}).get(key, {"unknown"} if key == "entity" else "unknown")
 
                 # --- pfi_top_kmers_df (now uses the same lookup) ---
                 pfi_top_avg_expected_interaction = [
                     float(np.mean(minhash_expected_interactions.get(filtered_idx_to_minhash.get(idx), [0])))
                     for idx in pfi_top_idx]
-                
+
                 pfi_top_kmers_df = pd.DataFrame({
                     "feature_index": list(pfi_top_kmers_decoded.keys()),
-                    "entity":   [_info(filtered_idx_to_minhash.get(idx), "entity")        for idx in pfi_top_kmers_decoded.keys()],
-                    "organism": [_info(filtered_idx_to_minhash.get(idx), "organism")      for idx in pfi_top_kmers_decoded.keys()],
+                    "entity":   [_info(filtered_idx_to_minhash.get(idx), "entity")    for idx in pfi_top_kmers_decoded.keys()],
+                    "organism": [_info(filtered_idx_to_minhash.get(idx), "organism")  for idx in pfi_top_kmers_decoded.keys()],
                     "decoded_kmer": list(pfi_top_kmers_decoded.values()),
                     "avg_expected_interaction": pfi_top_avg_expected_interaction,
                 })
-                pfi_top_kmers_df.to_csv(outdir+"top_expected_interaction_pair_kmers.csv", index=False)
+
+                # Explode shared-hash rows: one entity per row, then recompute organism cleanly
+                pfi_top_kmers_df = pfi_top_kmers_df.explode("entity").reset_index(drop=True)
+                pfi_top_kmers_df["organism"] = pfi_top_kmers_df["entity"].apply(
+                    lambda e: "bacterium" if e in bact_minhash_data_full
+                            else ("phage" if e in phage_minhash_data_full else "unknown")
+                )
+
+                pfi_top_kmers_df.to_csv(outdir + "top_expected_interaction_pair_kmers.csv", index=False)
                 if args.logging: logging.info(f'Saved decoded k-mers for top interaction pairs to {outdir+"top_expected_interaction_pair_kmers.csv"}')
 
                 # --- Enrich top_pairs_expected_df with per-side entity/organism/decoded_kmer ---
                 # NOTE: matches the unpacking order used above: pair[0]=phage_hash, pair[1]=bact_hash
-                for side, idx_in_pair in (("phage", 0), ("bact", 1)):
+                for side, idx_in_pair in (("bact", 0), ("phage", 1)):
                     for key in ("entity", "organism", "decoded_kmer"):
                         top_pairs_expected_df[f"{side}_{key}"] = top_pairs_expected_df["pair"].map(
                             lambda p, i=idx_in_pair, k=key: _info(p[i], k)
