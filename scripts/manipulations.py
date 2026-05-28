@@ -188,22 +188,52 @@ def short_species_name(full_name):
     else:
         return full_name.split(" ")[0][0] + ". " + full_name.split(" ")[1]
     
-def clean_bact_names(bact_name, data2 : bool = False):
+def clean_bact_names(bact_name, data2: bool = False):
     """
-    Clean bacteria names in a list to match hostrange short name (e.g. J2_21, or "Host 9" if data2)
+    Clean bacteria names in a list to match hostrange short name.
+    - data2=False: matches J-pattern (e.g. J2_21, FO3_21)
+    - data2=True:  matches H-pattern (e.g. "Host 9") or K-pattern (e.g. "Kp_KU7" -> "Host 7")
     """
-    J_pattern = r"((?:J|FO)\d+[A-Z]*_\d+)" if not data2 else r"(Host \d+)"
-    #fallback_J_pattern = r"(J\d+[A-Z]*_\d+)" if not data2 else r"(Host \d+)"
-    if type(bact_name) == list:
-        return [re.search(J_pattern, f).group(1) for f in bact_name if re.search(J_pattern, f)]
-    elif type(bact_name) == str:
-        match = re.search(J_pattern, bact_name)
-        if match:
-            return match.group(1)
-        else:
+    J_pattern = r"((?:J|FO)\d+[A-Z]*_\d+)"
+    H_pattern = r"(Host \d+)"
+    K_pattern = r"(Kp_KU(\d+))"
+
+    def _extract(name, pattern):
+        match = re.search(pattern, name)
+        return match if match else None
+
+    if not data2:
+        if isinstance(bact_name, list):
+            return [m.group(1) for f in bact_name if (m := _extract(f, J_pattern))]
+        elif isinstance(bact_name, str):
+            match = _extract(bact_name, J_pattern)
+            if match:
+                return match.group(1)
             raise ValueError(f"Could not extract bacteria name from: {bact_name}")
+        else:
+            raise TypeError(f"bact_name must be a string or list, got {type(bact_name)}")
+
     else:
-        raise ValueError(f"bact_name must be a string or list of strings, got {type(bact_name)}")
+        def _extract_data2(name):
+            if m := _extract(name, H_pattern):
+                return m.group(1)
+            if m := _extract(name, K_pattern):
+                return f"Host {m.group(2)}"  # Reformat Kp_KU7 -> Host 7
+            return None
+
+        if isinstance(bact_name, list):
+            results = [_extract_data2(f) for f in bact_name]
+            if not any(results):
+                raise ValueError(f"No names matched H- or K-pattern in list: {bact_name}")
+            return [r for r in results if r]
+        elif isinstance(bact_name, str):
+            result = _extract_data2(bact_name)
+            if result:
+                return result
+            raise ValueError(f"Could not extract bacteria name from: {bact_name}")
+        else:
+            raise TypeError(f"bact_name must be a string or list, got {type(bact_name)}")
+    
 
 def hostrange_bact(host_range_data, seqID_list, approach="acceptive", threshold=0.5, TS = False) -> dict:
     """
@@ -393,20 +423,27 @@ def get_max_dim(mh_dict):
     # Use max() over the lengths of all values
     return max(len(v) for v in mh_dict.values())
 
-def clean_dict_keys(in_dict : dict, sep : str = "_", take : str = "last") -> dict:
+def clean_dict_keys(in_dict : dict, sep : str = "_", take : str = "last", data2 : bool = False) -> dict:
     """
     Clean the keys in a dictionary by splitting by sep and taking the last/first val.
     If name can't be split, return name (do nothing)
     """
     out_dict = {}
     for key, val in in_dict.items():
-        if sep in key:
+        if data2:
+            if "surprisus" in key.lower():
+                continue # skip surprisus as it has no host range data available in the dataset
+            if sep in key:
+                out_dict[key.split(sep)[0]] = val
+
+        elif sep in key:
             if take == "first":
                 out_dict[key.split("_")[0]] = val
             elif take == "last":
                 out_dict[key.split("_")[-1]] = val
             else:
                 raise ValueError("Can only take the first or the last value")
+
         else: 
             out_dict[key] = val
     return out_dict
@@ -511,379 +548,6 @@ def aggregate_interaction_pairs(nn_runs : list, outdir : str = None, logging : b
 
     total_aggr_df.to_csv(outdir+"top_interaction_kmers_aggregated.csv", index=False)
 
-def process_bacterium_chunk(bact_names, phage_names, phage_minhash_data, bact_minhash_data, host_range_data):
-    """
-    This function runs on the remote Slurm workers.
-    It processes a subset of bacteria and returns local dictionaries.
-    """
-    def ensure_dict(obj):
-        if isinstance(obj, np.ndarray):
-            return obj.item()
-        return obj
-    
-    host_range_data = ensure_dict(host_range_data)
-    phage_minhash_data = ensure_dict(phage_minhash_data)
-    bact_minhash_data = ensure_dict(bact_minhash_data)
-
-    local_interaction = {}
-    local_occurrence = {}
-    local_hash_lookup = {}
-
-    def get_interaction_score(data, bname, pname):
-        """Support nested-dict, tuple-key, and list/set-based host range inputs."""
-        try:
-            bact_entry = data.get(bname, {})
-        except Exception as e:
-            raise ValueError(f"Error in retrieving bacteria related host range data {bname}: {e}")
-
-        if isinstance(bact_entry, dict):
-            return bact_entry.get(pname, data.get((bname, pname), 0))
-
-        if isinstance(bact_entry, (list, tuple, set, np.ndarray)):
-            return 1 if pname in bact_entry else 0
-
-        tuple_score = data.get((bname, pname), None)
-        if tuple_score is not None:
-            return tuple_score
-
-        return 0
-
-    for bname in bact_names:
-        for pname in phage_names:
-            # Supports nested dict format and tuple-key format
-            interaction_score = get_interaction_score(host_range_data, bname, pname)
-
-            p_kmers = phage_minhash_data.get(pname, [])
-            b_kmers = bact_minhash_data.get(bname, [])
-
-            for pkmer in p_kmers:
-                for bkmer in b_kmers:
-                    pair = (pkmer, bkmer)
-                    
-                    # Update counts
-                    local_interaction[pair] = local_interaction.get(pair, 0) + interaction_score
-                    local_occurrence[pair] = local_occurrence.get(pair, 0) + 1
-
-                    # Populate hash lookup (using sets to avoid duplicates)
-                    if pkmer not in local_hash_lookup: local_hash_lookup[pkmer] = {pname}
-                    else: local_hash_lookup[pkmer].add(pname)
-                        
-                    if bkmer not in local_hash_lookup: local_hash_lookup[bkmer] = {bname}
-                    else: local_hash_lookup[bkmer].add(bname)
-    
-    return local_interaction, local_occurrence, local_hash_lookup
-
-class calc_PFI_test: 
-    """
-    Perform Pairwise Feature Interaction (PFI) analysis given the minhash data for phages and bacteria and the host range data, by constructing interaction pairs and calculating their frequencies.
-    """
-    def __init__(self, host_range_data : dict = None, outdir : str = None, logging : bool = False):
-        """
-        **host_range_data** (dict): nested dictionary with strains as outer keys, phage as inner keys and host range values as values.
-        **phage_names** (list): list of phage names to consider (should match keys in phage_minhash_data)
-        **bacteria_names** (list): list of bacteria names to consider (should match keys in bact_minhash_data)
-        **outfile** (str): path to output file (default is None, meaning no file is written)
-        """
-        import os
-        # self.phage_names = phage_names
-        # self.bacteria_names = bacteria_names
-        self.host_range_data = host_range_data
-        if not os.path.isdir(outdir):
-            try:
-                os.makedirs(outdir, exist_ok=True)
-                print(f"Created output directory: {outdir}")
-            except OSError as e:
-                print(f"Could not create outdir {outdir}: {e}")
-                outdir = None  # Set to None to avoid further issues with saving
-        self.outdir = outdir
-        self.logging = logging
-
-    def construct_interaction_pairs(self, phage_minhash_data: dict, bact_minhash_data: dict, subset: int = None):
-        """
-        Construct a dictionary of interaction pairs given the minhash data for phages and bacteria and the host range data.
-        The dictionary will have keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
-
-        Args:
-            **phage_minhash_data** (dict): dictionary with keys as phage names and values as lists of minhashes.
-            **bact_minhash_data** (dict): dictionary with keys as bacteria strain IDs and values as lists of minhashes.
-            **subset** (int): number of combinations to consider (default is None, meaning all combinations)
-            
-        Returns:
-            **interaction_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
-            **occurence_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the number of occurrences of that pair across all phage-bacteria combinations.
-            **interaction_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized interaction score for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
-            **occurence_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized occurrence for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
-            **expected_interactions** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the expected interaction score for that pair across all phage-bacteria combinations.
-            **hash_lookup** (dict): dictionary with keys as hash values and values as a list of strains (phage or bacteria) that have that hash in their minhash sketch.
-        """
-
-        # 1. Setup Data & Directories (Your original logic)
-        phage_names = list(phage_minhash_data.keys())
-        bacteria_names = list(bact_minhash_data.keys())
-        
-        if self.host_range_data is None:
-            # ... [Your existing host_range_data loading logic here] ...
-            pass # (Placeholder for your specific loading code)
-
-        outdir = self.outdir.rsplit("/", 1)[0] if self.outdir is not None else None
-        if outdir and not os.path.exists(outdir):
-            os.makedirs(outdir, exist_ok=True)
-        
-        worker_log_dir = os.path.join(root, "tmp/parallel_tmp/")
-        if not os.path.exists(worker_log_dir):
-            os.makedirs(worker_log_dir, exist_ok=True)
-
-        # 2. Start Slurm Cluster
-        # Change these parameters to match your cluster's requirements
-        cluster = SLURMCluster(
-            queue='cpu', # Slurm partition to submit to
-            cores=12, 
-            memory='64GB',
-            walltime='48:00:00',
-            protocol='tcp://',
-            scheduler_options={'interface': 'eno12399np0'},
-            #interface='eno12399np0', # from ip addr command,
-            log_directory=worker_log_dir
-        )
-        
-        # This tells Slurm to launch 6 separate jobs (60 cores total)
-        cluster.scale(jobs=5)
-        client = Client(cluster)
-        print("Waiting for at least one Slurm worker to come online...")
-        client.wait_for_workers(n_workers=1) 
-
-        print(f"Workers found. Dashboard Link: {client.dashboard_link}")
-
-        # 3. Prepare Data for Distribution
-        if subset:
-            bacteria_names = bacteria_names[:subset]
-        
-        # Split bacteria into chunks (e.g., 11 bacteria per task)
-        chunk_size = 11
-        chunks = [bacteria_names[i:i + chunk_size] for i in range(0, len(bacteria_names), chunk_size)]
-
-        clean_host_range = {str(k): v for k, v in self.host_range_data.items()}
-        clean_phage_data = {str(k): list(v) for k, v in phage_minhash_data.items()}
-        clean_bact_data = {str(k): list(v) for k, v in bact_minhash_data.items()}
-
-        # Printing some info about the data being sent to workers
-        print(f"[DASK-PREP]:\tTotal phages: {len(clean_phage_data)}, Total bacteria: {len(clean_bact_data)}, Total host range entries: {len(clean_host_range)}")
-        print(f"[DASK-PREP]:\tSize of data being sent to workers - Phage: {sum(len(v) for v in clean_phage_data.values())} hashes, Bacteria: {sum(len(v) for v in clean_bact_data.values())} hashes")
-        print(f"[DASK-PREP]:\tData subset fraction of original - Phage: {len(clean_phage_data) / len(phage_minhash_data):.2%}, Bacteria: {len(clean_bact_data) / len(bact_minhash_data):.2%}")
-        print(f"[DASK-PREP]:\tExample phage entry: {next(iter(clean_phage_data.items()))}")
-        print(f"[DASK-PREP]:\tExample bacteria entry: {next(iter(clean_bact_data.items()))}")
-
-        # Broadcast large data to all workers once
-        b_phage_data = client.scatter(clean_phage_data, broadcast=True)
-        b_bact_data = client.scatter(clean_bact_data, broadcast=True)
-        b_host_data = client.scatter(clean_host_range, broadcast=True)
-        #b_phage_data = client.scatter(phage_minhash_data)
-        #b_bact_data = client.scatter(bact_minhash_data)
-        #b_host_data = client.scatter(self.host_range_data)
-
-        # 4. Map & Gather (The Parallel Part)
-        print(f"Submitting {len(chunks)} chunks to Slurm...")
-        futures = client.map(
-            process_bacterium_chunk, 
-            chunks,
-            phage_names=phage_names,
-            phage_minhash_data=b_phage_data,
-            bact_minhash_data=b_bact_data,
-            host_range_data=b_host_data
-        )
-
-        results = client.gather(futures)
-
-        # Wait for all tasks to complete and gather results
-        #client.wait_for_futures(futures)
-
-        # 5. Reduce (Merging results back together)
-        print("Merging worker results...")
-        interaction_pairs = {}
-        occurence_pairs = {}
-        hash_lookup = {}
-
-        for l_int, l_occ, l_hash in results:
-            # Merge interaction scores
-            for k, v in l_int.items():
-                interaction_pairs[k] = interaction_pairs.get(k, 0) + v
-            # Merge occurrences
-            for k, v in l_occ.items():
-                occurence_pairs[k] = occurence_pairs.get(k, 0) + v
-            # Merge hash lookups
-            for k, v in l_hash.items():
-                if k not in hash_lookup: hash_lookup[k] = set()
-                hash_lookup[k].update(v)
-
-        # 6. Frequency Calculations (Original logic)
-        print("Calculating frequencies...")
-        interaction_freq_pairs = {}
-        occurence_freq_pairs = {}
-        expected_interactions = {}
-        
-        total_int_sum = sum(interaction_pairs.values())
-        total_occ_sum = sum(occurence_pairs.values())
-
-        for pair in interaction_pairs.keys():
-            i_val = interaction_pairs[pair]
-            o_val = occurence_pairs[pair]
-            
-            i_freq = i_val / total_int_sum if total_int_sum > 0 else 0
-            o_freq = o_val / total_occ_sum if total_occ_sum > 0 else 0
-            
-            interaction_freq_pairs[pair] = i_freq
-            occurence_freq_pairs[pair] = o_freq
-            expected_interactions[pair] = i_freq * o_val
-
-        # 7. Final Save (Original logic)
-        if self.outdir:
-            outfile = os.path.join(self.outdir, "pfi_values.txt")
-            with open(outfile, "w") as f:
-                f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
-                for pair in interaction_pairs.keys():
-                    f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t"
-                            f"{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")
-
-        # Cleanup
-        client.close()
-        cluster.close()
-
-        return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup
-
-    
-    # def construct_interaction_pairs(self, phage_minhash_data : dict, bact_minhash_data : dict, subset : int = None) -> [dict, dict, dict, dict, dict, dict]:
-    #     """
-    #     Construct a dictionary of interaction pairs given the minhash data for phages and bacteria and the host range data.
-    #     The dictionary will have keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
-
-    #     Args:
-    #         **phage_minhash_data** (dict): dictionary with keys as phage names and values as lists of minhashes.
-    #         **bact_minhash_data** (dict): dictionary with keys as bacteria strain IDs and values as lists of minhashes.
-    #         **subset** (int): number of combinations to consider (default is None, meaning all combinations)
-            
-    #     Returns:
-    #         **interaction_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the interaction score from the host range data.
-    #         **occurence_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the number of occurrences of that pair across all phage-bacteria combinations.
-    #         **interaction_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized interaction score for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
-    #         **occurence_freq_pairs** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the normalized occurrence for that pair across all phage-bacteria combinations (interaction score divided by occurrence count).
-    #         **expected_interactions** (dict): dictionary with keys as (phage_hash, bact_hash) pairs and values as the expected interaction score for that pair across all phage-bacteria combinations.
-    #         **hash_lookup** (dict): dictionary with keys as hash values and values as a list of strains (phage or bacteria) that have that hash in their minhash sketch."""
-        
-    #     interaction_pairs = dict()
-    #     occurence_pairs = dict()
-    #     interaction_freq_pairs = dict()
-    #     occurence_freq_pairs = dict()
-    #     expected_interactions = dict()
-    #     hash_lookup = dict()
-    #     c = 0
-    #     phage_names = list(phage_minhash_data.keys())
-    #     bacteria_names = list(bact_minhash_data.keys())
-    #     total_combinations = len(phage_names) * len(bacteria_names)
-        
-    #     # Call hostrange if None
-    #     if self.host_range_data is None:
-            
-    #         from io_operations import call_hostrange_df
-    #         bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"))
-    #         host_range_data = hostrange_df_to_dict(host_range_df)
-
-    #         if self.logging: print("Host range data not provided, calling hostrange_bact to obtain host range data for bacteria names...")
-    #         self.host_range_data = {}
-    #         for bact in bacteria_names:
-    #             self.host_range_data[bact] = hostrange_bact(host_range_data, [bact], approach="acceptive", threshold=0.5, TS = False)
-            
-    #         self.host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in self.host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
-
-
-    #     # Create out directory if it doesn't exist
-    #     outdir = self.outdir.rsplit("/", 1)[0] if self.outdir is not None else None
-    #     if outdir is not None and not os.path.exists(outdir):
-    #         try:
-    #             os.makedirs(outdir, exist_ok=True)
-    #             print(f"Created output directory: {outdir}")
-    #         except OSError as e:
-    #             print(f"Could not create outdir {outdir}: {e}")
-    #             outdir = None  # Set to None to avoid further issues with saving
-
-    #     for pname in phage_names:
-    #         for bname in bacteria_names:
-    #             # Supports nested dict format and tuple-key format
-    #             interaction_score = self.host_range_data.get(bname, {}).get(pname, self.host_range_data.get((bname, pname), 0))
-
-    #             for pkmer in phage_minhash_data.get(pname, []):
-    #                 for bkmer in bact_minhash_data.get(bname, []):
-    #                     pair = (pkmer, bkmer)
-    #                     if pair in interaction_pairs:
-    #                         interaction_pairs[pair] += interaction_score
-    #                     else:
-    #                         interaction_pairs[pair] = interaction_score
-    #                     occurence_pairs[pair] = occurence_pairs.get(pair, 0) + 1
-
-    #                     # Populate hash lookup
-    #                     if pkmer not in hash_lookup:
-    #                         hash_lookup[pkmer] = [pname]
-    #                     else:
-    #                         if pname not in hash_lookup[pkmer]:
-    #                             hash_lookup[pkmer].append(pname)
-    #                     if bkmer not in hash_lookup:
-    #                         hash_lookup[bkmer] = [bname]
-    #                     else:
-    #                         if bname not in hash_lookup[bkmer]:
-    #                             hash_lookup[bkmer].append(bname)
-        
-    #             c += 1
-    #             print(f"Int/Occ: Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
-    #             if subset is not None and c >= subset:
-    #                 if sum(interaction_pairs.values()) > 0: #continue if no interaction has been found
-    #                     print(f"\nReached subset limit of {subset} combinations, stopping pair construction.")
-    #                     break
-
-    #     if not sum(interaction_pairs.values()) > 0:
-    #         print("Warning: Sum of interaction scores is 0, cannot calculate interaction frequencies.")
-    #     if not sum(occurence_pairs.values()) > 0:
-    #         print("Warning: Sum of occurrence counts is 0, cannot calculate occurrence frequencies.")
-
-    #     ### Calculating frequencies (normalized by total interactions/occurrences) ###
-    #     print("\nCalculating interaction, occurrence & expected frequencies...")
-    #     c = 0
-    #     if subset is not None:
-    #         keys_in_subset = []
-    #     for pair in interaction_pairs.keys():
-    #         if sum(interaction_pairs.values()) > 0:
-    #             interaction_freq_pairs[pair] = interaction_pairs[pair] / sum(interaction_pairs.values())
-    #         else:
-    #             interaction_freq_pairs[pair] = 0
-            
-    #         if sum(occurence_pairs.values()) > 0:
-    #             occurence_freq_pairs[pair] = occurence_pairs[pair] / sum(occurence_pairs.values())
-    #         else:
-    #             occurence_freq_pairs[pair] = 0
-            
-    #         expected_interactions[pair] = interaction_freq_pairs[pair] * occurence_pairs[pair]
-            
-    #         c += 1
-    #         print(f"Int/Occ Freq: Processed pair {c}/{len(interaction_pairs)}", end="\r")
-
-    #         if subset is not None:
-    #             keys_in_subset.append(pair)
-    #             if c >= subset:
-    #                 print(f"\nReached subset limit of {subset} pairs, stopping frequency calculation.")
-    #                 break
-        
-    #     if self.outdir is not None:
-    #         outfile = os.path.join(self.outdir, "pfi_values.txt")
-    #         try:
-    #             with open(self.outfile, "w") as f:
-    #                 f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
-    #                 for pair in keys_in_subset if subset is not None else interaction_pairs.keys():
-    #                     f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")
-    #             print(f"Interaction pairs saved to {outfile}")
-    #         except Exception as e:
-    #             print(f"Error saving interaction pairs to {outfile}: {e}")
-        
-    #     print(f"Total phage-bacteria combinations processed: {c}")
-    #     return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup
-
 class calc_PFI: 
     """
     Perform Pairwise Feature Interaction (PFI) analysis given the minhash data for phages and bacteria and the host range data, by constructing interaction pairs and calculating their frequencies.
@@ -983,7 +647,9 @@ class calc_PFI:
                 self.host_range_data[bact] = hostrange_bact(host_range_data, [bact], approach="acceptive", threshold=0.5, TS = False)
             
             self.host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in self.host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
-
+        else:
+            print("Using provided host range data.")
+            print("Example host range entry:", next(iter(self.host_range_data.items())))
 
         # Create out directory if it doesn't exist
         #outdir = self.outdir.rsplit("/", 1)[0] if self.outdir is not None else None
@@ -1013,13 +679,13 @@ class calc_PFI:
                 hash_lookup[bkmer].add(bname)
 
             # Vectorized pair generation
-            pairs = list(product(pkmer_list, bkmer_list))
+            pairs = list(product(bkmer_list, pkmer_list))
             occurence_pairs.update(pairs)
             for pair in pairs:
                 interaction_pairs[pair] += interaction_score
     
             c += 1
-            print(f"Int/Occ: Processed combination {c}/{total_combinations} (Phage: {pname}, Bacteria: {bname})", end="\r")
+            print(f"Int/Occ: Processed combination {c}/{total_combinations} (Bacteria: {bname}), Phage: {pname}", end="\r")
             if subset is not None and c >= subset:
                 if sum(interaction_pairs.values()) > 0: #continue if no interaction has been found
                     print(f"\nReached subset limit of {subset} combinations, stopping pair construction.")
@@ -1077,7 +743,7 @@ class calc_PFI:
         if self.outdir is not None:
             try:
                 with open(self.outfile_pfi, "w") as f:
-                    f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
+                    f.write("bact_hash\tphage_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
                     for pair in keys_in_subset if subset is not None else interaction_pairs.keys():
                         f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")
                 print(f"Interaction pairs saved to {self.outfile_pfi}")

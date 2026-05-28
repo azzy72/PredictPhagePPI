@@ -16,6 +16,6 @@ scripts_ext/mike/
 .Rproj.user
 raw_data/
 logs/
-tmp/
+tmp*
 FFNN_collect/
 annotation_and_composition_plots/

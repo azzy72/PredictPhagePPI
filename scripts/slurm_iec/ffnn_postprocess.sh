@@ -9,7 +9,7 @@
 #SBATCH --nodes=1
 #SBATCH --mem=12G
 #SBATCH --cpus-per-task=4
-#SBATCH --time=48:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=ALL
@@ -73,8 +73,8 @@ python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --show_cm_bar_percentage \
     --weight_pfi \
     --highlight_multi \
-    --network_top_kmers 40 \
-    --top_kmers 200
+    --network_top_kmers 400 \
+    --top_kmers 1000
 
 echo ""
 echo "📊 Collecting results with harsh filtering..."
@@ -84,6 +84,6 @@ python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --show_cm_bar_percentage \
     --weight_pfi \
     --highlight_multi \
-    --network_top_kmers 40 \
-    --top_kmers 200 \
+    --network_top_kmers 400 \
+    --top_kmers 1000 \
     --filter_harsh

@@ -15,10 +15,12 @@ def parse_arguments():
                         help="Unified n and k values (e.g., -nk 500 12)")
     group.add_argument("--split_nk", nargs=4, type=int, metavar=('BN', 'BK', 'PN', 'PK'),
                         help="Split values for Bact (n, k) and Phage (n, k)")
-
+    
     parser.add_argument("--method", choices=['sourmash', 'minhash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
     parser.add_argument("--hash", choices=["xxhash", "mmh3", "ohe_custom"], default='mmh3', help="Hash function to use for OHE method (default: mmh3)")
     parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
+    parser.add_argument("--all_phages", action="store_true", help="Include all phages in the dataset (overrides n for phages)")
+    parser.add_argument("--test", action="store_true", help="For testing, writes output paths with 'TEST_' prefix and only processes the first 10 sequences from each input file")
 
     args = parser.parse_args()
     return args
@@ -31,9 +33,9 @@ def main():
     else:
         approach = f"{args.method.capitalize()} with hash function: {args.hash}"
     print(f"Selected downsampling approach: {approach}")
-
     print(f"Downsampling method: {args.method}")
-
+    print(f"All phages included: {args.all_phages}")
+    print(f"Test mode enabled: {args.test}")
     phage_in_path = raw_data_path+"phagehost_KU/phage_cleaned.fasta" if not args.data2 else raw_data_path+"phagehost_KU/data2_phages.fasta"
     bact_in_path = raw_data_path+"phagehost_KU/concatenated_bacteria/" if not args.data2 else raw_data_path+"phagehost_KU/data2_bacts.fasta"
 
@@ -55,20 +57,28 @@ def main():
         else:
             par_outdir = "SM_sketches/"
         
-        all_phages = False
-        if pn.lower() == "all":
+        if args.test:
+            phage_outdir = "TEST_" + phage_outdir
+            bact_outdir = "TEST_" + bact_outdir
+            par_outdir = "TEST_" + par_outdir
+
+        if args.all_phages:
             par_outdir = par_outdir.rstrip("/") + "_allphages/"
-            all_phages = True
-            pn = 10**1000000000 # Effectively infinite n for all phages
+            #pn = 10**1000000000 # Effectively infinite n for all phages
 
         try:
             ### Phage Minhash Sketch Construction ###
+            ps = 0 #the scaled argument
+            if args.all_phages:
+                pn = 0
+                ps = 1
+
             construct_SM_sketches(raw_in = phage_in_path, 
                                 k = pk, 
                                 outdir = phage_outdir, 
                                 parent_outdir = par_outdir,
                                 quiet = False,
-                                sourmash_parameters=[pn, 0])
+                                sourmash_parameters=[pn, ps])
 
             ### Bacteria Minhash Sketch Construction ###
             construct_SM_sketches(raw_in = bact_in_path, 
@@ -98,13 +108,17 @@ def main():
         try:
             codec = KmerCodec()
             ohe_outdir = f"encoded_sketches/" if not args.data2 else f"encoded_sketches_data2/"
-            all_phages = False
-            if pn.lower() == "all":
+
+            if args.test:
+                phage_outdir = "TEST_" + phage_outdir
+                bact_outdir = "TEST_" + bact_outdir
+                ohe_outdir = "TEST_" + ohe_outdir
+
+            if args.all_phages:
                 ohe_outdir = ohe_outdir.rstrip("/") + "_allphages/"
-                all_phages = True
-                pn = 10**1000000000 # Effectively infinite n for all phages
+
             with Decompose(k=pk, n=pn, codec=codec, output_dir=data_prod_path+ohe_outdir, entity_type="phage", sourmash_like=True,
-                           custom_dir_name=phage_outdir, hash_func=args.hash) as decompose_phage:
+                           custom_dir_name=phage_outdir, hash_func=args.hash, sample_all=args.all_phages) as decompose_phage:
                 decompose_phage.decompose(raw_in=phage_in_path)
 
             with Decompose(k=bk, n=bn, codec=codec, output_dir=data_prod_path+ohe_outdir, entity_type="bacteria", sourmash_like=True,

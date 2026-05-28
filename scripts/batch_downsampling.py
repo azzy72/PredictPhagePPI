@@ -17,6 +17,7 @@ def parse_arguments():
 
     parser.add_argument("--method", choices=['sourmash', 'minhash', 'ohe'], help="Downsampling method to use (default: sourmash)", default='sourmash')
     parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
+    parser.add_argument("--all_phages", action="store_true", help="Include all phages in the dataset (overrides n for phages)")
 
     args = parser.parse_args()
     return args
@@ -33,6 +34,8 @@ def main_batch():
                 command = f"python3 {scripts_path}downsampling.py --nk {n} {k} --method {args.method}"
                 if args.data2:
                     command += " --data2"
+                if args.all_phages:
+                    command += " --all_phages"
                 print(f"Running command: {command}")
                 os.system(command)
             except Exception as e:

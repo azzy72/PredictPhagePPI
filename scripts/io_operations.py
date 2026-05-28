@@ -50,8 +50,14 @@ def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool 
         else:
             for bact in host_range_df["phage"]:
                 bact_lookup[bact] = host_range_df.loc[bact, "Species"]
-        
-    
+        host_range_df["phage"] = host_range_df["phage"].apply(lambda x: clean_bact_names(x, data2=True))  # Keep only the first word of the phage name
+
+        # Clean phage names in columns: keep only the first part before the first underscore
+        host_range_df.rename(
+            columns=lambda c: str(c).split('_')[0],
+            inplace=True
+        )
+
     else:
         # Load the host range data from the Excel file
         host_range_df = pd.read_excel(
@@ -68,9 +74,9 @@ def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool 
         # Make Seq ID to phage name mapping - pandas df
         host_range_df = host_range_df.drop(columns=["Species"]).set_index('Seq ID').rename_axis('phage').reset_index()
     
-    # Shorten bacteria names from "J14_21_reoriented_merged.fasta" to "J14_21" for easier handling and matching with minhash sketch names
-    # Use clean_bact_names function that takes a list of bacteria names as input
-    host_range_df["phage"] = host_range_df["phage"].apply(lambda x: clean_bact_names(x))  # Keep only the first word of the phage name
+        # Shorten bacteria names from "J14_21_reoriented_merged.fasta" to "J14_21" for easier handling and matching with minhash sketch names
+        # Use clean_bact_names function that takes a list of bacteria names as input
+        host_range_df["phage"] = host_range_df["phage"].apply(lambda x: clean_bact_names(x))  # Keep only the first word of the phage name
 
 
     if TS: print(host_range_df.head())
@@ -92,6 +98,9 @@ def load_minhash_sketches(in_dir : str, TS : bool = False, output_as_np : bool =
     from sourmash import load_one_signature
     minhash_data = {}
     for filename in os.listdir(in_dir):
+        if "surprisus" in filename.lower():
+            print(f"Warning: Skipping file {filename} as it has not host range data available in the dataset.")
+            continue
         if filename.endswith(('.sig', '.json')): # sourmash signature files
             filepath = os.path.join(in_dir, filename)
             if TS: print(f"filepath: {filepath}")
@@ -181,9 +190,12 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
         print(f"Error loading minhash sketches: {e}")
         return None, None, None, None, None
     
-    phage_minhash_data = clean_dict_keys(phage_minhash_data)
+    phage_minhash_data = clean_dict_keys(phage_minhash_data, data2=data2)
     bact_minhash_copy = bact_minhash_data.copy()
+    if TS: print(f"Original phage minhash keys (sample): {list(phage_minhash_data.keys())[:5]}")
+    if TS: print(f"Original bacteria minhash keys (sample): {list(bact_minhash_data.keys())[:5]}")
     for key in bact_minhash_copy.keys():
+        if TS: print(f"Original key: {key}, Sample minhashes: {bact_minhash_copy[key][:5]}")
         new_key_list = clean_bact_names([key], data2=data2)
         bact_minhash_data[new_key_list[0]] = bact_minhash_data.pop(key)
 

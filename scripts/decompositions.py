@@ -52,13 +52,17 @@ class KmerCodec:
 
 
 class Decompose:
-    def __init__(self, k, n, codec, output_dir, entity_type, sourmash_like=True, custom_dir_name : str = None, random_sampling=False, hash_func="mmh3"):
-        allowed_entity_types = {"phage": "phage", "bacteriophage": "phage", "bacteria": "bact", "bact": "bact"}
-        if entity_type.lower() not in allowed_entity_types.keys():
-            raise ValueError(f"Invalid entity_type '{entity_type}'. Allowed values are: {', '.join(allowed_entity_types.keys())}")
+    def __init__(self, k, n, codec, output_dir, entity_type, sourmash_like=True, custom_dir_name: str = None, random_sampling=False, hash_func="mmh3", sample_all=False):
+        allowed_entity_types = {"phage": "phage", "bacteriophage": "phage",
+                                "bacteria": "bact", "bact": "bact"}
+        if entity_type.lower() not in allowed_entity_types:
+            raise ValueError(f"Invalid entity_type '{entity_type}'. "
+                            f"Allowed values are: {', '.join(allowed_entity_types)}")
 
         self.k = k
-        self.n = n
+        self.sample_all = sample_all
+        # In sample-all mode, n has no meaning — keep it for back-compat but ignore it.
+        self.n = None if sample_all else n
         self.codec = codec
         self.output_dir = output_dir
         self.entity_type = allowed_entity_types[entity_type.lower()]
@@ -67,14 +71,16 @@ class Decompose:
         self.random_sampling = random_sampling
 
         if hash_func not in ["xxhash", "mmh3", "ohe_custom"]:
-            raise ValueError(f"Invalid hash function '{hash_func}'. Allowed values are: 'xxhash', 'mmh3', 'ohe_custom'")
+            raise ValueError(f"Invalid hash function '{hash_func}'. "
+                            "Allowed values are: 'xxhash', 'mmh3', 'ohe_custom'")
         self.hash_func = hash_func
 
+        n_label = "all" if sample_all else f"n{self.n}"
         if custom_dir_name:
-            self.inner_dir = os.path.join(self.output_dir, f"{custom_dir_name}")
+            self.inner_dir = os.path.join(self.output_dir, custom_dir_name)
             print(f"Using custom directory name: {self.inner_dir}")
-        else: 
-            self.inner_dir = self.output_dir+f"{self.entity_type}_sig_n{self.n}_k{self.k}/"
+        else:
+            self.inner_dir = self.output_dir + f"{self.entity_type}_sig_{n_label}_k{self.k}/"
             print(f"Using standard directory name: {self.inner_dir}")
 
     def __enter__(self):
@@ -122,7 +128,8 @@ class Decompose:
         if sig is None and not hk_lookup_global:
             raise ValueError("No signatures were generated. Please check the input FASTA file(s) and parameters.\n")
         
-        self.save_hk_lookup(hk_lookup_global, f"hk_lookup_n{self.n}_k{self.k}")
+        n_label = "all" if self.sample_all else f"n{self.n}"
+        self.save_hk_lookup(hk_lookup_global, f"hk_lookup_{n_label}_k{self.k}")
 
     def _process_directory(self, raw_in, hk_lookup_global):
         """Helper to process directory of FASTA files."""
@@ -185,6 +192,12 @@ class Decompose:
             else:
                 raise ValueError("Unsupported hash function")
 
+            # 3. Sample-all mode
+            if self.sample_all:
+                if hash_value not in hk_lookup:
+                    hk_lookup[hash_value] = kmer
+                continue
+
             # 3. Heap Logic for Min-Hash (Lowest 500)
             # Only process if this hash is unique to our current set
             if hash_value not in hk_lookup:
@@ -201,9 +214,8 @@ class Decompose:
                         hk_lookup[hash_value] = kmer
                         heapq.heapreplace(max_heap, (-hash_value, hash_value))
 
-        # 4. Final Signatures (The actual lowest 500 hashes, sorted)
+        # 4. Final Signatures (The actual lowest 500 hashes, sorted if not sample all)
         signatures = sorted(hk_lookup.keys())
-
         return signatures, hk_lookup
 
     def prepare_sourmash_structure(self, signatures, record_name):

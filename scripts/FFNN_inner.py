@@ -45,9 +45,11 @@ def parse_arguments():
     # Data Source
     parser.add_argument("--use_encoded", action="store_true", help="Use encoded_sketches instead of SM_sketches")
     parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
+    parser.add_argument("--all_phages", action="store_true", help="Use all phages in the dataset, including those without interaction data in hostrange (these will be labeled as non-interactions).")
     parser.add_argument("--bits_encoded", type=str, default="4", help="(Optional) specify which type of bit encoding using in encoded_sketches (e.g. 4 for phage_encode4bit_n400_k12)")
     parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
     parser.add_argument("--sbatch_id", type=str, help="(Optional) sbatch job ID to include in output directory name for easier tracking")
+    parser.add_argument("--force_presmat", action="store_true", help="Force recalculation of presence matrix even if pre-saved files are available.")
 
     # Analysis Options
     parser.add_argument("--logging", action="store_true", help="Enable logging and saving")
@@ -63,8 +65,8 @@ def parse_arguments():
     # Exclusions
     parser.add_argument("--exclude_noninteractions", action="store_true", help="Exclude non-interacting pairs")
     parser.add_argument("--exclude_pairs", action="store_true", help="Exclude specified pairs of bacteria and phages, requires --exclude_bacts and --exclude_phages")
-    parser.add_argument("--exclude_bacts", nargs='+', default=["J26_21_reoriented"], help="List of bacteria to exclude")
-    parser.add_argument("--exclude_phages", nargs='+', default=["Abuela"], help="List of phages to exclude")
+    parser.add_argument("--exclude_bacts", nargs='+', default=[], help="List of bacteria to exclude")
+    parser.add_argument("--exclude_phages", nargs='+', default=[], help="List of phages to exclude")
     
     parser.add_argument("--exclude_clusters", action="store_true", help="Exclude all pairs involving bacteria in the specified clusters, requires --exclude_bact_clusters and --exclude_phage_clusters")
     parser.add_argument("--exclude_bact_clusters", nargs='+', default=[], help="Array of bacterial strains to exclude in a cluster like manner")
@@ -176,6 +178,13 @@ def parse_arguments():
 
         # Make args.exclude_bact_clusters short names (e.g. J2_21) - phages stays the same
         args.exclude_bact_clusters = clean_bact_names(args.exclude_bact_clusters, data2=args.data2)
+        # Standardize phage names
+        if args.data2:
+            args.exclude_phage_clusters = [re.sub(r"^([A-Za-z]+)_[\w]+_host(\d+)$", r"\1_Host_\2", phage) for phage in args.exclude_phage_clusters]
+            if "surprisus" in [phage.lower() for phage in args.exclude_phage_clusters]:
+                args.exclude_phage_clusters = [phage for phage in args.exclude_phage_clusters if "surprisus" not in phage.lower()]
+        else:
+            args.exclude_phage_clusters = [phage.split("_")[-1] for phage in args.exclude_phage_clusters]
 
     return args
 
@@ -227,6 +236,8 @@ def main():
     prefix = "encoded_sketches" if args.use_encoded else "SM_sketches"
     if args.data2:
         prefix = f"{prefix}_data2"
+    if args.all_phages:
+        prefix = f"{prefix}_allphages"
 
     #use regex to find directories with n{bn}_k{bk} and n{pn}_k{pk} in their names, since dir prefix depends on method
     files_prefix_dirs = os.listdir(os.path.join(data_prod_path, prefix))
@@ -251,11 +262,12 @@ def main():
     print(f"Recognized data paths\ninput_phage_path:\t{input_phage_path}\ninput_bact_path:\t{input_bact_path}\npresmat_path:\t{presmat_path}")
 
     ### 3. Load Data ###
-    bact_clusters = pd.read_csv(os.path.join(data_prod_path, "bact_clusters_with_genus.csv"), index_col=0)
+    bact_clusters = pd.read_csv(os.path.join(data_prod_path, f"{prefix}", "sim_matrices", f"combined_bact_clusters_n{n}_k{k}.csv"), index_col=0)
 
     # Load Presence Matrix
     full_presmat_path = os.path.join(data_prod_path, presmat_path)
-    if not os.path.exists(full_presmat_path):
+    
+    if args.force_presmat or not os.path.exists(full_presmat_path):
         print("Reconstructing presence_matrix...")
         binary_matrix, entity_to_index, minhash_to_index, phage_minhash_data, bact_minhash_data = presence_matrix(
             phage_minhash_dir=os.path.join(data_prod_path, input_phage_path),
@@ -284,9 +296,6 @@ def main():
         minhash_to_index=minhash_to_index
     )
 
-    #Create inverse mapping: entity_name to column_index
-    entity_to_idx = {v: k for k, v in idx_to_entity.items()}
-
     #Load hash kmer lookup dict, if use_encoded and current n/k values
     if args.use_encoded:
         hash_kmer_dict_path = os.path.join(data_prod_path, f"{prefix}/hk_lookup_n{n}_k{k}.json")
@@ -303,7 +312,10 @@ def main():
             hk_translation_dict = None
 
     ### 4. Host Range Setup ###
-    bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"), data2=args.data2)
+    if args.data2:
+        bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/data2_EOP.xlsx"), sheet_name="Sheet1", data2=True)
+    else:
+        bact_lookup, host_range_df = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx"), data2=False)
     host_range_data = binarize_host_range(hostrange_df_to_dict(host_range_df), continous=False)
     host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
 
@@ -357,8 +369,8 @@ def main():
     bacteria_names = list(bact_minhash_data.keys())
 
     # Correcting exclude_bacts and exclude_phages if they're not in the same format as hostrange
-    if args.exclude_clusters:
-        args.exclude_bacts = clean_bact_names(args.exclude_bacts)
+    if args.exclude_pairs:
+        args.exclude_bacts = clean_bact_names(args.exclude_bacts, data2=args.data2)
 
     if args.randomize:
         random.seed(42)
@@ -808,7 +820,14 @@ def main():
             test_unseen_probs = torch.sigmoid(test_unseen_logits)
             test_unseen_preds = (test_unseen_probs >= 0.5).float()
             test_unseen_acc = (test_unseen_preds.to(device) == y_test_unseen_t).float().mean().item()
-            test_unseen_ba = balanced_accuracy_score(y_test_unseen_t.cpu().numpy(), test_unseen_preds.cpu().numpy())
+            try:
+                test_unseen_ba = balanced_accuracy_score(y_test_unseen_t.cpu().numpy(), test_unseen_preds.cpu().numpy())
+            except ValueError as e:
+                logging.warning(f"Error occurred while calculating balanced accuracy for truly unseen test set: {e}")
+                logging.warning(f"X_test_unseen_t shape: {X_test_unseen_t.shape}, y_test_unseen_t shape: {y_test_unseen_t.shape}, test_unseen_preds shape: {test_unseen_preds.shape}")
+                logging.warning(f"y_test_unseen_t: {y_test_unseen_t.cpu().numpy()}, test_unseen_preds: {test_unseen_preds.cpu().numpy()}")
+                raise e
+                return None
 
         if args.logging: 
             logging.info(f'Tested on truly unseen subset of excluded set')
@@ -898,9 +917,9 @@ def main():
 
     try:
         # 1. Load lookup data
-        hostrange_pdf = pd.read_excel(raw_data_path+"phagehost_KU/Hostrange_data_all_crisp_iso.xlsx", sheet_name="sum_hostrange", header=1)
-        id_lookup_bact = hostrange_pdf[["Seq ID", "Species"]].rename(columns={"Seq ID": "Bacterium_Name"})
-
+        id_lookup_bact = pd.DataFrame(bact_lookup.items(), columns=["Bacterium_Name", "Species"])
+        id_lookup_bact["Bacterium_Name"] = id_lookup_bact["Bacterium_Name"].apply(clean_bact_names, data2=args.data2)
+        
         model.eval()
         with torch.no_grad():
             # Ensure X_test_t is your torch tensor for the test set
@@ -1018,11 +1037,20 @@ def main():
     # normalize column names (strip whitespace) then reorder columns to the requested phage order
     pred_matrix = pred_matrix.rename(columns=lambda x: x.strip())
 
-    phage_order = [
-        "Ymer","Taid","Poppous","Koroua","Abuela","Amona","Sabo","Mimer","Crus",
-        "Gander","Guf","Hoejben","Magnum","Vims","Echoes","Galvinrad","Uther",
-        "Rip","Rup","Slaad","Pantea","Rap","Zann"
-    ]
+    if args.data2:
+        phage_order = [
+            "Grebano", "Ravello", "Etui", "Maxentius", "Licinius", "Jovian", "Arcadius", "Avitus", "Marcian", "Libius", "Anthemius",
+            "Olybrius", "Phocas", "Caracalla", "Geta", "Leonitus", "Artabasdos", "Rangabe", "Staurakios", "Bardicus", "Quintillus", "Heraclius", 
+            "Heraclonas", "Anivius", "Komnenos", "Eudokia", "Doukas", "Arruntis", "Hostillian", "Pacatian", "Quartinus", "Bonosus", "Rozzorie",
+            "Brede", "Didius", "Septimius", "Diadumenian", "Elagabalus", "Pius", "Pupienus", "Nepotimus", "Balbinus", "Decius", "Trebonianus",
+            "Skandal", "Balder", "Herennius", "Silbannacus", "Volusianus", "Galleinus", "Salolinus", "Carinus", "Galerius" 
+        ]
+    else:
+        phage_order = [
+            "Ymer","Taid","Poppous","Koroua","Abuela","Amona","Sabo","Mimer","Crus",
+            "Gander","Guf","Hoejben","Magnum","Vims","Echoes","Galvinrad","Uther",
+            "Rip","Rup","Slaad","Pantea","Rap","Zann"
+        ]
 
     # keep only those desired that actually exist, then append any extra columns that were not listed
     cols_in_order = [c for c in phage_order if c in pred_matrix.columns]
@@ -1161,19 +1189,44 @@ def main():
             #Construct pair specific list of hashes
             top_pairs_expected = [(pair, expected_interactions.get(pair, 0)) for pair, _ in top_pairs]
             top_pairs_expected_df = pd.DataFrame(top_pairs_expected, columns=["pair", "expected_interaction_score"])
-            top_pairs_expected_df.to_csv(outdir+"top_interaction_pairs_expected_interactions.csv", index=False)
-            if args.logging: logging.info(f'Saved top interaction pairs with expected interaction scores to {outdir+"top_interaction_pairs_expected_interactions.csv"}')
+            top_pairs_expected_df.to_csv(outdir+"top_interaction_pairs_expected_interactions_raw.csv", index=False)
+            if args.logging: logging.info(f'Saved top interaction pairs with expected interaction scores to {outdir+"top_interaction_pairs_expected_interactions_raw.csv"}')
             
             #Prep hash specific list of decoded kmers
             top_minhashes = set()
+            # Accumulate per-side expected interaction scores
+            phage_minhash_expected = {}
+            bact_minhash_expected = {}
+            for (bact_hash, phage_hash), score in top_pairs:
+                pair_expected_interaction = expected_interactions.get((bact_hash, phage_hash), 0)
+                phage_minhash_expected.setdefault(phage_hash, []).append(pair_expected_interaction)
+                bact_minhash_expected.setdefault(bact_hash, []).append(pair_expected_interaction)
+
+            # Rank each side independently by mean expected interaction, take top N/2 each
+            n_per_side = args.top_kmers_num // 2
+            top_phage_hashes = set(
+                sorted(phage_minhash_expected, key=lambda h: np.mean(phage_minhash_expected[h]), reverse=True)[:n_per_side]
+            )
+            top_bact_hashes = set(
+                sorted(bact_minhash_expected,  key=lambda h: np.mean(bact_minhash_expected[h]),  reverse=True)[:n_per_side]
+            )
+            top_minhashes = top_phage_hashes | top_bact_hashes
+
+            # Build combined minhash_expected_interactions for avg score lookup downstream
+            # (a shared hash that ranked on both sides collects scores from both)
             minhash_expected_interactions = {}
-            for (phage_hash, bact_hash), score in top_pairs:
-                pair_expected_interaction = expected_interactions.get((phage_hash, bact_hash), 0)
-                top_minhashes.add(phage_hash)
-                top_minhashes.add(bact_hash)
-                minhash_expected_interactions.setdefault(phage_hash, []).append(pair_expected_interaction)
-                minhash_expected_interactions.setdefault(bact_hash, []).append(pair_expected_interaction)
-            
+            for h, scores in phage_minhash_expected.items():
+                if h in top_minhashes:
+                    minhash_expected_interactions.setdefault(h, []).extend(scores)
+            for h, scores in bact_minhash_expected.items():
+                if h in top_minhashes:
+                    minhash_expected_interactions.setdefault(h, []).extend(scores)
+
+            if args.logging:
+                logging.info(f'Balanced hash selection: {len(top_phage_hashes)} phage hashes, '
+                            f'{len(top_bact_hashes)} bact hashes '
+                            f'({len(top_minhashes)} unique after union — overlap implies shared k-mers)')
+
             filtered_idx_to_minhash = {idx: mh for idx, mh in idx_to_minhash.items() if mh in top_minhashes}
 
             # Regain k-mers for the top interaction pairs
@@ -1189,46 +1242,64 @@ def main():
                 if args.logging: logging.info(f'Decoded k-mers for top interaction pairs: {list(pfi_top_kmers_decoded.values())}')
 
                 # --- Build a single hash -> info lookup, reused for both dataframes ---
-                def _classify(entity):
-                    if entity in bact_minhash_data_full:
-                        return "bacterium"
-                    if entity in phage_minhash_data_full:
-                        return "phage"
-                    return "unknown"
+                def _classify(entities):
+                    if isinstance(entities, str):
+                        entities = {entities}
+                    types = set()
+                    for e in entities:
+                        if e in bact_minhash_data_full:
+                            types.add("bacterium")
+                        if e in phage_minhash_data_full:
+                            types.add("phage")
+                    if types == {"bacterium", "phage"}:
+                        return "both"
+                    return types.pop() if types else "unknown"
 
                 hash_to_info = {}
                 for idx, decoded in pfi_top_kmers_decoded.items():
                     mh = filtered_idx_to_minhash.get(idx)
                     if mh is None:
                         continue
-                    entity = idx_to_entity.get(idx, "unknown")
+                    entity = idx_to_entity.get(idx, None)
+                    if entity is None or entity == "unknown":   # ensure always a set
+                        entity = {"unknown"}
+                    elif isinstance(entity, str):
+                        entity = {entity}
                     hash_to_info[mh] = {
-                        "entity": entity,
-                        "organism": _classify(entity),
+                        "entity": entity,                       # always a set
+                        "organism": _classify(entity),          # may be "both"; discarded after explode
                         "decoded_kmer": decoded,
                     }
 
                 def _info(h, key):
-                    return hash_to_info.get(h, {}).get(key, "unknown")
+                    return hash_to_info.get(h, {}).get(key, {"unknown"} if key == "entity" else "unknown")
 
                 # --- pfi_top_kmers_df (now uses the same lookup) ---
                 pfi_top_avg_expected_interaction = [
                     float(np.mean(minhash_expected_interactions.get(filtered_idx_to_minhash.get(idx), [0])))
-                    for idx in pfi_top_idx.keys()
-                ]
+                    for idx in pfi_top_idx]
+
                 pfi_top_kmers_df = pd.DataFrame({
                     "feature_index": list(pfi_top_kmers_decoded.keys()),
-                    "entity":   [_info(filtered_idx_to_minhash.get(idx), "entity")        for idx in pfi_top_kmers_decoded.keys()],
-                    "organism": [_info(filtered_idx_to_minhash.get(idx), "organism")      for idx in pfi_top_kmers_decoded.keys()],
+                    "entity":   [_info(filtered_idx_to_minhash.get(idx), "entity")    for idx in pfi_top_kmers_decoded.keys()],
+                    "organism": [_info(filtered_idx_to_minhash.get(idx), "organism")  for idx in pfi_top_kmers_decoded.keys()],
                     "decoded_kmer": list(pfi_top_kmers_decoded.values()),
                     "avg_expected_interaction": pfi_top_avg_expected_interaction,
                 })
-                pfi_top_kmers_df.to_csv(outdir+"top_expected_interaction_pair_kmers.csv", index=False)
+
+                # Explode shared-hash rows: one entity per row, then recompute organism cleanly
+                pfi_top_kmers_df = pfi_top_kmers_df.explode("entity").reset_index(drop=True)
+                pfi_top_kmers_df["organism"] = pfi_top_kmers_df["entity"].apply(
+                    lambda e: "bacterium" if e in bact_minhash_data_full
+                            else ("phage" if e in phage_minhash_data_full else "unknown")
+                )
+
+                pfi_top_kmers_df.to_csv(outdir + "top_expected_interaction_pair_kmers.csv", index=False)
                 if args.logging: logging.info(f'Saved decoded k-mers for top interaction pairs to {outdir+"top_expected_interaction_pair_kmers.csv"}')
 
                 # --- Enrich top_pairs_expected_df with per-side entity/organism/decoded_kmer ---
                 # NOTE: matches the unpacking order used above: pair[0]=phage_hash, pair[1]=bact_hash
-                for side, idx_in_pair in (("phage", 0), ("bact", 1)):
+                for side, idx_in_pair in (("bact", 0), ("phage", 1)):
                     for key in ("entity", "organism", "decoded_kmer"):
                         top_pairs_expected_df[f"{side}_{key}"] = top_pairs_expected_df["pair"].map(
                             lambda p, i=idx_in_pair, k=key: _info(p[i], k)

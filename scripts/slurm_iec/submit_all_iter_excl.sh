@@ -9,8 +9,8 @@ set -euo pipefail
 #N_VALUES=(300 500 1000)
 #K_VALUES=(9 12 18 24 32 51)
 N_VALUES=(500)
-K_VALUES=(12 24)
-DOWNDIR_VALUES=("SM_sketches" "encoded_sketches" "encoded_sketches_data2" "SM_sketches_data2")
+K_VALUES=(12)
+DOWNDIR_VALUES=("encoded_sketches" "SM_sketches" "SM_sketches_data2" "SM_sketches_data2_allphages" "encoded_sketches_data2" "encoded_sketches_data2_allphages")
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
 

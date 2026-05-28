@@ -45,10 +45,10 @@ echo "Array task $SLURM_ARRAY_TASK_ID → bcluster=$bcluster_num  pcluster=$pclu
 bact_strains=$(tail -n +2 "$BACT_CLUSTER_FILE" \
     | awk -F',' -v c="$bcluster_num" '$3==c {print $1}' \
     | paste -sd ',' -)
-bact_strains=$(echo "$bact_strains" | sed 's/_reoriented//g')
+bact_strains=$(echo "$bact_strains" | sed 's/_reoriented//g; s/\(Kp_KU[0-9]*\)_circular[^,]*/\1/g')
 
 phage_strains=$(tail -n +2 "$PHAGE_CLUSTER_FILE" \
-    | awk -F',' -v c="$pcluster_num" '$4==c {print $1}' \
+    | awk -F',' -v c="$pcluster_num" '$4==c {print $2}' \
     | paste -sd ',' -)
 
 echo "Bact strains  : $bact_strains"
@@ -75,6 +75,7 @@ python3 "$ROOT_DIR/scripts/FFNN_inner.py" \
     --nk "$N" "$K" \
     --cv \
     --kf_n_splits 4 \
+    --force_presmat \
     --exclude_clusters \
     --exclude_bact_clusters "$bact_strains" \
     --exclude_phage_clusters "$phage_strains" \
