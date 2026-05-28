@@ -901,8 +901,8 @@ class MetricPlottingUtils:
         df['status'] = df['status'].apply(lambda x: 'passed' if x else 'failed')
         
         try:
-            df['b_value'] = df['folder'].str.extract(r"b(\d+)")[0]
-            df['p_value'] = df['folder'].str.extract(r"p(\d+)")[0]
+            df['b_value'] = pd.to_numeric(df['folder'].str.extract(r"b(\d+)")[0], errors='coerce')
+            df['p_value'] = pd.to_numeric(df['folder'].str.extract(r"p(\d+)")[0], errors='coerce')
         except Exception as e:
             print(f"Error extracting b_value and p_value from folder names: {e}")
             df['b_value'] = None
@@ -934,6 +934,7 @@ class MetricPlottingUtils:
             self.singular_k = False
         
         self.title_suffix = "by N and K" if not (self.singular_n and self.singular_k) else "for single N and K"
+        self.x_label = x_col if x_col is not None else 'Run / Configuration'
 
         # Set x and hue columns based on the presence of singular n or k
         if x_col is None:
@@ -952,16 +953,18 @@ class MetricPlottingUtils:
             parts = df["folder"].str.extract(r"^cluster_(\d+)_([A-Z].+)$")
             df["cluster_id"] = pd.to_numeric(parts[0], errors="coerce")
             df["phage_name"] = parts[1]
-            df["cluster_group"] = "cluster=" + parts[0]
+            df["partition_group"] = "partition_b" + df["b_value"].astype(str) + "_p" + df["p_value"].astype(str)
             if x_col_by_phage:
                 df["phage_group"] = "phage=" + parts[1]
                 self.x_col = "phage_group" if x_col_by_phage else self.x_col
+                self.x_label = "Phage"
                 # sort by phage_name for better visualization
                 df = df.sort_values("phage_name")
             elif x_col_by_cluster:
-                self.x_col = "cluster_group" if x_col_by_cluster else self.x_col
-                # sort by cluster_id for better visualization
-                df = df.sort_values("cluster_id")
+                self.x_col = "partition_group" if x_col_by_cluster else self.x_col
+                self.x_label = "Partition"
+                # sort by partition coordinates for better visualization
+                df = df.sort_values(["b_value", "p_value"], kind="mergesort")
         
         self.df = df
 
@@ -999,6 +1002,7 @@ class MetricPlottingUtils:
             y_label = 'Count (Number of Samples)'
         
         cm_melted = cm_melted.sort_values(by=[self.x_col, 'Metric']) # sort by folder and then by metric for consistent ordering
+        x_order = cm_melted[self.x_col].drop_duplicates().tolist()
         print("Prepared confusion matrix data for bar plot:")
         print(cm_melted)
 
@@ -1019,6 +1023,7 @@ class MetricPlottingUtils:
             hue='MetricType', 
             palette=metric_colors, 
             edgecolor='black',
+            order=x_order,
         )
 
         if show_percentage:
@@ -1046,7 +1051,7 @@ class MetricPlottingUtils:
         plt.xticks(rotation=90, ha='right')
         plt.title(f'Confusion Matrix Components by Run {title_suffix}', fontsize=14, weight='bold', pad=20)
         plt.ylabel(y_label, fontsize=10)
-        plt.xlabel('Run / Configuration', fontsize=6)
+        plt.xlabel(self.x_label, fontsize=6)
         
         # Place legend outside to the right
         plt.legend(title='Metrics', bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0.)
@@ -1062,6 +1067,7 @@ class MetricPlottingUtils:
     def _plot_bars(self, x_col, y_col, hue_col=None, title="", ylabel="", outpath=""):
         plt.figure(figsize=(12, 7))
         sns.set_style("whitegrid")
+        x_order = self.df[x_col].drop_duplicates().tolist()
         
         if hue_col:
             ax = sns.barplot(
@@ -1070,14 +1076,16 @@ class MetricPlottingUtils:
                 y=y_col, 
                 hue=hue_col, 
                 palette='viridis',
-                edgecolor='black'
+                edgecolor='black',
+                order=x_order,
             )
         else:
             ax = sns.barplot(
                 data=self.df, 
                 x=x_col, 
                 y=y_col, 
-                edgecolor='black'
+                edgecolor='black',
+                order=x_order,
             )
             plt.xticks(rotation=90, ha='right')
         
@@ -1085,7 +1093,7 @@ class MetricPlottingUtils:
 
         plt.title(title, fontsize=15, pad=15)
         plt.ylabel(ylabel, fontsize=12)
-        plt.xlabel(x_col.capitalize(), fontsize=6)
+        plt.xlabel(self.x_label, fontsize=6)
         if hue_col: plt.legend(title=hue_col.capitalize(), bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
         plt.savefig(outpath)
@@ -1110,13 +1118,13 @@ class MetricPlottingUtils:
             cbar_kws={"label": "Success Rate", "ticks": [0, 1]}
         )
 
-        plt.title("Success Rate by Phage and Bacterial Clusters")
-        plt.xlabel("Phage Clusters")
-        plt.ylabel("Bacterial Clusters")
+        plt.title("Success Rate by Phage and Bacterial Partitions")
+        plt.xlabel("Phage partition")
+        plt.ylabel("Bacterial partition")
         plt.tight_layout()
-        plt.savefig(self.outdir + 'bp_cluster_heatmap.png', dpi=300)
+        plt.savefig(self.outdir + 'bp_partition_heatmap.png', dpi=300)
         plt.close() # Close to free up memory
-        print("Saved: bp_cluster_heatmap.png")
+        print("Saved: bp_partition_heatmap.png")
 
     def plot_graphs(self):
         # --- Graph 1: Grouped Accuracy Bar Chart (X=n, Hue=k) ---

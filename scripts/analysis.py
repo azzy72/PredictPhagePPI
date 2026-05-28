@@ -1322,8 +1322,8 @@ class GeneAnalysis():
         kmer = self._normalize_kmer(kmer)
         # if strain name matches "Host X" where X is a number, rewrite it to Kp_KUX to match the directory naming convention
         data2 = False
-        if re.match(r"Host\s+\d+", strain_name):
-            strain_name = "Kp_KU" + re.findall(r"\d+", strain_name)[0]
+        if re.match(r"^\{?'?Host\s+\d+'?\}?$", str(strain_name).strip()):
+            strain_name = "Kp_KU" + re.findall(r"\d+", str(strain_name))[0]
             data2 = True
 
         strain_dirs = [p for p in (root_dir / "prokka_bacts").rglob("*") if p.is_dir() and strain_name in p.name]
@@ -1387,6 +1387,10 @@ class GeneAnalysis():
             "phrog", "function", "product",
             "annotation_method"
         ]
+
+        #if strain_name is wrapped in {}, remove them to match directory naming convention
+        if "{'" in strain_name and "'}" in strain_name:
+            strain_name = strain_name.replace("{'", "").replace("'}", "")
 
         pharokka_root = root_dir / "pharokka"
         phold_root    = root_dir / "phold"

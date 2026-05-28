@@ -47,9 +47,17 @@ bact_strains=$(tail -n +2 "$BACT_CLUSTER_FILE" \
     | paste -sd ',' -)
 bact_strains=$(echo "$bact_strains" | sed 's/_reoriented//g; s/\(Kp_KU[0-9]*\)_circular[^,]*/\1/g')
 
-phage_strains=$(tail -n +2 "$PHAGE_CLUSTER_FILE" \
-    | awk -F',' -v c="$pcluster_num" '$4==c {print $2}' \
-    | paste -sd ',' -)
+if [[ "$DOWNDIR" == *"data2"* ]]; then
+    # data2 phage CSV: $1=host_id (number), $2=phage name
+    phage_strains=$(tail -n +2 "$PHAGE_CLUSTER_FILE" \
+        | awk -F',' -v c="$pcluster_num" '$4==c {print $2}' \
+        | paste -sd ',' -)
+else
+    # non-data2 phage CSV: $1=phage name, $2=bacterial genus
+    phage_strains=$(tail -n +2 "$PHAGE_CLUSTER_FILE" \
+        | awk -F',' -v c="$pcluster_num" '$4==c {print $1}' \
+        | paste -sd ',' -)
+fi
 
 echo "Bact strains  : $bact_strains"
 echo "Phage strains : $phage_strains"
