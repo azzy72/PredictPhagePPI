@@ -430,18 +430,20 @@ def clean_dict_keys(in_dict : dict, sep : str = "_", take : str = "last", data2 
     """
     out_dict = {}
     for key, val in in_dict.items():
-        if sep in key and not data2:
+        if data2:
+            if "surprisus" in key.lower():
+                continue # skip surprisus as it has no host range data available in the dataset
+            if sep in key:
+                out_dict[key.split(sep)[0]] = val
+
+        elif sep in key:
             if take == "first":
                 out_dict[key.split("_")[0]] = val
             elif take == "last":
                 out_dict[key.split("_")[-1]] = val
             else:
                 raise ValueError("Can only take the first or the last value")
-        if data2:
-            if "surprisus" in key.lower():
-                continue # skip surprisus as it has no host range data available in the dataset
-            if sep in key:
-                out_dict[key.split(sep)[0]] = val
+
         else: 
             out_dict[key] = val
     return out_dict

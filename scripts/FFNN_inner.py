@@ -183,6 +183,8 @@ def parse_arguments():
             args.exclude_phage_clusters = [re.sub(r"^([A-Za-z]+)_[\w]+_host(\d+)$", r"\1_Host_\2", phage) for phage in args.exclude_phage_clusters]
             if "surprisus" in [phage.lower() for phage in args.exclude_phage_clusters]:
                 args.exclude_phage_clusters = [phage for phage in args.exclude_phage_clusters if "surprisus" not in phage.lower()]
+        else:
+            args.exclude_phage_clusters = [phage.split("_")[-1] for phage in args.exclude_phage_clusters]
 
     return args
 
@@ -1187,8 +1189,8 @@ def main():
             #Construct pair specific list of hashes
             top_pairs_expected = [(pair, expected_interactions.get(pair, 0)) for pair, _ in top_pairs]
             top_pairs_expected_df = pd.DataFrame(top_pairs_expected, columns=["pair", "expected_interaction_score"])
-            top_pairs_expected_df.to_csv(outdir+"top_interaction_pairs_expected_interactions.csv", index=False)
-            if args.logging: logging.info(f'Saved top interaction pairs with expected interaction scores to {outdir+"top_interaction_pairs_expected_interactions.csv"}')
+            top_pairs_expected_df.to_csv(outdir+"top_interaction_pairs_expected_interactions_raw.csv", index=False)
+            if args.logging: logging.info(f'Saved top interaction pairs with expected interaction scores to {outdir+"top_interaction_pairs_expected_interactions_raw.csv"}')
             
             #Prep hash specific list of decoded kmers
             top_minhashes = set()
