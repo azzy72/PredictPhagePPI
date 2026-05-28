@@ -17,3 +17,5 @@ scripts_ext/mike/
 raw_data/
 logs/
 tmp/
+FFNN_collect/
+annotation_and_composition_plots/
