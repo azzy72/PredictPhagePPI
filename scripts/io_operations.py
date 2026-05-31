@@ -17,6 +17,7 @@ from manipulations import construct_presence_matrix, short_species_name, clean_d
 from manipulations import binarize_host_range, hostrange_df_to_dict, hostrange_bact
 import re
 from paths import raw_data_path, data_prod_path
+from collections import defaultdict
 
 def call_hostrange_df(file : str, sheet_name : str = "sum_hostrange", TS : bool = False, sparse : bool = False, data2 : bool = False) -> list:
     """
@@ -267,21 +268,24 @@ def presence_matrix(phage_minhash_dir : str = None, bact_minhash_dir : str = Non
     
     return binary_matrix, entity_to_index, minhash_to_index, phage_minhash_data, bact_minhash_data
 
-def obtain_idx_to_entity_mapping(phage_minhash_data, bact_minhash_data, minhash_to_index, TS : bool = False):
+def obtain_idx_to_entity_mapping(phage_minhash_data, bact_minhash_data, minhash_to_index, TS: bool = False):
     """
-    Given the stored phage and bacteria minhash data, create a mapping from column index to entity name (phage or bacteria)
-
+    Given the stored phage and bacteria minhash data, create a mapping from column index
+    to the set of entity names (phage and/or bacteria) that carry that hash.
+    A hash shared between a phage and a bacterium will map to both names.
     """
-    idx_to_entity = {}
+    idx_to_entity = defaultdict(set)
     for name, val in phage_minhash_data.items():
         for minhash in val:
-            idx_to_entity[minhash_to_index[minhash]] = name
+            idx_to_entity[minhash_to_index[minhash]].add(name)
     for name, val in bact_minhash_data.items():
         for minhash in val:
-            idx_to_entity[minhash_to_index[minhash]] = name
+            idx_to_entity[minhash_to_index[minhash]].add(name)
 
-    if TS: print(f"idx_to_entity mapping created with {len(idx_to_entity)} entries.")
-    
+    if TS:
+        shared = sum(1 for v in idx_to_entity.values() if len(v) > 1)
+        print(f"idx_to_entity mapping created with {len(idx_to_entity)} entries ({shared} shared between phage and bacteria).")
+
     return idx_to_entity
 
 def color_sheet_from_matrix(

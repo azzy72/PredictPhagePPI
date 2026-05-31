@@ -740,12 +740,23 @@ class calc_PFI:
                     print(f"\nReached subset limit of {subset} pairs, stopping.")
                     break
         
+        ### Calculating Normalized interaction rate (Int/Occ / sum(int)/sum(occ))
+        normalized_interaction_rate = {}
+        for pair in interaction_pairs:
+            int_val = interaction_pairs[pair]
+            occ_val = occurence_pairs.get(pair, 0)
+            if total_interactions > 0 and total_occurences > 0:
+                normalized_rate = (int_val / total_interactions) / (occ_val / total_occurences)
+            else:
+                normalized_rate = 0
+            normalized_interaction_rate[pair] = normalized_rate
+
         if self.outdir is not None:
             try:
                 with open(self.outfile_pfi, "w") as f:
-                    f.write("bact_hash\tphage_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
+                    f.write("bact_hash\tphage_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\tnormalized_interaction_rate\n")
                     for pair in keys_in_subset if subset is not None else interaction_pairs.keys():
-                        f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")
+                        f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\t{normalized_interaction_rate[pair]}\n")
                 print(f"Interaction pairs saved to {self.outfile_pfi}")
             except Exception as e:
                 print(f"Error saving interaction pairs to {self.outfile_pfi}: {e}")
@@ -764,6 +775,8 @@ class calc_PFI:
                     joblib.dump(occurence_freq_pairs, f, compress=3)
                 with open(os.path.join(self.pfi_objects_dir, "expected_interactions.jbl"), "wb") as f:
                     joblib.dump(expected_interactions, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "normalized_interaction_rate.jbl"), "wb") as f:
+                    joblib.dump(normalized_interaction_rate, f, compress=3)
                 with open(os.path.join(self.pfi_objects_dir, "hash_lookup.jbl"), "wb") as f:
                     joblib.dump(hash_lookup, f, compress=3)
                 print(f"Interaction data pickled successfully in {self.outdir}")
@@ -771,5 +784,5 @@ class calc_PFI:
                 print(f"Error pickling interaction data: {e}")
         
         print(f"Total phage-bacteria combinations processed: {c}")
-        return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, hash_lookup
+        return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, normalized_interaction_rate, hash_lookup
 

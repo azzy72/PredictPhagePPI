@@ -10,7 +10,7 @@ set -euo pipefail
 #K_VALUES=(9 12 18 24 32 51)
 N_VALUES=(500)
 K_VALUES=(12)
-DOWNDIR_VALUES=("encoded_sketches" "SM_sketches" "SM_sketches_data2" "SM_sketches_data2_allphages" "encoded_sketches_data2" "encoded_sketches_data2_allphages")
+DOWNDIR_VALUES=("encoded_sketches" "SM_sketches" "SM_sketches_allphages" "encoded_sketches_allphages" "encoded_sketches_data2" "SM_sketches_data2" "SM_sketches_data2_allphages" "encoded_sketches_data2_allphages")
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
 
@@ -45,7 +45,7 @@ submit_for_combination() {
     fi
 
     # ── 1. Enumerate every (bpartition, ppartition) pair and write a task-map file ───
-    TASK_MAP="$ROOT_DIR/tmp/IterExcl_Taskmap_${DOWNDIR}_${N}_${K}.txt"
+    TASK_MAP="$ROOT_DIR/tmp/IterExcl_Taskmap_${DOWNDIR}_${N}_${K}_v2.txt"
     mkdir -p "$ROOT_DIR/tmp"
     rm -f "$TASK_MAP"
 

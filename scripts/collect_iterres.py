@@ -57,7 +57,9 @@ def parse_arguments():
                         help="Number of top k-mers to extract and analyze")
     parser.add_argument("--filter_harsh", action='store_true',
                         help="Whether to apply harsh filtering criteria on the success of runs (only include runs that have; test accuracy above 0.5 and precision and recall above 0.5)")
-    
+    parser.add_argument("--ignore_failed_runs", action='store_true',
+                        help="Whether to ignore failed runs in the analysis")
+
     ## Optional grouping arguments for more flexible plotting 
     parser.add_argument("--show_cm_bar_percentage", action='store_true',
                         help="Whether to display percentages on confusion matrix bars")
@@ -99,7 +101,7 @@ def correct_deci_number(value):
         return value
     #return Decimal(value)  # Validate if it's a number
 
-def calculate_unified_score(metrics_dict):
+def calculate_unified_score(metrics_dict, no_unseen=False):
     """
     Unified Performance Score (UPS) Calculation:
     Calculates a single performance score from a dictionary of NN metrics.
@@ -107,12 +109,18 @@ def calculate_unified_score(metrics_dict):
     """
     # 1. Define Weights (Total = 1.0)
     # We prioritize Balanced Accuracy and Unseen Performance
-    weights = {
-        'test_balanced_accuracy': 0.30,
-        'f1': 0.25,
-        'unseen_test_balanced_accuracy': 0.45 
-    }
-    
+    if no_unseen:
+        weights = {
+            'test_balanced_accuracy': 0.60,
+            'f1': 0.40
+        }
+    else:
+        weights = {
+            'test_balanced_accuracy': 0.30,
+            'f1': 0.25,
+            'unseen_test_balanced_accuracy': 0.45 
+        }
+        
     # 2. Extract values (with defaults to prevent crashes)
     b_acc = metrics_dict.get('test_balanced_accuracy', 0)
     f1 = metrics_dict.get('f1', 0)
@@ -314,8 +322,8 @@ def extract_metrics_from_log(file_path):
     )
     if cm_array_match:
         metrics['TN'] = int(cm_array_match.group(1))
-        metrics['FP'] = int(cm_array_match.group(2))
-        metrics['FN'] = int(cm_array_match.group(3))
+        metrics['FP'] = int(cm_array_match.group(3))
+        metrics['FN'] = int(cm_array_match.group(2))
         metrics['TP'] = int(cm_array_match.group(4))
     else:
         # Try legacy format: [TN FN] \n [FP TP]
@@ -323,8 +331,8 @@ def extract_metrics_from_log(file_path):
         cm_match = re.search(cm_pattern, content, re.DOTALL)
         if cm_match:
             metrics['TN'] = int(cm_match.group(1))
-            metrics['FN'] = int(cm_match.group(2))
-            metrics['FP'] = int(cm_match.group(3))
+            metrics['FN'] = int(cm_match.group(3))
+            metrics['FP'] = int(cm_match.group(2))
             metrics['TP'] = int(cm_match.group(4))
     
     # Extract Dataset Pairs: "Built dataset with X pairs and excluded Y pairs"
@@ -445,11 +453,13 @@ class GAPlottingUtils:
         cmap = LinearSegmentedColormap.from_list('tri_gradient', custom_colors)
 
         # 3. Choose your normalization
-        # If your max count is high, LogNorm makes the extreme ends stand out beautifully
-        # while smoothing out small differences in the middle.
-        if unique_counts[-1] > 10: 
-            # LogNorm requires vmin > 0, so we use max(1, ...) just in case
-            norm = LogNorm(vmin=max(1, unique_counts[0]), vmax=unique_counts[-1])
+        # If zero-mapped kmers are present, LogNorm would exclude them, so we
+        # fall back to a linear scale that keeps 0 inside the color range.
+        if 0 in unique_counts:
+            norm = Normalize(vmin=0, vmax=unique_counts[-1])
+        elif unique_counts[-1] > 10:
+            # LogNorm requires vmin > 0, so we use the smallest positive count.
+            norm = LogNorm(vmin=unique_counts[0], vmax=unique_counts[-1])
         else:
             norm = Normalize(vmin=unique_counts[0], vmax=unique_counts[-1])
 
@@ -887,6 +897,76 @@ class GAPlottingUtils:
                     dpi=150, bbox_inches='tight')
         plt.close()
 
+    def plot_kmer_occurrence_per_partition(self):
+        """
+        Bar plot of kmer occurrence per partition (folder), one panel per organism.
+        Uses self.df (top_kmers_df) directly.
+
+        X-axis : partitions ordered by (b_value, p_value) ascending.
+        Y-axis : number of kmer rows (pair entries) for that partition.
+        """
+        df = self.df
+
+        # ── Sort partitions by (b, p) numerically ─────────────────────────────
+        def bp_sort_key(folder):
+            b = re.search(r'b(\d+)', str(folder))
+            p = re.search(r'p(\d+)', str(folder))
+            return (int(b.group(1)) if b else 0, int(p.group(1)) if p else 0)
+
+        # Readable tick label: strip leading "cluster_" and trailing "_run<n>"
+        def partition_label(folder):
+            return re.sub(r'^cluster_', '', re.sub(r'_run\d+$', '', str(folder)))
+
+        sorted_folders = sorted(df['folder'].unique(), key=bp_sort_key)
+        labels = [partition_label(f) for f in sorted_folders]
+
+        # ── One panel per organism ─────────────────────────────────────────────
+        organisms = [
+            ('bacterium', 'bact_decoded_kmer',  '#4C72B0'),
+            ('phage',     'phage_decoded_kmer', '#DD8452'),
+        ]
+        # Keep only organisms whose kmer column exists in df
+        organisms = [(org, col, color) for org, col, color in organisms if col in df.columns]
+
+        if not organisms:
+            logger.log("plot_kmer_occurrence_per_partition: neither bact_decoded_kmer "
+                    "nor phage_decoded_kmer found in df. Skipping.")
+            return
+
+        fig, axes = plt.subplots(
+            len(organisms), 1,
+            figsize=(max(12, len(sorted_folders) * 0.6), 4 * len(organisms)),
+            sharex=True,
+        )
+        if len(organisms) == 1:
+            axes = [axes]
+
+        for ax, (organism, kmer_col, color) in zip(axes, organisms):
+            counts = (
+                df.groupby('folder')[kmer_col]
+                .count()                          # non-null rows = kmer occurrences
+                .reindex(sorted_folders, fill_value=0)
+            )
+
+            ax.bar(range(len(sorted_folders)), counts.values,
+                color=color, edgecolor='white', linewidth=0.5)
+            ax.set_title(f'{organism.capitalize()} — Kmer Occurrences per Partition',
+                        fontsize=12, fontweight='bold')
+            ax.set_ylabel('Kmer Count', fontsize=10)
+            ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+            sns.despine(ax=ax)
+
+        axes[-1].set_xticks(range(len(sorted_folders)))
+        axes[-1].set_xticklabels(labels, rotation=90, ha='right', fontsize=8)
+        axes[-1].set_xlabel('Partition  (b = bacterial cluster,  p = phage cluster)',
+                            fontsize=10)
+
+        plt.tight_layout()
+        plt.savefig(self.outdir + 'kmer_occurrence_per_partition.png',
+                    dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.log("Saved: kmer_occurrence_per_partition.png")
+
 class MetricPlottingUtils:
     def __init__(self, df, outdir, x_col = None, hue_col = None, x_col_by_cluster = False, x_col_by_phage = False):
         # Ensure all columns are integers for proper sorting
@@ -1148,24 +1228,26 @@ class MetricPlottingUtils:
         )
 
         # --- Graph 3: Grouped Truly Unseen Accuracy Bar Chart (X=n, Hue=k) ---
-        self._plot_bars(
-            x_col=self.x_col, 
-            y_col='unseen_test_accuracy', 
-            hue_col=self.hue_col, 
-            title=f'FFNN Truly Unseen Test Accuracy {self.title_suffix}', 
-            ylabel='Truly Unseen Test Accuracy',
-            outpath=self.outdir + 'unseen_accuracy_by_nk.png'
-        )
+        if 'unseen_test_accuracy' in self.df.columns:
+            self._plot_bars(
+                x_col=self.x_col, 
+                y_col='unseen_test_accuracy', 
+                hue_col=self.hue_col, 
+                title=f'FFNN Truly Unseen Test Accuracy {self.title_suffix}', 
+                ylabel='Truly Unseen Test Accuracy',
+                outpath=self.outdir + 'unseen_accuracy_by_nk.png'
+            )
 
         # --- Graph 4: Grouped Truly Unseen Balanced Accuracy Bar Chart (X=n, Hue=k) ---
-        self._plot_bars(
-            x_col=self.x_col, 
-            y_col='unseen_test_balanced_accuracy', 
-            hue_col=self.hue_col, 
-            title=f'FFNN Truly Unseen Test Balanced Accuracy {self.title_suffix}', 
-            ylabel='Truly Unseen Test Balanced Accuracy',
-            outpath=self.outdir + 'unseen_balanced_accuracy_by_nk.png'
-        )
+        if 'unseen_test_balanced_accuracy' in self.df.columns:
+            self._plot_bars(
+                x_col=self.x_col, 
+                y_col='unseen_test_balanced_accuracy', 
+                hue_col=self.hue_col, 
+                title=f'FFNN Truly Unseen Test Balanced Accuracy {self.title_suffix}', 
+                ylabel='Truly Unseen Test Balanced Accuracy',
+                outpath=self.outdir + 'unseen_balanced_accuracy_by_nk.png'
+            )
 
         # --- Graph 5: Grouped F1 Bar Chart (X=n, Hue=k) ---
         self._plot_bars(
@@ -1253,7 +1335,7 @@ def balanced_top_k(df: pd.DataFrame, group_cols, sort_col: str, total_k: int) ->
     return selected.drop(columns=['_group_rank'], errors='ignore')
 
 
-def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=None, group_x_col=None, group_hue_col=None):
+def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=None, group_x_col=None, group_hue_col=None, ignore_failed_runs=False):
     all_data = []
     data2 = True if "data2" in base_dir else False
     top_kmers_df = pd.DataFrame() # Placeholder top_kmers_csv file
@@ -1310,17 +1392,16 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                             print(f"Error deducing hk_lookup from log info in {log_path}: {e}")
 
                 # Extract top kmers from pair_kmers.csv files
-                elif file.endswith("expected_interactions.csv"):
-                    logger.log(f"Found expected interactions file: {file} in folder: {folder_name}")
-                    expected_interactions_path = os.path.join(folder_path, file)
+                elif file.endswith("normalized_interaction.csv"):
+                    logger.log(f"Found normalized interactions file: {file} in folder: {folder_name}")
+                    norm_int_rate_path = os.path.join(folder_path, file)
                     try:
-                        df_kmers = pd.read_csv(expected_interactions_path)
+                        df_kmers = pd.read_csv(norm_int_rate_path)
                         df_kmers = _unwrap_braced_entity_values(df_kmers, ["bact_entity", "phage_entity"])
                         df_kmers['folder'] = folder_name
-                        #
                         top_int_kmer_success = True
                     except Exception as e:
-                        logger.log(f"Error reading {expected_interactions_path}: {e}")
+                        logger.log(f"Error reading {norm_int_rate_path}: {e}")
             
             if top_int_kmer_success:
                 df_kmers["UPS"] = calculate_unified_score(metrics)
@@ -1340,8 +1421,8 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
     ### Sorting top_kmers_df by weighted PFI score (if weight_pfi flag is set)
     sort_by = "UPS"
     title_suffix = "(UPS)"
-    if "expected_interaction_score" in top_kmers_df.columns:
-        top_kmers_df = top_kmers_df.rename(columns={"expected_interaction_score": "PFI"})
+    if "norm_int_rate_score" in top_kmers_df.columns:
+        top_kmers_df = top_kmers_df.rename(columns={"norm_int_rate_score": "PFI"})
 
     if not top_kmers_df.empty:
         top_kmers_go = True
@@ -1407,7 +1488,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
             logger.log(f"Unable to process group_x_col: {group_x_col}, error: {e}. Defaulting to no grouping.")
 
         # Marking TP = 0 runs as failed runs for better visualization in the confusion matrix bar plot and heatmap
-        if 'TP' in df.columns:
+        if 'TP' in df.columns and not ignore_failed_runs:
             df['status'] = df.apply(lambda row: False if row['TP'] == 0 or row['TP'] is None else row['status'], axis=1)
         
         if args.filter_harsh:
@@ -1581,6 +1662,25 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 plotting_utils.plot_kmer_distribution(bact_annot_df, entity_type="bacterium", title_suffix=title_suffix)
                 plotting_utils.plot_kmer_gene_network(bact_annot_df, entity_type="bacterium", top_kmers=args.network_top_kmers)
                 plotting_utils.plot_kmer_against_ups_or_pfi(bact_annot_df, entity_type="bacterium")
+
+            if not phage_annot_df.empty:
+                plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
+                plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
+                plotting_utils.plot_kmer_gene_network(phage_annot_df, entity_type="phage", top_kmers=args.network_top_kmers)
+                plotting_utils.plot_kmer_against_ups_or_pfi(phage_annot_df, entity_type="phage")
+
+        except Exception as e:
+            logger.log(f"Error during gene annotation plotting: {e}")
+
+        try:
+            plotting_utils.plot_kmer_occurrence_per_partition()
+        except Exception as e:
+            logger.log(f"Error during k-mer occurrence plotting: {e}")
+
+        try:
+            title_suffix = f"({sort_by})" if sort_by in top_kmers_df.columns else ""
+            plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir), sort_by=sort_by)
+            if not bact_annot_df.empty:
                 GA.plot_annotation_pca(
                     annot_df=bact_annot_df,
                     entity_type="bacterium",
@@ -1592,10 +1692,6 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 )
 
             if not phage_annot_df.empty:
-                plotting_utils.plot_top_genes(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
-                plotting_utils.plot_kmer_distribution(phage_annot_df, entity_type="phage", title_suffix=title_suffix)
-                plotting_utils.plot_kmer_gene_network(phage_annot_df, entity_type="phage", top_kmers=args.network_top_kmers)
-                plotting_utils.plot_kmer_against_ups_or_pfi(phage_annot_df, entity_type="phage")
                 GA.plot_annotation_pca(
                     annot_df=phage_annot_df,
                     entity_type="phage",
@@ -1606,20 +1702,22 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                     title_suffix=title_suffix,
                 )
 
-            # Hostrange heatmaps (requires --hostrange_excel)
-            if args.hostrange_excel:
+        except Exception as e:
+            logger.log(f"Error during PCA plotting: {e}")
+        
+        if args.hostrange_excel:
+            try:
+                # Hostrange heatmaps (requires --hostrange_excel)
                 GA.plot_gene_hostrange_heatmaps(
                     bact_annot_df=bact_annot_df if not bact_annot_df.empty else pd.DataFrame(),
                     phage_annot_df=phage_annot_df if not phage_annot_df.empty else pd.DataFrame(),
                     input_excel=args.hostrange_excel,
                     sheet_name=args.hostrange_sheet,
                     outdir=str(outdir),
-                    top_n=2,
-                )
+                    top_n=2)
 
-
-        except Exception as e:
-            raise ValueError(f"Error during gene annotation plotting: {e}")
+            except Exception as e:
+                logger.log(f"Error during hostrange heatmap plotting: {e}")
 
         ### Combined plotting
         frames = []
@@ -1649,7 +1747,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
                 plotting_utils.plot_species_distribution_grid(
                     collected_df, value_col='entity_label', top_n=30)
         except Exception as e:
-            raise ValueError(f"Error during combined annotation plotting: {e}")
+            logger.log(f"Error during combined annotation plotting: {e}")
 
         # Concatenate annotation results and save
         try: 
@@ -1726,6 +1824,6 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
 if __name__ == "__main__":
     if parse_arguments().base_dir:
         args = parse_arguments()
-        main(base_dir=args.base_dir.strip(" "), outdir=args.out_dir.strip(" "), x_col=args.x_col, hue_col=args.hue_col, group_x_col=args.group_x_col, group_hue_col=args.group_hue_col)
+        main(base_dir=args.base_dir.strip(" "), outdir=args.out_dir.strip(" "), x_col=args.x_col, hue_col=args.hue_col, group_x_col=args.group_x_col, group_hue_col=args.group_hue_col, ignore_failed_runs=args.ignore_failed_runs)
     else:
         main()

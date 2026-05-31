@@ -561,14 +561,26 @@ def model_idx_to_kmer(idx, num_features_per_entity, feature_indices, idx_to_minh
     original_col_idx = feature_indices[idx % num_features_per_entity]
     return idx_to_minhash[original_col_idx]
 
-def regain_kmers(k: int, n: int, prefix : str, sourmash: bool, top_n: int = 20, idx_to_minhash: dict = None, 
-                 mapping_func=None, mapping_args=None, attributions=None, 
+def regain_kmers(k: int, n: int, prefix: str, sourmash: bool, top_n: int = 20,
+                 idx_to_minhash: dict = None,
+                 mapping_func=None, mapping_args=None, attributions=None,
+                 hk_translation_dict: dict = None,
+                 hk_translation_dicts: list = None,
                  TS: bool = False, logging_on: bool = False, logfile=None):
     """
-    Standalone function to regain original k-mer features corresponding to top feature indices.
-    
-    Returns:
-        tuple: (top_indices, top_values, decoded_kmers_list)
+    Regain original k-mer features for top feature indices.
+
+    Hash -> kmer lookup precedence:
+      1. hk_translation_dict (single dict, in-memory)
+      2. hk_translation_dicts (list of dicts, merged left-to-right)
+      3. {prefix}/hk_lookup_n{n}_k{k}.json on disk (legacy file fallback)
+
+    If idx_to_minhash is provided, each idx is decoded directly via
+    idx_to_minhash[idx] -> hk_translation_dict[hash]. mapping_func / mapping_args
+    are only used when idx_to_minhash is None (the attribution-based flow).
+
+    Indices whose hash cannot be resolved are skipped with a warning rather than
+    raising, so a single missing hash never poisons the whole call.
     """
     if sourmash:
         print("Sourmash-based model does not support k-mer decoding.")
@@ -576,9 +588,9 @@ def regain_kmers(k: int, n: int, prefix : str, sourmash: bool, top_n: int = 20, 
 
     # 1. Determine top indices and values
     if idx_to_minhash is not None:
-        top_idx = list(idx_to_minhash.keys()) 
+        top_idx = list(idx_to_minhash.keys())
         top_vals = "N/A"
-        if TS: print(f"Using provided idx_to_minhash for top indices: {top_idx}")
+        if TS: print(f"Using provided idx_to_minhash for top indices ({len(top_idx)} entries).")
     else:
         if attributions is None:
             raise ValueError("Attributions must be provided if idx_to_minhash is None.")
@@ -588,48 +600,81 @@ def regain_kmers(k: int, n: int, prefix : str, sourmash: bool, top_n: int = 20, 
         topk = torch.topk(abs_avg, k_count)
         top_idx = topk.indices.cpu().numpy()
         top_vals = avg_attr[top_idx].cpu().numpy()
-        if TS: 
+        if TS:
             print(f"Top {top_n} indices:", top_idx)
             print("Mean attributions:", top_vals)
-        if logging_on and logfile: 
+        if logging_on and logfile:
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Top {top_n} indices: {top_idx}', file=logfile)
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Mean attributions: {top_vals}', file=logfile)
 
-    # 2. Setup mapping
-    if mapping_func is None:
-        if mapping_args is None:
-            raise ValueError("If no mapping_func is provided, mapping_args must be provided.")
-        mapping_func = model_idx_to_kmer
+    # 2. Resolve hk_translation_dict (in-memory first, then merge list, then disk fallback)
+    merged_hk = {}
+    if hk_translation_dicts:
+        for d in hk_translation_dicts:
+            if d:
+                merged_hk.update(d)
+    if hk_translation_dict:
+        merged_hk.update(hk_translation_dict)
 
-    # 3. Load hk_translation_dict to translate hash to kmer
-    hash_kmer_dict_path = os.path.join(data_prod_path, f"{prefix}/hk_lookup_n{n}_k{k}.json")
-    if os.path.exists(hash_kmer_dict_path):
-        with open(hash_kmer_dict_path, "r") as f:
-            hk_translation_dict = json.load(f)
+    if not merged_hk:
+        hash_kmer_dict_path = os.path.join(data_prod_path, f"{prefix}/hk_lookup_n{n}_k{k}.json")
+        if os.path.exists(hash_kmer_dict_path):
+            with open(hash_kmer_dict_path, "r") as f:
+                disk_hk = json.load(f)
             try:
-                hk_translation_dict = {int(k): v for k, v in hk_translation_dict.items()} # convert keys back to int after loading from json
+                merged_hk = {int(k_): v for k_, v in disk_hk.items()}
             except Exception as e:
                 raise ValueError(f"Error converting hk_translation_dict keys to int: {e}")
+        else:
+            print(f"Hash k-mer lookup dictionary not found at {hash_kmer_dict_path}.")
+            merged_hk = {}
 
-    else:
-        print(f"Hash k-mer lookup dictionary not found at {hash_kmer_dict_path}. Please ensure the file exists or run the script to generate it.")
-        hk_translation_dict = None
+    # 3. Setup mapping_func only when needed (attribution flow)
+    if idx_to_minhash is None:
+        if mapping_func is None:
+            if mapping_args is None:
+                raise ValueError("If no mapping_func is provided, mapping_args must be provided.")
+            mapping_func = model_idx_to_kmer
 
-    # 4. Decode
-    decoded_kmers_dict = {}  # Changed from list to dict
+    # 4. Decode, skipping (rather than crashing on) any unresolvable index
+    decoded_kmers_dict = {}
+    missed_hash, missed_kmer = [], []
     for idx in top_idx:
-        kmer_hash_val = mapping_func(idx, *mapping_args)
-        decoded_kmers_dict[int(idx)] = hk_translation_dict[kmer_hash_val]
-    
-    if idx_to_minhash is not None:
-        pass
-    else:
-        if TS: 
+        if idx_to_minhash is not None:
+            # Direct path: we already know which hash this idx points to
+            kmer_hash_val = idx_to_minhash.get(int(idx) if not isinstance(idx, int) else idx,
+                                               idx_to_minhash.get(idx))
+            if kmer_hash_val is None:
+                missed_hash.append(int(idx))
+                continue
+        else:
+            try:
+                kmer_hash_val = mapping_func(idx, *mapping_args)
+            except KeyError as e:
+                missed_hash.append((int(idx), e.args[0] if e.args else None))
+                continue
+
+        decoded = merged_hk.get(kmer_hash_val)
+        if decoded is None:
+            missed_kmer.append((int(idx), kmer_hash_val))
+            continue
+        decoded_kmers_dict[int(idx)] = decoded
+
+    if (missed_hash or missed_kmer):
+        msg = (f"regain_kmers: kept {len(decoded_kmers_dict)}/{len(top_idx)} indices "
+               f"({len(missed_hash)} had no hash mapping, {len(missed_kmer)} had no kmer in lookup).")
+        print(msg)
+        if logging_on and logfile:
+            print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} {msg}', file=logfile)
+            if missed_kmer[:5]:
+                print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Sample missing-kmer (idx, hash): {missed_kmer[:5]}', file=logfile)
+
+    if idx_to_minhash is None:
+        if TS:
             print("Decoded kmers mapping:", decoded_kmers_dict)
-        
-        if logging_on and logfile: 
+        if logging_on and logfile:
             print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Decoded kmers: {decoded_kmers_dict}', file=logfile)
-    
+
     return top_idx, top_vals, decoded_kmers_dict
 
 def get_strain_name(hash_value, hash_lookup):
@@ -642,7 +687,7 @@ def get_strain_name(hash_value, hash_lookup):
             return strains
     return str(hash_value)
 
-def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expected_interactions: dict, hash_lookup: dict, hk_translation_dict: dict,
+def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, score_dict: dict, hash_lookup: dict, hk_translation_dict: dict,
                            sort_by_ratio: bool = False, logging_on : bool = False, outdir: str = None, bact_clusters: pd.DataFrame = None):
 
     # Divide interaction score by occurrence count
@@ -781,7 +826,7 @@ def plot_interaction_pairs(interaction_pairs: dict, occurence_pairs: dict, expec
         scaled_pivot_df = pivot_df.copy()
         for phage in scaled_pivot_df.index:
             for bact in scaled_pivot_df.columns:
-                expected_value = expected_interactions.get((bact, phage), 1)  # Avoid division by zero
+                expected_value = score_dict.get((bact, phage), 1)  # Avoid division by zero
                 if expected_value != 0:
                     scaled_pivot_df.at[phage, bact] = pivot_df.at[phage, bact] / expected_value
                 else:

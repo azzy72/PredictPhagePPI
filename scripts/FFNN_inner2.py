@@ -22,7 +22,7 @@ from datetime import datetime
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold, train_test_split, GroupShuffleSplit
-from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score, balanced_accuracy_score
+from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score, balanced_accuracy_score, precision_recall_curve, precision_score, recall_score, f1_score
 from scipy.special import expit
 from imblearn.over_sampling import SMOTE
 
@@ -45,6 +45,7 @@ def parse_arguments():
     # Data Source
     parser.add_argument("--use_encoded", action="store_true", help="Use encoded_sketches instead of SM_sketches")
     parser.add_argument("--data2", action="store_true", help="Use the second dataset with EOP values instead of binary interactions")
+    parser.add_argument("--train_d1_test_d2", action="store_true", help="Train on dataset 1 (default hostrange) and test on dataset 2 (EOP). Builds a unified minhash feature space across the two datasets so the trained model can be applied to the held-out dataset.")
     parser.add_argument("--all_phages", action="store_true", help="Use all phages in the dataset, including those without interaction data in hostrange (these will be labeled as non-interactions).")
     parser.add_argument("--bits_encoded", type=str, default="4", help="(Optional) specify which type of bit encoding using in encoded_sketches (e.g. 4 for phage_encode4bit_n400_k12)")
     parser.add_argument("--out", type=str, help="custom directory to write to in nn_runs/")
@@ -87,8 +88,10 @@ def parse_arguments():
     parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
 
     # Hyperparameters
+    parser.add_argument('--patience', type=int, default=0, help='Number of epochs to wait for validation loss improvement before early stopping.')
     parser.add_argument("--n_epochs", type=int, default=50)
     parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--weight_decay", type=float, default=0, help="Weight decay (L2 regularization) for the Adam optimizer")
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--test_split", type=float, default=0.2)
     parser.add_argument("--val_split", type=float, default=0.2)
@@ -101,6 +104,14 @@ def parse_arguments():
     # Requirement: kf_n_splits must be > 1 if --cv is on
     if args.cv and args.kf_n_splits <= 1:
         parser.error("--kf_n_splits must be greater than 1 when --cv is enabled.")
+
+    # Requirement: --train_d1_test_d2 cannot be combined with --data2 (it forces a specific train=D1/test=D2 setup)
+    if args.train_d1_test_d2 and args.data2:
+        parser.error("--train_d1_test_d2 cannot be used together with --data2 (the cross-dataset mode trains on D1 and tests on D2 by definition).")
+
+    # Requirement: --train_d1_test_d2 cannot be combined with --test_on_excluded (the test set is dataset 2, not the excluded pairs)
+    if args.train_d1_test_d2 and args.test_on_excluded:
+        parser.error("--train_d1_test_d2 cannot be used with --test_on_excluded (the test set is dataset 2, not an excluded subset of dataset 1).")
 
     # Requirement: exclude_pairs cannot be used with exclude_clusters
     if args.exclude_pairs and args.exclude_clusters:
@@ -149,9 +160,13 @@ def parse_arguments():
         print("WARNING: --run_ga_on_pfi will be ignored because --perform_pfi is not set. It doesn't make sense to run gene analysis on pairwise feature importance if we're not performing feature importance analysis at all.", file=sys.stderr)
         args.run_ga_on_pfi = False
     
-    # Reequirement: if --perform_pfi_full is True, then --perform_pfi must also be True.
+    # Requirement: if --perform_pfi_full is True, then --perform_pfi must also be True.
     if args.perform_pfi_full and not args.perform_pfi:
         args.perform_pfi = True
+    
+    # Dependency: if --patience is not used, then patience will be equal to number of epochs (i.e. no early stopping). This is not an error, but should be noted.
+    if args.patience == 0:
+        args.patience = args.n_epochs
 
     # # Modification: automatically set test_on_excluded to True if exclude_pairs or exclude_clusters is used, since it doesn't make sense to have a test split from the main dataset if the excluded pairs/clusters are not in the test set
     # if (args.exclude_pairs or args.exclude_clusters) and not args.test_on_excluded:
@@ -203,6 +218,53 @@ class MLP(nn.Module):
         )
     def forward(self, x):
         return self.net(x)
+
+class EarlyStopping:
+    """Early stops the training if validation loss doesn't improve after a given patience."""
+    def __init__(self, patience=10, verbose=False, delta=0, path='checkpoint.pt'):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+                            Default: 10
+            verbose (bool): If True, prints a message for each validation loss improvement. 
+                            Default: False
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+                            Default: 0
+            path (str): Path for the checkpoint to be saved to.
+                            Default: 'checkpoint.pt'
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = float('inf')
+        self.delta = delta
+        self.path = path
+
+    def __call__(self, val_loss, model):
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        """Saves model when validation loss decreases."""
+        if self.verbose:
+            print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
+        torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
 
 
 class helper:
@@ -319,6 +381,122 @@ def main():
     host_range_data = binarize_host_range(hostrange_df_to_dict(host_range_df), continous=False)
     host_range_data = {bact.replace("_reoriented", ""): interactions for bact, interactions in host_range_data.items()} # if "_reoriented" is in the bacteria names in host_range_data, remove it to match the bacteria names in the presence matrix.
 
+    ### 4b. Cross-Dataset Load (train on D1, test on D2) ###
+    # When --train_d1_test_d2 is set, the primary load above is dataset 1 (because --data2 was forced off).
+    # Here we additionally load dataset 2 and unify the minhash feature space across both,
+    # so the trained model can be applied to D2 entities at test time.
+    binary_matrix_d2 = None
+    entity_to_index_d2 = None
+    phage_minhash_data_d2 = None
+    bact_minhash_data_d2 = None
+    host_range_data_d2 = None
+    bact_lookup_d2 = None
+    if args.train_d1_test_d2:
+        prefix_d2 = "encoded_sketches" if args.use_encoded else "SM_sketches"
+        prefix_d2 = f"{prefix_d2}_data2"
+        if args.all_phages:
+            prefix_d2 = f"{prefix_d2}_allphages"
+
+        files_prefix_dirs_d2 = os.listdir(os.path.join(data_prod_path, prefix_d2))
+
+        phage_dir_pattern_d2 = re.compile(f".*n{pn}_k{pk}.*")
+        input_phage_path_d2 = [file for file in files_prefix_dirs_d2 if phage_dir_pattern_d2.match(file) and "phage" in file.lower()]
+        if len(input_phage_path_d2) == 0:
+            raise FileNotFoundError(f"No D2 directory found for phage minhash data with n={pn} and k={pk} in {os.path.join(data_prod_path, prefix_d2)}")
+        elif len(input_phage_path_d2) > 1:
+            raise ValueError(f"Multiple D2 directories found for phage minhash data with n={pn} and k={pk} in {os.path.join(data_prod_path, prefix_d2)}: {input_phage_path_d2}")
+        input_phage_path_d2 = f"{prefix_d2}/{input_phage_path_d2[0]}/"
+
+        bact_dir_pattern_d2 = re.compile(f".*n{bn}_k{bk}.*")
+        input_bact_path_d2 = [file for file in files_prefix_dirs_d2 if bact_dir_pattern_d2.match(file) and "bact" in file.lower()]
+        if len(input_bact_path_d2) == 0:
+            raise FileNotFoundError(f"No D2 directory found for bacteria minhash data with n={bn} and k={bk} in {os.path.join(data_prod_path, prefix_d2)}")
+        elif len(input_bact_path_d2) > 1:
+            raise ValueError(f"Multiple D2 directories found for bacteria minhash data with n={bn} and k={bk} in {os.path.join(data_prod_path, prefix_d2)}: {input_bact_path_d2}")
+        input_bact_path_d2 = f"{prefix_d2}/{input_bact_path_d2[0]}/"
+
+        presmat_path_d2 = f"{prefix_d2}/PresMat_{presmat_suffix}/"
+        full_presmat_path_d2 = os.path.join(data_prod_path, presmat_path_d2)
+        print(f"[cross-dataset] Recognized D2 paths\ninput_phage_path_d2:\t{input_phage_path_d2}\ninput_bact_path_d2:\t{input_bact_path_d2}\npresmat_path_d2:\t{presmat_path_d2}")
+
+        if args.force_presmat or not os.path.exists(full_presmat_path_d2):
+            print("[cross-dataset] Reconstructing D2 presence_matrix...")
+            binary_matrix_d2, entity_to_index_d2, minhash_to_index_d2, phage_minhash_data_d2, bact_minhash_data_d2 = presence_matrix(
+                phage_minhash_dir=os.path.join(data_prod_path, input_phage_path_d2),
+                bact_minhash_dir=os.path.join(data_prod_path, input_bact_path_d2),
+                k=[bk, pk], n=[bn, pn], reversecomp_data=False, TS=True, data2=True)
+            os.makedirs(full_presmat_path_d2, exist_ok=True)
+            with open(os.path.join(full_presmat_path_d2, "binary_matrix.pkl"), "wb") as f: pickle.dump(binary_matrix_d2, f)
+            with open(os.path.join(full_presmat_path_d2, "entity_to_index.pkl"), "wb") as f: pickle.dump(entity_to_index_d2, f)
+            with open(os.path.join(full_presmat_path_d2, "phage_minhash_data.pkl"), "wb") as f: pickle.dump(phage_minhash_data_d2, f)
+            with open(os.path.join(full_presmat_path_d2, "bact_minhash_data.pkl"), "wb") as f: pickle.dump(bact_minhash_data_d2, f)
+            with open(os.path.join(full_presmat_path_d2, "minhash_to_index.pkl"), "wb") as f: pickle.dump(minhash_to_index_d2, f)
+        else:
+            print("[cross-dataset] Loading D2 presence matrix from pre-saved files...")
+            with open(os.path.join(full_presmat_path_d2, "binary_matrix.pkl"), "rb") as f: binary_matrix_d2 = pickle.load(f)
+            with open(os.path.join(full_presmat_path_d2, "entity_to_index.pkl"), "rb") as f: entity_to_index_d2 = pickle.load(f)
+            with open(os.path.join(full_presmat_path_d2, "phage_minhash_data.pkl"), "rb") as f: phage_minhash_data_d2 = pickle.load(f)
+            with open(os.path.join(full_presmat_path_d2, "bact_minhash_data.pkl"), "rb") as f: bact_minhash_data_d2 = pickle.load(f)
+            with open(os.path.join(full_presmat_path_d2, "minhash_to_index.pkl"), "rb") as f: minhash_to_index_d2 = pickle.load(f)
+
+        # D2 host range
+        bact_lookup_d2, host_range_df_d2 = call_hostrange_df(os.path.join(raw_data_path, "phagehost_KU/data2_EOP.xlsx"), sheet_name="Sheet1", data2=True)
+        host_range_data_d2 = binarize_host_range(hostrange_df_to_dict(host_range_df_d2), continous=False)
+        host_range_data_d2 = {bact.replace("_reoriented", ""): interactions for bact, interactions in host_range_data_d2.items()}
+
+        # Unify minhash feature space across D1 and D2 so both binary matrices share column indices
+        all_minhashes = sorted(set(minhash_to_index.keys()) | set(minhash_to_index_d2.keys()))
+        unified_minhash_to_index = {mh: i for i, mh in enumerate(all_minhashes)}
+
+        def _reproject(bm, old_mh_to_idx, new_mh_to_idx):
+            n_rows = bm.shape[0]
+            n_cols = len(new_mh_to_idx)
+            out = np.zeros((n_rows, n_cols), dtype=bm.dtype)
+            for mh, old_idx in old_mh_to_idx.items():
+                out[:, new_mh_to_idx[mh]] = bm[:, old_idx]
+            return out
+
+        binary_matrix = _reproject(binary_matrix, minhash_to_index, unified_minhash_to_index)
+        binary_matrix_d2 = _reproject(binary_matrix_d2, minhash_to_index_d2, unified_minhash_to_index)
+        minhash_to_index = unified_minhash_to_index
+
+        # Refresh idx_to_entity for D1 in the unified space, plus build a D2 mapping
+        idx_to_entity = obtain_idx_to_entity_mapping(
+            phage_minhash_data=phage_minhash_data,
+            bact_minhash_data=bact_minhash_data,
+            minhash_to_index=minhash_to_index
+        )
+        idx_to_entity_d2 = obtain_idx_to_entity_mapping(
+            phage_minhash_data=phage_minhash_data_d2,
+            bact_minhash_data=bact_minhash_data_d2,
+            minhash_to_index=minhash_to_index
+        )
+        print(f"[cross-dataset] Unified feature space: {len(unified_minhash_to_index)} columns (D1 only: {len(set(minhash_to_index_d2.keys()) ^ set(all_minhashes))} -- D2 only similar diff)")
+
+        # Load D2 bacterial clusters for PFI plotting / grouping (PFI under cross-dataset operates on D2).
+        bact_clusters_d2 = None
+        try:
+            bact_clusters_d2 = pd.read_csv(
+                os.path.join(data_prod_path, f"{prefix_d2}", "sim_matrices", f"combined_bact_clusters_n{n}_k{k}.csv"),
+                index_col=0,
+            )
+        except Exception as e:
+            print(f"[cross-dataset] WARNING: Could not load D2 bact_clusters: {e}", file=sys.stderr)
+
+        # Load D2 hash->kmer translation dict (for decoded k-mer rendering in PFI).
+        hk_translation_dict_d2 = None
+        if args.use_encoded:
+            hash_kmer_dict_path_d2 = os.path.join(data_prod_path, f"{prefix_d2}/hk_lookup_n{n}_k{k}.json")
+            if os.path.exists(hash_kmer_dict_path_d2):
+                with open(hash_kmer_dict_path_d2, "r") as f:
+                    hk_translation_dict_d2 = json.load(f)
+                    try:
+                        hk_translation_dict_d2 = {int(k): v for k, v in hk_translation_dict_d2.items()}
+                    except Exception as e:
+                        raise ValueError(f"Error converting hk_translation_dict_d2 keys to int: {e}")
+            else:
+                print(f"[cross-dataset] D2 hash k-mer lookup not found at {hash_kmer_dict_path_d2}.")
+
     ### 5. Logging Setup ###
     outdir, logfile = None, None
     if args.logging:
@@ -382,6 +560,9 @@ def main():
         random.seed(42)
         random.shuffle(feature_indices)
         binary_matrix = binary_matrix[:, feature_indices]
+        if args.train_d1_test_d2 and binary_matrix_d2 is not None:
+            # Apply identical column permutation to D2 so it stays aligned with D1
+            binary_matrix_d2 = binary_matrix_d2[:, feature_indices]
     else:
         feature_indices = list(range(binary_matrix.shape[1]))
     
@@ -482,12 +663,52 @@ def main():
             X_idx.append(cidx)
             cidx += 1
 
+    # --- Cross-dataset: build a test set from D2 entities + D2 hostrange ---
+    X_test_cross, y_test_cross, rows_meta_test_cross = [], [], []
+    if args.train_d1_test_d2:
+        phage_names_d2 = list(phage_minhash_data_d2.keys())
+        bacteria_names_d2 = list(bact_minhash_data_d2.keys())
+        if args.randomize:
+            random.seed(43)  # different seed than D1 so the D2 ordering is independent
+            random.shuffle(bacteria_names_d2)
+            random.shuffle(phage_names_d2)
+
+        for bact in tqdm(bacteria_names_d2, desc="Building D2 test set"):
+            if args.exclude_noninteractions and not any(host_range_data_d2.get(bact, {}).values()):
+                continue
+            for phage in phage_names_d2:
+                if phage not in host_range_data_d2.get(bact, {}):
+                    continue
+                score = host_range_data_d2[bact][phage]
+                if bact_first:
+                    features = np.concatenate((binary_matrix_d2[entity_to_index_d2[bact]],
+                                               binary_matrix_d2[entity_to_index_d2[phage]]))
+                    rows_meta_test_cross.append((bact, phage))
+                else:
+                    features = np.concatenate((binary_matrix_d2[entity_to_index_d2[phage]],
+                                               binary_matrix_d2[entity_to_index_d2[bact]]))
+                    rows_meta_test_cross.append((phage, bact))
+                X_test_cross.append(features)
+                y_test_cross.append(score)
+
+        if args.logging:
+            logging.info(f'[cross-dataset] Built D2 test set with {len(X_test_cross)} pairs.')
+
     X, y = np.array(X), np.array(y)
     X_excl, y_excl = np.array(X_excl), np.array(y_excl)
-    if sum(y_excl) < 1:
+    X_test_cross = np.array(X_test_cross) if len(X_test_cross) else np.empty((0, X.shape[1] if len(X) else 0))
+    y_test_cross = np.array(y_test_cross)
+    # Skip the "no positives in excluded test" early-return when running in cross-dataset mode
+    # (the test set comes from D2 and is checked separately below).
+    if not args.train_d1_test_d2 and sum(y_excl) < 1:
         if args.logging:
             logging.error(f'No positive values in test\n{traceback.print_exc()}')
         print("No positive values in test")
+        return
+    if args.train_d1_test_d2 and sum(y_test_cross) < 1:
+        if args.logging:
+            logging.error(f'No positive interactions found in D2 test set. Aborting cross-dataset run.')
+        print("No positive values in D2 test set")
         return
     
     if args.logging:
@@ -502,7 +723,42 @@ def main():
             logging.info(f'{len(X_excl)} represent the excluded pairs.')
     ### 7. Splitting & Scaling ###
     train_idx, test_idx = X_idx, X_excl_idx
-    if args.train_by_cluster:
+    if args.train_d1_test_d2:
+        # Train on the full D1 pool; test directly on the D2 set built above.
+        X_train_f, y_train_f = X, y
+        X_test, y_test = X_test_cross, y_test_cross
+
+        if args.use_val and not args.cv:
+            # Carve a validation slice out of D1, stratified on the D1 labels
+            try:
+                train_local_idx, val_local_idx = train_test_split(
+                    np.arange(len(y_train_f)),
+                    test_size=args.val_split,
+                    random_state=42,
+                    stratify=y_train_f,
+                )
+            except ValueError:
+                # Fall back to unstratified split if a class is too small to stratify
+                train_local_idx, val_local_idx = train_test_split(
+                    np.arange(len(y_train_f)),
+                    test_size=args.val_split,
+                    random_state=42,
+                )
+            X_val = X_train_f[val_local_idx]
+            y_val = y_train_f[val_local_idx]
+            X_train_f = X_train_f[train_local_idx]
+            y_train_f = y_train_f[train_local_idx]
+            metadata_train_full = np.array(rows_meta, dtype=object)[train_local_idx]
+        else:
+            X_val, y_val = None, None
+            metadata_train_full = np.array(rows_meta, dtype=object)
+
+        metadata_test = np.array(rows_meta_test_cross, dtype=object)
+        if args.logging:
+            logging.info(f'[cross-dataset] Train (D1): {X_train_f.shape[0]} pairs, '
+                         f'Val: {0 if X_val is None else X_val.shape[0]} pairs, '
+                         f'Test (D2): {X_test.shape[0]} pairs')
+    elif args.train_by_cluster:
         groups = bact_clusters.loc[[m[0] for m in rows_meta], 'Cluster'].values
         val_clusters = None
         test_clusters = None
@@ -585,8 +841,11 @@ def main():
             if not args.use_val:
                 X_val, y_val = None, None
     
-    metadata_np = np.array(rows_meta, dtype=object)
-    metadata_train_full, metadata_test = metadata_np[train_idx], metadata_np[test_idx]
+    if not args.train_d1_test_d2:
+        # Standard path: derive metadata splits from the D1 indices.
+        # In cross-dataset mode metadata_train_full / metadata_test are already set above.
+        metadata_np = np.array(rows_meta, dtype=object)
+        metadata_train_full, metadata_test = metadata_np[train_idx], metadata_np[test_idx]
 
     scaler = StandardScaler()
     X_train_f = scaler.fit_transform(X_train_f)
@@ -620,6 +879,11 @@ def main():
 
         if args.logging: logging.info(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting cross-validation with {kf.get_n_splits()} folds...')
 
+        # Storage for cross-fold ensembling + threshold tuning.
+        fold_models = []          # one trained MLP per fold (kept for soft-vote test ensemble)
+        val_probs_buf = []        # final-epoch validation sigmoid probabilities, concatenated across folds
+        val_labels_buf = []       # corresponding ground-truth labels
+
         for train_idx, val_idx in kf.split(X_train_f):
             print(f"Fold {fold}:")
             if args.logging: logging.info(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Fold {fold}...')
@@ -640,10 +904,32 @@ def main():
             train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
             val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-            # Initialize model, criterion, and optimizer
+            # Class-balanced BCE: pos_weight = #neg / #pos in THIS fold's training data.
+            # Without this, the BCE gradient is dominated by the majority class and the
+            # final-layer bias collapses negative, predicting class 0 for everything.
+            n_pos_fold = int((y_train_fold == 1).sum())
+            n_neg_fold = int((y_train_fold == 0).sum())
+            pw_value = (n_neg_fold / n_pos_fold) if n_pos_fold > 0 else 1.0
+            pos_weight = torch.tensor([pw_value], dtype=torch.float, device=device)
+            if args.logging:
+                logging.info(f'Fold {fold} pos_weight = {pw_value:.4f} (neg={n_neg_fold}, pos={n_pos_fold})')
+
+            # Initialize model, criterion, optimizer and early stopping
             model = MLP(input_dim=X_train_f.shape[1]).to(device)
-            criterion = nn.BCEWithLogitsLoss()
-            optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+            optimizer = optim.AdamW(
+                model.parameters(), 
+                lr=args.learning_rate,
+                weight_decay=args.weight_decay
+            )
+            # optimizer = optim.Adam(
+            #     model.parameters(), 
+            #     lr=args.learning_rate,
+            #     weight_decay=args.weight_decay
+            # )
+            checkpoint_path = os.path.join(outdir, "early_stop_checkpoint.pth")
+            verbose = not (args.patience == args.n_epochs) # Only print early stopping messages if patience is less than total epochs
+            early_stopping = EarlyStopping(patience=args.patience, verbose=verbose, path=checkpoint_path)
 
             # Training loop for this fold
             for epoch in range(1, args.n_epochs + 1):
@@ -679,10 +965,32 @@ def main():
                     val_acc = correct / total if total > 0 else float('nan')
                     val_losses.append(val_loss)
                     val_accuracies.append(val_acc)
+                avg_val_loss = val_loss / len(val_loader.dataset)
 
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
-                if args.logging: 
+                if args.logging:
                     logging.info(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}')
+
+                # Check early stopping
+                early_stopping(avg_val_loss, model)
+    
+                if early_stopping.early_stop:
+                    print("Early stopping triggered. Training halted.")
+                    break
+            
+            # 3. Load the best saved model state back into the model
+            print("Loading best model weights from checkpoint...")
+            model.load_state_dict(torch.load(checkpoint_path))
+
+            # End-of-fold pass on the validation set to harvest probs/labels for
+            # cross-fold threshold tuning. Also keep this fold's model for the
+            # soft-vote test ensemble.
+            model.eval()
+            with torch.no_grad():
+                fold_val_probs = torch.sigmoid(model(X_val_t.to(device))).cpu().numpy().flatten()
+            val_probs_buf.append(fold_val_probs)
+            val_labels_buf.append(y_val_fold.flatten())
+            fold_models.append(model)
 
             fold += 1
         fold -= 1 # Adjust fold count after loop to reflect actual number of folds completed
@@ -711,8 +1019,22 @@ def main():
             val_ds = TensorDataset(X_val_t, y_val_t)
             val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
+        # Class-balanced BCE for the non-CV path too (see CV branch above for why).
+        n_pos_tr = int((y_train_f == 1).sum())
+        n_neg_tr = int((y_train_f == 0).sum())
+        pw_value = (n_neg_tr / n_pos_tr) if n_pos_tr > 0 else 1.0
+        pos_weight = torch.tensor([pw_value], dtype=torch.float, device=device)
+        if args.logging:
+            logging.info(f'Non-CV pos_weight = {pw_value:.4f} (neg={n_neg_tr}, pos={n_pos_tr})')
+
+        # Buffers kept empty so the downstream threshold-tuning code is uniform
+        # across CV / non-CV paths.
+        fold_models = []
+        val_probs_buf = []
+        val_labels_buf = []
+
         model = MLP(input_dim=X_train_f.shape[1]).to(device)
-        criterion = nn.BCEWithLogitsLoss() #Loss function
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight) #Loss function (class-balanced)
         optimizer = optim.Adam(model.parameters(), lr=args.learning_rate) #Optimizes weights and biases
 
         # Training loop
@@ -757,6 +1079,14 @@ def main():
             else:
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}")
                 if args.logging: logging.info(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f}')
+
+        # Final pass on the validation set to harvest probs/labels for threshold tuning.
+        if args.use_val and X_val is not None:
+            model.eval()
+            with torch.no_grad():
+                final_val_probs = torch.sigmoid(model(X_val_t.to(device))).cpu().numpy().flatten()
+            val_probs_buf.append(final_val_probs)
+            val_labels_buf.append(y_val.flatten())
     
     # Appropriating test and excluded sets
     X_test_t = torch.from_numpy(X_test).float().to(device)
@@ -768,37 +1098,99 @@ def main():
         y_test_unseen_t = torch.from_numpy(y_test_unseen.reshape(-1, 1)).float().to(device)
     
     ### 9. Accuracy and training loss ###
-    # Evaluation on test set: loss + accuracy --------
+    # ------------------------------------------------------------------
+    # 9a. Pick the best classification threshold from validation predictions.
+    #     With class-balanced BCE the raw logit distribution shifts away from 0,
+    #     so a hard 0.5 cutoff is no longer the right operating point. We sweep
+    #     thresholds and pick whichever maximises validation F1. Falls back to
+    #     0.5 if no validation predictions were collected.
+    # ------------------------------------------------------------------
+    if len(val_probs_buf) > 0 and len(val_labels_buf) > 0:
+        val_probs_all = np.concatenate(val_probs_buf).astype(np.float64)
+        val_labels_all = np.concatenate(val_labels_buf).astype(np.int64)
+        if val_labels_all.sum() > 0 and val_labels_all.sum() < len(val_labels_all):
+            prec_grid, rec_grid, thr_grid = precision_recall_curve(val_labels_all, val_probs_all)
+            # precision_recall_curve returns one more p/r point than thresholds.
+            f1_grid = np.zeros_like(prec_grid)
+            denom = prec_grid + rec_grid
+            mask = denom > 0
+            f1_grid[mask] = 2 * prec_grid[mask] * rec_grid[mask] / denom[mask]
+            best_idx = int(np.argmax(f1_grid[:-1])) if len(f1_grid) > 1 else 0
+            best_t = float(thr_grid[best_idx]) if len(thr_grid) > 0 else 0.5
+            best_val_f1 = float(f1_grid[best_idx])
+            if args.logging:
+                logging.info(f'Validation threshold sweep: best threshold={best_t:.4f}, val F1={best_val_f1:.4f} '
+                             f'(over {len(val_probs_all)} val samples, {int(val_labels_all.sum())} positives)')
+        else:
+            best_t = 0.5
+            if args.logging:
+                logging.info('Validation set has only one class; falling back to threshold=0.5.')
+    else:
+        best_t = 0.5
+        if args.logging:
+            logging.info('No validation predictions collected; falling back to threshold=0.5.')
+
+    # ------------------------------------------------------------------
+    # 9b. Evaluation on test set: loss + accuracy.
+    #     If CV is on, soft-vote across every fold's model rather than only
+    #     using the last fold's model (the previous behavior).
+    # ------------------------------------------------------------------
     model.eval()
     with torch.no_grad():
-        test_logits = model(X_test_t)
+        if args.cv and len(fold_models) > 0:
+            probs_sum = None
+            for m in fold_models:
+                m.eval()
+                logits_m = m(X_test_t)
+                probs_m = torch.sigmoid(logits_m)
+                probs_sum = probs_m if probs_sum is None else probs_sum + probs_m
+            test_probs = probs_sum / len(fold_models)
+            # Loss is reported from the last fold's model for backwards-compatibility
+            # with the existing log format.
+            test_logits = fold_models[-1](X_test_t)
+        else:
+            test_logits = model(X_test_t)
+            test_probs = torch.sigmoid(test_logits)
         test_loss = criterion(test_logits, y_test_t).item()
-        test_probs = torch.sigmoid(test_logits)
-        test_preds = (test_probs >= 0.5).float()
+        test_preds = (test_probs >= best_t).float()
         test_acc = (test_preds == y_test_t).float().mean().item()
-        #balanced accruacy calculation - cpu operation: move tensors back to the CPU before passing them to any scikit-learn function
-        test_ba = balanced_accuracy_score(y_test_t.cpu().numpy(), test_preds.cpu().numpy())
-
+        # balanced accuracy / precision / recall / F1 on CPU
+        y_test_np = y_test_t.cpu().numpy().astype(int).flatten()
+        test_preds_np = test_preds.cpu().numpy().astype(int).flatten()
+        test_ba = balanced_accuracy_score(y_test_np, test_preds_np)
+        test_prec = precision_score(y_test_np, test_preds_np, zero_division=0)
+        test_rec = recall_score(y_test_np, test_preds_np, zero_division=0)
+        test_f1 = f1_score(y_test_np, test_preds_np, zero_division=0)
 
     #print(f"\nFinal test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}")
-    if args.logging: 
+    if args.logging:
         if args.test_on_excluded:
             logging.info(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Tested on excluded set')
         logging.info(f'\n{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Final test loss: {test_loss:.4f}  Standard test accuracy: {test_acc:.4f}  Standard test balanced accuracy: {test_ba:.4f}')
+        # Log P/R/F1 in a format the sweep collector recognises so it picks up
+        # tuned-threshold metrics rather than whatever default f1_analysis emits.
+        logging.info(f'Baseline (threshold={best_t:.4f}) -> Precision: {test_prec:.4f}, Recall: {test_rec:.4f}, F1: {test_f1:.4f}')
+        if args.cv:
+            logging.info(f'CV ensemble: averaged predictions over {len(fold_models)} fold models.')
     print(f'Final test loss: {test_loss:.4f}  Standard test accuracy: {test_acc:.4f}  Standard test balanced accuracy: {test_ba:.4f}')
+    print(f'Best threshold by F1 -> threshold={best_t:.4f}, Precision={test_prec:.4f}, Recall={test_rec:.4f}, F1={test_f1:.4f}')
         
     
     # Plotting the losses 
     if args.use_val:
-        fig,ax = plt.subplots(1,1, figsize=(9,5))
+        fig, ax = plt.subplots(1, 1, figsize=(9, 5))
 
-        ax.plot(range(args.n_epochs*fold), train_losses, label='Train loss', color='#FF8C00', linewidth=2)
-        ax.plot(range(args.n_epochs*fold), val_losses, label='Val loss', color="#D88682", linewidth=2)
+        # Dynamically find out how many epochs were actually run
+        epochs_run = len(train_losses)
+
+        # Use range(epochs_run) for the X-axis instead of range(args.n_epochs * fold)
+        ax.plot(range(epochs_run), train_losses, label='Train loss', color='#FF8C00', linewidth=2)
+        ax.plot(range(epochs_run), val_losses, label='Val loss', color="#D88682", linewidth=2)
         ax.legend(loc='lower right')
         ax.set_ylabel('Loss')
 
         ax2 = ax.twinx()
-        ax2.plot(range(args.n_epochs*fold), val_accuracies, label='Val accuracy', c='g', linestyle='--')
+        ax2.plot(range(epochs_run), val_accuracies, label='Val accuracy', c='g', linestyle='--')
         ax2.set_ylabel('Accuracy')
         ax2.legend(loc='upper right')
 
@@ -807,8 +1199,8 @@ def main():
 
         outname = 'torchMLP_acc_loss.png'    
         if args.logging: 
-            plt.savefig(outdir+outname)
-            logging.info(f'Accuracy and train figure saved as: {outdir+outname}')
+            plt.savefig(outdir + outname)
+            logging.info(f'Accuracy and train figure saved as: {outdir + outname}')
     else:
         if args.logging: logging.info(f'No validation set used, skipping loss and accuracy plotting.')
 
@@ -818,7 +1210,7 @@ def main():
             test_unseen_logits = model(X_test_unseen_t.to(device))
             test_unseen_loss = criterion(test_unseen_logits, y_test_unseen_t.to(device)).item()
             test_unseen_probs = torch.sigmoid(test_unseen_logits)
-            test_unseen_preds = (test_unseen_probs >= 0.5).float()
+            test_unseen_preds = (test_unseen_probs >= best_t).float()
             test_unseen_acc = (test_unseen_preds.to(device) == y_test_unseen_t).float().mean().item()
             try:
                 test_unseen_ba = balanced_accuracy_score(y_test_unseen_t.cpu().numpy(), test_unseen_preds.cpu().numpy())
@@ -854,8 +1246,12 @@ def main():
     true_labels = np.concatenate(all_labels)
 
     # Confusion matrix -----------
+    # Note: with class-balanced BCE the raw logits no longer center on 0, so the
+    # "predict if prob >= 0.5" rule under-predicts positives. Use the same
+    # validation-tuned threshold (best_t) that 9b applied to the headline metrics
+    # so the CM agrees with the precision/recall/F1 numbers above it.
     probabilities = expit(logits).flatten()
-    predicted_classes = (probabilities >= 0.5).astype(int)
+    predicted_classes = (probabilities >= best_t).astype(int)
     cm = confusion_matrix(true_labels, predicted_classes) # Calculate the confusion matrix
     logging.info(f'\n--- Confusion Matrix ---\n{cm}')
     # Interpretation:
@@ -917,8 +1313,15 @@ def main():
 
     try:
         # 1. Load lookup data
-        id_lookup_bact = pd.DataFrame(bact_lookup.items(), columns=["Bacterium_Name", "Species"])
-        id_lookup_bact["Bacterium_Name"] = id_lookup_bact["Bacterium_Name"].apply(clean_bact_names, data2=args.data2)
+        # In cross-dataset mode the test set is D2, so use D2's bacterium lookup for downstream display/cleaning.
+        if args.train_d1_test_d2 and bact_lookup_d2 is not None:
+            _lookup_src = bact_lookup_d2
+            _lookup_data2_flag = True
+        else:
+            _lookup_src = bact_lookup
+            _lookup_data2_flag = args.data2
+        id_lookup_bact = pd.DataFrame(_lookup_src.items(), columns=["Bacterium_Name", "Species"])
+        id_lookup_bact["Bacterium_Name"] = id_lookup_bact["Bacterium_Name"].apply(clean_bact_names, data2=_lookup_data2_flag)
         
         model.eval()
         with torch.no_grad():
@@ -974,109 +1377,164 @@ def main():
     probs = test_probs.flatten().cpu().numpy() if hasattr(test_probs, "cpu") else test_probs.flatten()
     y_true = y_test.flatten()  # already numpy
     if args.logging:
-        f1_analysis(y_true, probs, logging_on=args.logging, outdir = outdir, logfile=logfile)
+        try:
+            f1_analysis(y_true, probs, logging_on=args.logging, outdir = outdir, logfile=logfile)
+        except Exception as e:
+            logging.warning(f'f1_analysis failed and was skipped: {e}')
 
     ### Apply phage & bact to hostrange ###
-    # Apply each phage & bacteria pair to the trained model and save predictions
-    model.eval()
-    thresh = globals().get('best_t', 0.5)  # use best_t if computed, otherwise fallback to 0.5
+    # Apply each phage & bacteria pair to the trained model and save predictions.
+    # Wrapped in try/except because the downstream steps (color_sheet_from_matrix,
+    # reading the hostrange xlsx, etc.) depend on raw_data_path assets and on
+    # D2 lookups that may not always be present. Failures here should not stop
+    # the script from logging "Process completed" and shutting down cleanly,
+    # which the sweep collector uses as the run-success signal.
+    try:
+        model.eval()
+        thresh = best_t if 'best_t' in dir() else 0.5  # use the val-tuned threshold
 
-    # Build all valid pairs as a single matrix and run inference in one batched pass
-    # This is far faster than calling scaler.transform(single_row) in a tight inner loop.
-    pair_records = []
-    all_pair_features = []
-    for bact_name in tqdm(bacteria_names, desc="Building all-pairs matrix"):
-        bact_idx = entity_to_index.get(bact_name)
-        if bact_idx is None:
-            continue
-        for phage_name in phage_names:
-            phage_idx = entity_to_index.get(phage_name)
-            if phage_idx is None:
+        # Build all valid pairs as a single matrix and run inference in one batched pass
+        # This is far faster than calling scaler.transform(single_row) in a tight inner loop.
+        # In cross-dataset mode predict over D2 entities (the test domain); otherwise use the primary D1 entities.
+        if args.train_d1_test_d2:
+            _bact_names_iter = list(bact_minhash_data_d2.keys())
+            _phage_names_iter = list(phage_minhash_data_d2.keys())
+            _entity_to_index_iter = entity_to_index_d2
+            _binary_matrix_iter = binary_matrix_d2
+        else:
+            _bact_names_iter = bacteria_names
+            _phage_names_iter = phage_names
+            _entity_to_index_iter = entity_to_index
+            _binary_matrix_iter = binary_matrix
+
+        pair_records = []
+        all_pair_features = []
+        for bact_name in tqdm(_bact_names_iter, desc="Building all-pairs matrix"):
+            bact_idx = _entity_to_index_iter.get(bact_name)
+            if bact_idx is None:
                 continue
-            combined = np.concatenate((binary_matrix[bact_idx], binary_matrix[phage_idx]))
-            all_pair_features.append(combined)
-            pair_records.append((bact_name, phage_name))
+            for phage_name in _phage_names_iter:
+                phage_idx = _entity_to_index_iter.get(phage_name)
+                if phage_idx is None:
+                    continue
+                combined = np.concatenate((_binary_matrix_iter[bact_idx], _binary_matrix_iter[phage_idx]))
+                all_pair_features.append(combined)
+                pair_records.append((bact_name, phage_name))
 
-    if all_pair_features:
-        all_pair_matrix = np.array(all_pair_features, dtype=np.float32)
-        all_pair_scaled = scaler.transform(all_pair_matrix)
-        all_pair_t = torch.from_numpy(all_pair_scaled).float()
+        if all_pair_features:
+            all_pair_matrix = np.array(all_pair_features, dtype=np.float32)
+            all_pair_scaled = scaler.transform(all_pair_matrix)
+            all_pair_t = torch.from_numpy(all_pair_scaled).float()
 
-        all_probs = []
-        with torch.no_grad():
-            pair_ds = TensorDataset(all_pair_t)
-            pair_loader = DataLoader(pair_ds, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
-            for (xb,) in tqdm(pair_loader, desc="Running inference on all pairs"):
-                logits = model(xb.to(device))
-                probs_batch = torch.sigmoid(logits).cpu().numpy().flatten()
-                all_probs.extend(probs_batch)
+            all_probs = []
+            with torch.no_grad():
+                pair_ds = TensorDataset(all_pair_t)
+                pair_loader = DataLoader(pair_ds, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
+                for (xb,) in tqdm(pair_loader, desc="Running inference on all pairs"):
+                    logits = model(xb.to(device))
+                    probs_batch = torch.sigmoid(logits).cpu().numpy().flatten()
+                    all_probs.extend(probs_batch)
 
-        all_probs = np.array(all_probs)
-        all_preds = (all_probs >= thresh).astype(int)
-        bact_names_col, phage_names_col = zip(*pair_records)
-        results = [
-            {"bacterium": b, "phage": p, "probability": prob, "prediction": pred}
-            for b, p, prob, pred in zip(bact_names_col, phage_names_col, all_probs, all_preds)
-        ]
-    else:
-        results = []
+            all_probs = np.array(all_probs)
+            all_preds = (all_probs >= thresh).astype(int)
+            bact_names_col, phage_names_col = zip(*pair_records)
+            results = [
+                {"bacterium": b, "phage": p, "probability": prob, "prediction": pred}
+                for b, p, prob, pred in zip(bact_names_col, phage_names_col, all_probs, all_preds)
+            ]
+        else:
+            results = []
 
-    # Save results to DataFrame + CSV
-    pred_df = pd.DataFrame(results)
-    if args.logging:
-        outpath = os.path.join(outdir, "torchMLP_all_pairs_predictions.csv")
-        pred_df.to_csv(outpath, index=False)
+        # Save results to DataFrame + CSV
+        pred_df = pd.DataFrame(results)
+        if args.logging:
+            outpath = os.path.join(outdir, "torchMLP_all_pairs_predictions.csv")
+            pred_df.to_csv(outpath, index=False)
 
-        print(f"Saved {len(pred_df)} predictions to {outpath}")
-        logging.info(f'Saved {len(pred_df)} predictions to {outpath}')
+            print(f"Saved {len(pred_df)} predictions to {outpath}")
+            logging.info(f'Saved {len(pred_df)} predictions to {outpath}')
 
-    # Simply pred output matrix ---
-    # create prediction matrix: rows=bacterium, cols=phage, values=prediction
-    pred_matrix = pred_df.pivot_table(index='bacterium', columns='phage', values='prediction', aggfunc='max')
+        # Simply pred output matrix ---
+        # create prediction matrix: rows=bacterium, cols=phage, values=prediction
+        pred_matrix = pred_df.pivot_table(index='bacterium', columns='phage', values='prediction', aggfunc='max')
 
-    # normalize column names (strip whitespace) then reorder columns to the requested phage order
-    pred_matrix = pred_matrix.rename(columns=lambda x: x.strip())
+        # normalize column names (strip whitespace) then reorder columns to the requested phage order
+        pred_matrix = pred_matrix.rename(columns=lambda x: x.strip())
 
-    if args.data2:
-        phage_order = [
-            "Grebano", "Ravello", "Etui", "Maxentius", "Licinius", "Jovian", "Arcadius", "Avitus", "Marcian", "Libius", "Anthemius",
-            "Olybrius", "Phocas", "Caracalla", "Geta", "Leonitus", "Artabasdos", "Rangabe", "Staurakios", "Bardicus", "Quintillus", "Heraclius", 
-            "Heraclonas", "Anivius", "Komnenos", "Eudokia", "Doukas", "Arruntis", "Hostillian", "Pacatian", "Quartinus", "Bonosus", "Rozzorie",
-            "Brede", "Didius", "Septimius", "Diadumenian", "Elagabalus", "Pius", "Pupienus", "Nepotimus", "Balbinus", "Decius", "Trebonianus",
-            "Skandal", "Balder", "Herennius", "Silbannacus", "Volusianus", "Galleinus", "Salolinus", "Carinus", "Galerius" 
-        ]
-    else:
-        phage_order = [
-            "Ymer","Taid","Poppous","Koroua","Abuela","Amona","Sabo","Mimer","Crus",
-            "Gander","Guf","Hoejben","Magnum","Vims","Echoes","Galvinrad","Uther",
-            "Rip","Rup","Slaad","Pantea","Rap","Zann"
-        ]
+        # In cross-dataset mode the prediction matrix covers D2, so use D2's phage_order and bacteria_names.
+        _use_d2_for_output = args.data2 or args.train_d1_test_d2
+        if _use_d2_for_output:
+            phage_order = [
+                "Grebano", "Ravello", "Etui", "Maxentius", "Licinius", "Jovian", "Arcadius", "Avitus", "Marcian", "Libius", "Anthemius",
+                "Olybrius", "Phocas", "Caracalla", "Geta", "Leonitus", "Artabasdos", "Rangabe", "Staurakios", "Bardicus", "Quintillus", "Heraclius",
+                "Heraclonas", "Anivius", "Komnenos", "Eudokia", "Doukas", "Arruntis", "Hostillian", "Pacatian", "Quartinus", "Bonosus", "Rozzorie",
+                "Brede", "Didius", "Septimius", "Diadumenian", "Elagabalus", "Pius", "Pupienus", "Nepotimus", "Balbinus", "Decius", "Trebonianus",
+                "Skandal", "Balder", "Herennius", "Silbannacus", "Volusianus", "Galleinus", "Salolinus", "Carinus", "Galerius"
+            ]
+        else:
+            phage_order = [
+                "Ymer","Taid","Poppous","Koroua","Abuela","Amona","Sabo","Mimer","Crus",
+                "Gander","Guf","Hoejben","Magnum","Vims","Echoes","Galvinrad","Uther",
+                "Rip","Rup","Slaad","Pantea","Rap","Zann"
+            ]
 
-    # keep only those desired that actually exist, then append any extra columns that were not listed
-    cols_in_order = [c for c in phage_order if c in pred_matrix.columns]
-    #rows_in_order = [c for c in pred_matrix.columns if c not in cols_in_order]
-    final_cols = cols_in_order
+        # keep only those desired that actually exist, then append any extra columns that were not listed
+        cols_in_order = [c for c in phage_order if c in pred_matrix.columns]
+        #rows_in_order = [c for c in pred_matrix.columns if c not in cols_in_order]
+        final_cols = cols_in_order
 
-    # ensure consistent ordering and include any missing rows/cols (fill missing pairs with 0)
-    pred_matrix = pred_matrix.reindex(index=list(bacteria_names), columns=final_cols, fill_value=0)
+        # ensure consistent ordering and include any missing rows/cols (fill missing pairs with 0)
+        _row_order = list(bact_minhash_data_d2.keys()) if (args.train_d1_test_d2 and bact_minhash_data_d2 is not None) else list(bacteria_names)
+        pred_matrix = pred_matrix.reindex(index=_row_order, columns=final_cols, fill_value=0)
 
-    # save and show a quick preview
-    if args.logging:
-        logging.info(f"Preview of ordered prediction matrix:\n{pred_matrix.head()}")
-        outname = 'torchMLP_prediction_matrix_ordered.csv'
-        pred_matrix.to_csv(outdir + outname)
-        print(f"Saved ordered prediction matrix to {outdir + outname}")
-        color_sheet_from_matrix(
-            input_excel=raw_data_path + "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx",
-            sheet1_name="sum_hostrange",
-            prediction_matrix_df=pred_matrix,
-            excluded_bacteria=args.exclude_bact_clusters,
-            excluded_phages=args.exclude_phage_clusters,
-            output_excel=outdir + "hostrange_colored.xlsx", 
-            TS=True
-        )
+        # save and show a quick preview
+        if args.logging:
+            logging.info(f"Preview of ordered prediction matrix:\n{pred_matrix.head()}")
+            outname = 'torchMLP_prediction_matrix_ordered.csv'
+            pred_matrix.to_csv(outdir + outname)
+            print(f"Saved ordered prediction matrix to {outdir + outname}")
+            # Pick the hostrange xlsx that matches the prediction matrix domain.
+            # color_sheet_from_matrix is wrapped in its own try below so a missing
+            # input xlsx doesn't kill the run before "Process completed" fires.
+            _color_sheet_input = (raw_data_path + "phagehost_KU/data2_EOP.xlsx") if _use_d2_for_output else (raw_data_path + "phagehost_KU/Hostrange_data_all_crisp_iso.xlsx")
+            _color_sheet_name = "Sheet1" if _use_d2_for_output else "sum_hostrange"
+            try:
+                color_sheet_from_matrix(
+                    input_excel=_color_sheet_input,
+                    sheet1_name=_color_sheet_name,
+                    prediction_matrix_df=pred_matrix,
+                    excluded_bacteria=args.exclude_bact_clusters,
+                    excluded_phages=args.exclude_phage_clusters,
+                    output_excel=outdir + "hostrange_colored.xlsx",
+                    TS=True
+                )
+            except Exception as e:
+                logging.warning(f'color_sheet_from_matrix failed and was skipped: {e}')
+
+    except Exception as e:
+        # Don't let the all-pairs / hostrange block kill the run.
+        # We still want to reach "Process completed" so the sweep collector
+        # marks the run as status=True and the metrics already logged above
+        # (Standard test accuracy, Baseline ...) get picked up cleanly.
+        msg = f'All-pairs hostrange block failed and was skipped: {e}'
+        print(msg, file=sys.stderr)
+        if args.logging:
+            logging.error(msg)
+            logging.error(traceback.format_exc())
+
 
     ### Feature Importance ###
+    # In cross-dataset mode, FI and GA still reference D1-only structures and would produce incorrect
+    # results when metadata_test contains D2 entities, so we skip those. PFI is supported separately
+    # below by rebinding its inputs to the D2 side.
+    if args.train_d1_test_d2 and (args.perform_fi or args.perform_ga):
+        msg = "[cross-dataset] Skipping --perform_fi/--perform_ga: these analyses are not supported when training on D1 and testing on D2. (--perform_pfi is still honored on D2.)"
+        print(msg, file=sys.stderr)
+        if args.logging:
+            logging.warning(msg)
+        args.perform_fi = False
+        args.perform_ga = False
+
     if args.perform_fi:
         fi = FeatureImportance(model, outdir, metadata_test, id_lookup_bact, host_range_data, 
                                 raw_data_path, data_prod_path, TS = True, logging = args.logging, logfile=logfile)
@@ -1102,8 +1560,25 @@ def main():
     if args.perform_pfi:
         hash_lookup = None
         pfi_failed = False
-        out_pfi = f"pfi_{prefix}_n{n}_k{k}.txt"
-        pfi_objects_dir = f"pfi_objects_{prefix}_n{n}_k{k}/"
+        # In cross-dataset mode the PFI analysis is centered on the D2 test set:
+        # rebind the inputs (host range, minhash data, idx_to_entity, bact clusters, hk dict, prefix)
+        # to their D2 counterparts so the existing PFI pipeline below operates on the correct domain.
+        if args.train_d1_test_d2:
+            host_range_data = host_range_data_d2
+            phage_minhash_data = phage_minhash_data_d2
+            bact_minhash_data = bact_minhash_data_d2
+            idx_to_entity = idx_to_entity_d2
+            if bact_clusters_d2 is not None:
+                bact_clusters = bact_clusters_d2
+            # Use D2's hk lookup when available so decoded k-mers reflect the test-set domain
+            if args.use_encoded and hk_translation_dict_d2 is not None:
+                hk_translation_dict = hk_translation_dict_d2
+            # Use D2 prefix for any path-derived artifacts (regain_kmers reads its hk lookup from this)
+            prefix = prefix_d2
+            if args.logging:
+                logging.info("[cross-dataset] PFI inputs rebinding done: using D2 host range, minhash data, idx_to_entity, bact_clusters, hk_translation_dict, and prefix.")
+        out_pfi = f"pfi_{prefix}_n{n}_k{k}{'_cross' if args.train_d1_test_d2 else ''}.txt"
+        pfi_objects_dir = f"pfi_objects_{prefix}_n{n}_k{k}{'_cross' if args.train_d1_test_d2 else ''}/"
         hash_lookup = "hash_lookup.csv"
 
         ### Subset host_range_data, phage_minhash_data, and bact_minhash_data to only include the strains present in the test set metadata
@@ -1185,47 +1660,8 @@ def main():
             plot_interaction_pairs(interaction_pairs, occurence_pairs, normalized_interaction_rate, hash_lookup, hk_translation_dict, sort_by_ratio=True, logging_on=args.logging, outdir=outdir, bact_clusters=bact_clusters)
 
             # Filter idx_to_minhash to only include the top X interaction pairs
-            # Sort all pairs by normalized interaction rate
-            all_pairs_sorted = sorted(
-                interaction_pairs.items(),
-                key=lambda x: normalized_interaction_rate.get(x[0], 0),
-                reverse=True
-            )
-
-            # For each (bact_strain, phage_strain) combination, keep the highest-scoring pair.
-            # Iterating in score order means the first time we see a combo it's always the best.
-            # What this does concretely: if the 200 highest-scoring pairs all happen to share bact_hash 99349703470594 (Host 13), but Host 13 only interacts with 8 phage strains, 
-            # then only 8 of those pairs survive into best_pair_per_combo — one per (Host 13, phage_strain) combo, each picking the best k-mer pair for that combo. 
-            # The remaining 192 slots are then filled by the best pairs from all other (bact_strain, phage_strain) combinations lower in the ranking. 
-            # A dominant k-mer can still appear multiple times (once per phage strain it pairs with), but it can no longer monopolise the entire list.
-            best_pair_per_combo = {}
-            for pair, raw_score in all_pairs_sorted:
-                bact_hash, phage_hash = pair
-                bact_strains = {s for s in hash_lookup.get(bact_hash, set()) if s in bact_minhash_data_full}
-                phage_strains = {s for s in hash_lookup.get(phage_hash, set()) if s in phage_minhash_data_full}
-                for bs in (bact_strains or {"unknown"}):
-                    for ps in (phage_strains or {"unknown"}):
-                        combo = (bs, ps)
-                        if combo not in best_pair_per_combo:
-                            best_pair_per_combo[combo] = (pair, raw_score)
-
-            if args.logging:
-                logging.info(f'Stratified selection: {len(best_pair_per_combo)} unique (bact_strain, phage_strain) combos → '
-                            f'{len({p for p, _ in best_pair_per_combo.values()})} unique pairs before capping at {args.top_kmers_num}')
-
-            # Deduplicate: same k-mer pair may be the best representative for multiple combos.
-            # Keep the highest-score association and sort.
-            unique_pairs = {}
-            for pair, raw_score in best_pair_per_combo.values():
-                if pair not in unique_pairs:
-                    unique_pairs[pair] = raw_score
-
-            top_pairs = sorted(
-                unique_pairs.items(),
-                key=lambda x: normalized_interaction_rate.get(x[0], 0),
-                reverse=True
-            )[:args.top_kmers_num]          
-
+            top_pairs = sorted(interaction_pairs.items(), key=lambda x: normalized_interaction_rate.get(x[0], 0), reverse=True)[:args.top_kmers_num] # Get top {args.top_kmers_num} pairs by expected interactions score
+            
             #Construct pair specific list of hashes
             top_pairs_expected = [(pair, normalized_interaction_rate.get(pair, 0)) for pair, _ in top_pairs]
             top_pairs_expected_df = pd.DataFrame(top_pairs_expected, columns=["pair", "norm_int_rate_score"])
@@ -1269,11 +1705,16 @@ def main():
 
             filtered_idx_to_minhash = {idx: mh for idx, mh in idx_to_minhash.items() if mh in top_minhashes}
 
-            # Regain k-mers for the top interaction pairs
+            # Regain k-mers for the top interaction pairs.
+            # In cross-dataset mode we hand in both datasets' hk_lookup dicts so any hash from the
+            # unified feature space (D1-only, D2-only, or shared) can be decoded without disk access.
             pfi_top_kmers_df = None
+            _hk_dicts = [hk_translation_dict, hk_translation_dict_d2] if args.train_d1_test_d2 else [hk_translation_dict]
             try:
-                regain_kmers_out = regain_kmers(k=k, n=n, prefix=prefix, sourmash=sourmash_used, top_n=args.top_kmers_num, 
-                                                idx_to_minhash=filtered_idx_to_minhash, mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash), 
+                regain_kmers_out = regain_kmers(k=k, n=n, prefix=prefix, sourmash=sourmash_used, top_n=args.top_kmers_num,
+                                                idx_to_minhash=filtered_idx_to_minhash,
+                                                mapping_args=(binary_matrix.shape[1], feature_indices, idx_to_minhash),
+                                                hk_translation_dicts=_hk_dicts,
                                                 logging_on=args.logging, logfile=logfile)
                 pfi_top_idx, pfi_top_vals, pfi_top_kmers_decoded = regain_kmers_out
                 if len(pfi_top_idx) == 0: 

@@ -4,7 +4,7 @@
 # Submitted by submit_iter_excl.sh with --dependency=afterok:<array_job_id>.
 # Do not run directly until all training tasks have finished.
 
-#SBATCH --job-name=IterExclPostProcess
+#SBATCH --job-name=IterExclPostProcess_v2
 #SBATCH --partition=cpu      # no GPU needed here — adjust to your cluster
 #SBATCH --nodes=1
 #SBATCH --mem=12G
@@ -29,8 +29,8 @@ K="${2:-12}"
 DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
-DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/IterExcl_${DOWNDIR}_n${N}_k${K}"
-ACC_DIR="$ROOT_DIR/tmp/accuracies_${DOWNDIR}_n${N}_k${K}"
+DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/IterExcl_${DOWNDIR}_n${N}_k${K}_v2"
+ACC_DIR="$ROOT_DIR/tmp/accuracies_${DOWNDIR}_n${N}_k${K}_v2"
 
 # ── 3. Post-Processing: Average Accuracies ────────────────────────────────────
 echo "-------------------------------------------------------"
@@ -69,21 +69,21 @@ echo ""
 echo "📊 Collecting results..."
 python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --base_dir "$DIR_IN_NN_RUN" \
-    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}/" \
+    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_v2/" \
     --show_cm_bar_percentage \
     --weight_pfi \
     --highlight_multi \
-    --network_top_kmers 400 \
+    --network_top_kmers 200 \
     --top_kmers 1000
 
 echo ""
 echo "📊 Collecting results with harsh filtering..."
 python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --base_dir "$DIR_IN_NN_RUN" \
-    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_harsh/" \
+    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_v2_harsh/" \
     --show_cm_bar_percentage \
     --weight_pfi \
     --highlight_multi \
-    --network_top_kmers 400 \
+    --network_top_kmers 200 \
     --top_kmers 1000 \
     --filter_harsh
