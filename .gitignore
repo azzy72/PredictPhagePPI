@@ -2,7 +2,6 @@ ignore/
 mike/
 KMC/
 doc/
-fig/
 nn_*/
 cnn_*/
 proj1128/

@@ -27,8 +27,49 @@ import re
 import sys
 from pathlib import Path
 
+import math
+
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import pandas as pd
+
+
+# ---------------------------------------------------------------------------
+# Layout / style constants
+# ---------------------------------------------------------------------------
+MAX_PER_PANEL  = 8     # max items (genomes) per subplot panel before splitting
+PANEL_W        = 6.0   # width  of each panel in inches  → approx square
+PANEL_H        = 5.5   # height of each panel in inches
+
+FONTSIZE_TITLE  = 15
+FONTSIZE_AXIS   = 13
+FONTSIZE_TICK   = 12
+FONTSIZE_LEGEND = 10
+FONTSIZE_LABEL  = 8    # data labels inside / above bars
+
+# Suffixes stripped from genome/phage names in all plot tick labels
+_STRIP_SUFFIXES = ("_reoriented_merged", "_reoriented", "_merged")
+
+
+def _clean_name(name: str) -> str:
+    """Remove common technical suffixes from display names."""
+    for suffix in _STRIP_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _chunks(lst, n):
+    """Yield successive sublists of at most *n* items."""
+    for i in range(0, len(lst), n):
+        yield lst[i : i + n]
+
+
+def _panel_path(base: Path, i: int, total: int) -> Path:
+    """Return the output path for panel i. Appends _1, _2, … when total > 1."""
+    if total == 1:
+        return base
+    return base.parent / f"{base.stem}_{i + 1}{base.suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -211,97 +252,127 @@ def analyse_genome(prokka_dir: Path) -> dict:
 def plot_genome_coverage(stats_list: list, outpath: Path):
     """
     Stacked horizontal bar chart: genome coverage by annotation status.
-    One bar per genome; segments = known function / unknown function / non-coding.
+    One file per chunk; x-axis fixed at 0–100 % for comparability across files.
     """
-    names         = [s["name"] for s in stats_list]
-    known_pct     = [s["pct_known_bp"]     for s in stats_list]
-    unknown_pct   = [s["pct_unknown_bp"]   for s in stats_list]
-    noncoding_pct = [s["pct_noncoding_bp"] for s in stats_list]
+    chunks = list(_chunks(stats_list, MAX_PER_PANEL))
 
-    fig, ax = plt.subplots(figsize=(8, max(3, len(names) * 1.0 + 1.5)))
+    legend_handles = [
+        mpatches.Patch(color=COVERAGE_COLORS["Known function"],   label="Known function"),
+        mpatches.Patch(color=COVERAGE_COLORS["Unknown function"], label="Hypothetical / unknown"),
+        mpatches.Patch(color=COVERAGE_COLORS["Non-coding"],       label="Non-coding",
+                       edgecolor="#cccccc", linewidth=0.5),
+    ]
 
-    bar_h = 0.5
-    y = range(len(names))
+    for i, chunk in enumerate(chunks):
+        fig, ax = plt.subplots(figsize=(PANEL_W, PANEL_H))
 
-    ax.barh(y, known_pct, height=bar_h,
-            color=COVERAGE_COLORS["Known function"], label="Known function")
-    ax.barh(y, unknown_pct, height=bar_h,
-            left=known_pct,
-            color=COVERAGE_COLORS["Unknown function"], label="Hypothetical / unknown")
-    ax.barh(y, noncoding_pct, height=bar_h,
-            left=[k + u for k, u in zip(known_pct, unknown_pct)],
-            color=COVERAGE_COLORS["Non-coding"], label="Non-coding",
-            edgecolor="#cccccc", linewidth=0.5)
+        names         = [s["name"]            for s in chunk]
+        known_pct     = [s["pct_known_bp"]     for s in chunk]
+        unknown_pct   = [s["pct_unknown_bp"]   for s in chunk]
+        noncoding_pct = [s["pct_noncoding_bp"] for s in chunk]
 
-    for i, (k, u, nc) in enumerate(zip(known_pct, unknown_pct, noncoding_pct)):
-        if k > 8:
-            ax.text(k / 2, i, f"{k:.1f}%", va="center", ha="center",
-                    fontsize=9, color="white", fontweight="bold")
-        if u > 8:
-            ax.text(k + u / 2, i, f"{u:.1f}%", va="center", ha="center",
-                    fontsize=9, color="white", fontweight="bold")
-        if nc > 8:
-            ax.text(k + u + nc / 2, i, f"{nc:.1f}%", va="center", ha="center",
-                    fontsize=9, color="#555555", fontweight="bold")
+        bar_h = 0.55
+        y = range(len(names))
 
-    ax.set_yticks(list(y))
-    ax.set_yticklabels(names, fontsize=11)
-    ax.set_xlabel("% of genome", fontsize=11)
-    ax.set_xlim(0, 100)
-    ax.set_title("Genome coverage by annotation status", fontsize=13, pad=12)
-    ax.legend(loc="lower right", fontsize=9, framealpha=0.8)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.xaxis.grid(True, linestyle="--", alpha=0.4)
-    ax.set_axisbelow(True)
+        ax.barh(y, known_pct, height=bar_h,
+                color=COVERAGE_COLORS["Known function"])
+        ax.barh(y, unknown_pct, height=bar_h, left=known_pct,
+                color=COVERAGE_COLORS["Unknown function"])
+        ax.barh(y, noncoding_pct, height=bar_h,
+                left=[k + u for k, u in zip(known_pct, unknown_pct)],
+                color=COVERAGE_COLORS["Non-coding"],
+                edgecolor="#cccccc", linewidth=0.5)
 
-    plt.tight_layout()
-    fig.savefig(outpath, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved: {outpath}")
+        for j, (k, u, nc) in enumerate(zip(known_pct, unknown_pct, noncoding_pct)):
+            if k > 8:
+                ax.text(k / 2, j, f"{k:.1f}%", va="center", ha="center",
+                        fontsize=FONTSIZE_LABEL, color="white", fontweight="bold")
+            if u > 8:
+                ax.text(k + u / 2, j, f"{u:.1f}%", va="center", ha="center",
+                        fontsize=FONTSIZE_LABEL, color="white", fontweight="bold")
+            if nc > 8:
+                ax.text(k + u + nc / 2, j, f"{nc:.1f}%", va="center", ha="center",
+                        fontsize=FONTSIZE_LABEL, color="#555555", fontweight="bold")
+
+        ax.set_yticks(list(y))
+        ax.set_yticklabels([_clean_name(n) for n in names], fontsize=FONTSIZE_TICK)
+        ax.set_xlabel("% of genome", fontsize=FONTSIZE_AXIS)
+        ax.set_xlim(0, 100)          # fixed — same on every file
+        ax.set_title("Genome coverage by annotation status", fontsize=FONTSIZE_TITLE, pad=10)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.xaxis.grid(True, linestyle="--", alpha=0.4)
+        ax.set_axisbelow(True)
+
+        fig.legend(handles=legend_handles,
+                   loc="lower center", bbox_to_anchor=(0.5, 0),
+                   ncol=len(legend_handles), fontsize=FONTSIZE_LEGEND,
+                   framealpha=0.9, edgecolor="#cccccc")
+
+        plt.tight_layout(rect=[0, 0.08, 1, 1])
+        out = _panel_path(outpath, i, len(chunks))
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved: {out}")
 
 
 def plot_annotation_quality(stats_list: list, outpath: Path):
     """
     Stacked bar chart: CDS annotation quality tiers per genome.
-    Tiers: named + COG + EC > named + COG > named only > hypothetical.
+    One file per chunk; y-axis fixed to global max for comparability across files.
     """
-    names  = [s["name"] for s in stats_list]
-    x      = range(len(names))
+    legend_handles = [
+        mpatches.Patch(color=QUALITY_COLORS[t], label=t) for t in QUALITY_TIERS
+    ]
+
+    global_ymax    = max(s["total_cds"] for s in stats_list) * 1.12
+    chunks = list(_chunks(stats_list, MAX_PER_PANEL))
     bar_w  = 0.55
 
-    fig, ax = plt.subplots(figsize=(max(5, len(names) * 2.5), 6))
+    for i, chunk in enumerate(chunks):
+        fig, ax = plt.subplots(figsize=(PANEL_W, PANEL_H))
 
-    bottoms = [0] * len(names)
-    for tier in QUALITY_TIERS:
-        values = [s["quality_cds"].get(tier, 0) for s in stats_list]
-        color  = QUALITY_COLORS[tier]
-        ax.bar(x, values, bar_w, bottom=bottoms, color=color, label=tier)
-        for i, (v, b) in enumerate(zip(values, bottoms)):
-            if v > max(s["total_cds"] for s in stats_list) * 0.03:
-                ax.text(i, b + v / 2, str(v), va="center", ha="center",
-                        fontsize=9, color="white" if tier != "named only" else "#555",
-                        fontweight="bold")
-        bottoms = [b + v for b, v in zip(bottoms, values)]
+        x       = range(len(chunk))
+        bottoms = [0] * len(chunk)
 
-    ax.set_xticks(list(x))
-    ax.set_xticklabels(names, fontsize=11, rotation=25, ha="right")
-    ax.set_ylabel("Number of CDS", fontsize=11)
-    ax.set_title("CDS annotation quality", fontsize=13, pad=12)
-    ax.legend(fontsize=9, framealpha=0.8, title="Tier (best → worst)",
-              title_fontsize=9, loc="upper right")
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
-    ax.set_axisbelow(True)
+        for tier in QUALITY_TIERS:
+            values = [s["quality_cds"].get(tier, 0) for s in chunk]
+            color  = QUALITY_COLORS[tier]
+            ax.bar(x, values, bar_w, bottom=bottoms, color=color)
+            for j, (v, b) in enumerate(zip(values, bottoms)):
+                if v > global_ymax * 0.03:
+                    ax.text(j, b + v / 2, str(v), va="center", ha="center",
+                            fontsize=FONTSIZE_LABEL,
+                            color="white" if tier != "named only" else "#555",
+                            fontweight="bold")
+            bottoms = [b + v for b, v in zip(bottoms, values)]
 
-    plt.tight_layout()
-    fig.savefig(outpath, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved: {outpath}")
+        ax.set_xticks(list(x))
+        ax.set_xticklabels([_clean_name(s["name"]) for s in chunk],
+                           fontsize=FONTSIZE_TICK, rotation=30, ha="right")
+        ax.set_ylabel("Number of CDS", fontsize=FONTSIZE_AXIS)
+        ax.set_ylim(0, global_ymax)   # fixed — same on every file
+        ax.set_title("CDS annotation quality", fontsize=FONTSIZE_TITLE, pad=10)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+        ax.set_axisbelow(True)
+
+        fig.legend(handles=legend_handles,
+                   loc="lower center", bbox_to_anchor=(0.5, 0),
+                   ncol=len(legend_handles), fontsize=FONTSIZE_LEGEND,
+                   framealpha=0.9, edgecolor="#cccccc",
+                   title="Tier (best → worst)", title_fontsize=FONTSIZE_LEGEND)
+
+        plt.tight_layout(rect=[0, 0.1, 1, 1])
+        out = _panel_path(outpath, i, len(chunks))
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved: {out}")
 
 
 def plot_feature_counts(stats_list: list, outpath: Path):
     """
     Grouped bar chart of non-CDS feature counts (tRNA, tmRNA, rRNA, repeat_region).
+    One file per chunk; y-axis fixed to global max for comparability across files.
     """
     all_ftypes = []
     for s in stats_list:
@@ -313,39 +384,57 @@ def plot_feature_counts(stats_list: list, outpath: Path):
         print("  No non-CDS features to plot — skipping feature chart.")
         return
 
-    names  = [s["name"] for s in stats_list]
-    n      = len(names)
-    n_ft   = len(all_ftypes)
-    bar_w  = 0.7 / n_ft
-    x      = range(n)
+    legend_handles = [
+        mpatches.Patch(color=FEATURE_COLORS.get(ft, "#D3D1C7"), label=ft)
+        for ft in all_ftypes
+    ]
 
-    fig, ax = plt.subplots(figsize=(max(5, n * 2.5), 5))
+    n_ft       = len(all_ftypes)
+    bar_w      = 0.7 / n_ft
+    global_max = max(
+        (s["feature_counts"].get(ft, 0) for s in stats_list for ft in all_ftypes),
+        default=1,
+    )
+    global_ymax = global_max * 1.15
 
-    for fi, ftype in enumerate(all_ftypes):
-        offset = (fi - n_ft / 2 + 0.5) * bar_w
-        values = [s["feature_counts"].get(ftype, 0) for s in stats_list]
-        color  = FEATURE_COLORS.get(ftype, "#D3D1C7")
-        bars   = ax.bar([xi + offset for xi in x], values, bar_w,
-                        label=ftype, color=color)
-        for bar, v in zip(bars, values):
-            if v > 0:
-                ax.text(bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + max(values) * 0.01,
-                        str(v), ha="center", va="bottom", fontsize=9)
+    chunks = list(_chunks(stats_list, MAX_PER_PANEL))
 
-    ax.set_xticks(list(x))
-    ax.set_xticklabels(names, fontsize=11, rotation=25, ha="right")
-    ax.set_ylabel("Count", fontsize=11)
-    ax.set_title("Non-CDS genomic features", fontsize=13, pad=12)
-    ax.legend(fontsize=9, framealpha=0.8)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
-    ax.set_axisbelow(True)
+    for i, chunk in enumerate(chunks):
+        fig, ax = plt.subplots(figsize=(PANEL_W, PANEL_H))
+        x = range(len(chunk))
 
-    plt.tight_layout()
-    fig.savefig(outpath, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved: {outpath}")
+        for fi, ftype in enumerate(all_ftypes):
+            offset = (fi - n_ft / 2 + 0.5) * bar_w
+            values = [s["feature_counts"].get(ftype, 0) for s in chunk]
+            color  = FEATURE_COLORS.get(ftype, "#D3D1C7")
+            bars   = ax.bar([xi + offset for xi in x], values, bar_w, color=color)
+            for bar, v in zip(bars, values):
+                if v > 0:
+                    ax.text(bar.get_x() + bar.get_width() / 2,
+                            bar.get_height() + global_max * 0.01,
+                            str(v), ha="center", va="bottom",
+                            fontsize=FONTSIZE_LABEL)
+
+        ax.set_xticks(list(x))
+        ax.set_xticklabels([_clean_name(s["name"]) for s in chunk],
+                           fontsize=FONTSIZE_TICK, rotation=30, ha="right")
+        ax.set_ylabel("Count", fontsize=FONTSIZE_AXIS)
+        ax.set_ylim(0, global_ymax)   # fixed — same on every file
+        ax.set_title("Non-CDS genomic features", fontsize=FONTSIZE_TITLE, pad=10)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+        ax.set_axisbelow(True)
+
+        fig.legend(handles=legend_handles,
+                   loc="lower center", bbox_to_anchor=(0.5, 0),
+                   ncol=len(legend_handles), fontsize=FONTSIZE_LEGEND,
+                   framealpha=0.9, edgecolor="#cccccc")
+
+        plt.tight_layout(rect=[0, 0.08, 1, 1])
+        out = _panel_path(outpath, i, len(chunks))
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved: {out}")
 
 
 # ---------------------------------------------------------------------------
