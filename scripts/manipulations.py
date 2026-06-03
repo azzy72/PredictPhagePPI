@@ -17,9 +17,6 @@ from itertools import product
 from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import seaborn as sns
-import dask
-from dask_jobqueue import SLURMCluster
-from dask.distributed import Client
 import joblib
 from paths import raw_data_path, data_prod_path, path_to_nn_runs, root
 
@@ -785,4 +782,126 @@ class calc_PFI:
         
         print(f"Total phage-bacteria combinations processed: {c}")
         return interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, normalized_interaction_rate, hash_lookup
+
+    def construct_interaction_pairs_from_model(
+        self,
+        phage_minhash_data: dict,
+        bact_minhash_data: dict,
+        model_pred_dict: dict,
+        subset: int = None,
+    ):
+        """
+        Same output format as construct_interaction_pairs, but uses model-predicted
+        probabilities as interaction scores instead of ground-truth host-range values.
+
+        Args:
+            phage_minhash_data: {phage_name: [hashes]}
+            bact_minhash_data:  {bact_name:  [hashes]}
+            model_pred_dict:    {(bname, pname): predicted_prob} — one entry per
+                                test pair, built from metadata_test + test_probs_np.
+            subset:             stop after this many pairs (None = all).
+
+        Returns: same 6-tuple as construct_interaction_pairs.
+        """
+        interaction_pairs       = defaultdict(float)
+        occurence_pairs         = Counter()
+        hash_lookup             = defaultdict(set)
+        interaction_freq_pairs  = {}
+        occurence_freq_pairs    = {}
+        expected_interactions   = {}
+
+        pairs_list = list(model_pred_dict.items())  # [((bname, pname), prob), ...]
+        total = len(pairs_list)
+        print(f"construct_interaction_pairs_from_model: {total} pairs from model predictions.")
+
+        c = 0
+        for (bname, pname), interaction_score in pairs_list:
+            pkmer_list = phage_minhash_data.get(pname, [])
+            bkmer_list = bact_minhash_data.get(bname, [])
+
+            for pkmer in pkmer_list:
+                hash_lookup[pkmer].add(pname)
+            for bkmer in bkmer_list:
+                hash_lookup[bkmer].add(bname)
+
+            pairs = list(product(pkmer_list, bkmer_list))
+            occurence_pairs.update(pairs)
+            for pair in pairs:
+                interaction_pairs[pair] += interaction_score
+
+            c += 1
+            print(f"Int/Occ: Processed combination {c}/{total} (Bacteria: {bname}, Phage: {pname})", end="\r")
+
+            if subset is not None and c >= subset:
+                if sum(interaction_pairs.values()) > 0:
+                    print(f"\nReached subset limit of {subset} combinations, stopping.")
+                    break
+
+        print()
+
+        if not sum(interaction_pairs.values()) > 0:
+            print("Warning: Sum of model-predicted interaction scores is 0. Check test predictions.")
+            return [None] * 6
+        if not sum(occurence_pairs.values()) > 0:
+            print("Warning: Sum of occurrence counts is 0. Check minhash data.")
+            return [None] * 6
+
+        total_interactions = sum(interaction_pairs.values())
+        total_occurences   = sum(occurence_pairs.values())
+        print("\nCalculating interaction, occurrence & expected frequencies...")
+
+        keys_in_subset = []
+        for pair, int_val in interaction_pairs.items():
+            if_val  = int_val / total_interactions if total_interactions > 0 else 0
+            occ_val = occurence_pairs.get(pair, 0)
+            of_val  = occ_val / total_occurences if total_occurences > 0 else 0
+            interaction_freq_pairs[pair]  = if_val
+            occurence_freq_pairs[pair]    = of_val
+            expected_interactions[pair]   = if_val * occ_val
+            keys_in_subset.append(pair)
+            if subset is not None and len(keys_in_subset) >= subset:
+                break
+
+        normalized_interaction_rate = {
+            pair: interaction_freq_pairs[pair] / occurence_freq_pairs[pair]
+            if occurence_freq_pairs.get(pair, 0) > 0 else 0
+            for pair in interaction_pairs
+        }
+
+        if self.outdir is not None:
+            try:
+                with open(self.outfile_pfi, "w") as f:
+                    f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
+                    for pair in (keys_in_subset if subset is not None else interaction_pairs.keys()):
+                        f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t"
+                                f"{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")
+                print(f"Interaction pairs saved to {self.outfile_pfi}")
+            except Exception as e:
+                print(f"Error saving interaction pairs to {self.outfile_pfi}: {e}")
+
+            try:
+                if not os.path.exists(self.pfi_objects_dir):
+                    os.makedirs(self.pfi_objects_dir, exist_ok=True)
+                with open(os.path.join(self.pfi_objects_dir, "interaction_pairs.jbl"), "wb") as f:
+                    joblib.dump(interaction_pairs, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "occurence_pairs.jbl"), "wb") as f:
+                    joblib.dump(occurence_pairs, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "interaction_freq_pairs.jbl"), "wb") as f:
+                    joblib.dump(interaction_freq_pairs, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "occurence_freq_pairs.jbl"), "wb") as f:
+                    joblib.dump(occurence_freq_pairs, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "expected_interactions.jbl"), "wb") as f:
+                    joblib.dump(expected_interactions, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "normalized_interaction_rate.jbl"), "wb") as f:
+                    joblib.dump(normalized_interaction_rate, f, compress=3)
+                with open(os.path.join(self.pfi_objects_dir, "hash_lookup.jbl"), "wb") as f:
+                    joblib.dump(hash_lookup, f, compress=3)
+                print(f"Interaction data pickled successfully in {self.pfi_objects_dir}")
+            except Exception as e:
+                print(f"Error pickling interaction data: {e}")
+
+        print(f"Total pairs processed: {c}")
+        return (interaction_pairs, occurence_pairs, interaction_freq_pairs,
+                occurence_freq_pairs, expected_interactions,
+                normalized_interaction_rate, hash_lookup)
 

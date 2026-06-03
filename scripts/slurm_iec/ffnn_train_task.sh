@@ -3,7 +3,7 @@
 # One Slurm array task = one (bcluster, pcluster) training run.
 # Submitted by submit_iter_excl.sh — do not run directly.
 
-#SBATCH --job-name=IterExclTrain_v2
+#SBATCH --job-name=IterExclTrain_v4
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --mem=50G
@@ -28,10 +28,10 @@ K="${2:-12}"
 DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
-CUSTOM_PARENT_DIR="IterExcl_${DOWNDIR}_n${N}_k${K}_v2" # for organizing outputs by config
+CUSTOM_PARENT_DIR="IterExcl_${DOWNDIR}_n${N}_k${K}_v4" # for organizing outputs by config
 BACT_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_bact_clusters_n${N}_k${K}.csv"
 PHAGE_CLUSTER_FILE="$DATA_DIR/$DOWNDIR/sim_matrices/combined_phage_clusters_n${N}_k${K}.csv"
-TASK_MAP="$ROOT_DIR/tmp/IterExcl_Taskmap_${DOWNDIR}_${N}_${K}_v2.txt"
+TASK_MAP="$ROOT_DIR/tmp/IterExcl_Taskmap_${DOWNDIR}_${N}_${K}_v4.txt"
 
 # ── Resolve this task's (bcluster, pcluster) pair from the task map ───────────
 # SLURM_ARRAY_TASK_ID is 1-indexed; sed line numbers are also 1-indexed.
@@ -83,10 +83,11 @@ python3 "$ROOT_DIR/scripts/FFNN_inner2.py" \
     --nk "$N" "$K" \
     --cv \
     --kf_n_splits 4 \
-    --patience 30 \
-    --n_epochs 100 \
-    --learning_rate 1e-4 \
-    --weight_decay 1e-4 \
+    --patience 20 \
+    --n_epochs 150 \
+    --learning_rate 1e-3 \
+    --weight_decay 1e-2 \
+    --threshold_method f1 \
     --force_presmat \
     --exclude_clusters \
     --exclude_bact_clusters "$bact_strains" \
@@ -102,7 +103,7 @@ python3 "$ROOT_DIR/scripts/FFNN_inner2.py" \
 # ── Extract and persist accuracy for this pair ────────────────────────────────
 # Write to a per-pair file so the post-processing job can gather them all
 # without any race conditions.
-ACC_FILE="$ROOT_DIR/tmp/accuracies_${DOWNDIR}_n${N}_k${K}_v2/b${bcluster_num}_p${pcluster_num}.txt"
+ACC_FILE="$ROOT_DIR/tmp/accuracies_${DOWNDIR}_n${N}_k${K}_v4/b${bcluster_num}_p${pcluster_num}.txt"
 mkdir -p "$(dirname "$ACC_FILE")"
 
 acc=$(find "$ROOT_DIR/nn_runs/${CUSTOM_OUT}_run1/log_run1.txt" \

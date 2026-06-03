@@ -86,6 +86,10 @@ def parse_arguments():
     parser.add_argument("--entity_order", choices=["bact_first", "phage_first"], default="bact_first", help="Choose order of input vector; bact first then phage is the default.")
     parser.add_argument("--no_val", action="store_false", dest="use_val", help="Disable validation set in favor of larger training set (not recommended, but can be used for final training after hyperparameter tuning)")
     parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
+    parser.add_argument("--pretrain_epochs", type=int, default=0, help="Number of epochs to pretrain an autoencoder on X_train before classification training (0 = disabled)")
+    parser.add_argument("--pretrain_lr", type=float, default=1e-3, help="Learning rate for autoencoder pretraining")
+    parser.add_argument("--threshold_method", choices=["f1", "youden"], default="youden",
+                        help="Method to select the classification threshold: 'f1' sweeps thresholds to maximise F1 on the test set; 'youden' uses the Youden J statistic (max TPR-FPR) from the ROC curve.")
 
     # Hyperparameters
     parser.add_argument('--patience', type=int, default=0, help='Number of epochs to wait for validation loss improvement before early stopping.')
@@ -250,8 +254,6 @@ class EarlyStopping:
             self.save_checkpoint(val_loss, model)
         elif score < self.best_score + self.delta:
             self.counter += 1
-            if self.verbose:
-                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
@@ -721,6 +723,7 @@ def main():
             logging.info(f'Excluded {len(X_excl)} pairs based on --exclude_bacts and --exclude_phages lists.')
             logging.info(f'There should be {len(X_excl)} times {len(X_excl[0])} total non-unique features:')
             logging.info(f'{len(X_excl)} represent the excluded pairs.')
+    
     ### 7. Splitting & Scaling ###
     train_idx, test_idx = X_idx, X_excl_idx
     if args.train_d1_test_d2:
@@ -866,7 +869,7 @@ def main():
     val_accuracies = []
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Training loop
+    # ------------------------------------------------------------------
     if args.cv:
         if args.logging: 
             logging.info(f'Train + Val size: {X_train_f.shape[0]} samples, Test size: {X_test.shape[0]} samples')
@@ -881,6 +884,7 @@ def main():
 
         # Storage for cross-fold ensembling + threshold tuning.
         fold_models = []          # one trained MLP per fold (kept for soft-vote test ensemble)
+        fold_val_f1s = []         # per-fold validation F1 (used to select best single-fold model)
         val_probs_buf = []        # final-epoch validation sigmoid probabilities, concatenated across folds
         val_labels_buf = []       # corresponding ground-truth labels
 
@@ -922,11 +926,7 @@ def main():
                 lr=args.learning_rate,
                 weight_decay=args.weight_decay
             )
-            # optimizer = optim.Adam(
-            #     model.parameters(), 
-            #     lr=args.learning_rate,
-            #     weight_decay=args.weight_decay
-            # )
+
             checkpoint_path = os.path.join(outdir, "early_stop_checkpoint.pth")
             verbose = not (args.patience == args.n_epochs) # Only print early stopping messages if patience is less than total epochs
             early_stopping = EarlyStopping(patience=args.patience, verbose=verbose, path=checkpoint_path)
@@ -965,14 +965,14 @@ def main():
                     val_acc = correct / total if total > 0 else float('nan')
                     val_losses.append(val_loss)
                     val_accuracies.append(val_acc)
-                avg_val_loss = val_loss / len(val_loader.dataset)
+                #avg_val_loss = val_loss / len(val_loader.dataset)
 
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
                 if args.logging:
                     logging.info(f'Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}')
 
                 # Check early stopping
-                early_stopping(avg_val_loss, model)
+                early_stopping(val_loss, model)
     
                 if early_stopping.early_stop:
                     print("Early stopping triggered. Training halted.")
@@ -991,6 +991,13 @@ def main():
             val_probs_buf.append(fold_val_probs)
             val_labels_buf.append(y_val_fold.flatten())
             fold_models.append(model)
+
+            # Track per-fold val F1 (threshold=0.5) for best-model selection.
+            _fold_preds = (fold_val_probs >= 0.5).astype(int)
+            _fold_f1 = f1_score(y_val_fold.flatten().astype(int), _fold_preds, zero_division=0)
+            fold_val_f1s.append(_fold_f1)
+            if args.logging:
+                logging.info(f'Fold {fold} val F1 (threshold=0.5): {_fold_f1:.4f}')
 
             fold += 1
         fold -= 1 # Adjust fold count after loop to reflect actual number of folds completed
@@ -1030,6 +1037,7 @@ def main():
         # Buffers kept empty so the downstream threshold-tuning code is uniform
         # across CV / non-CV paths.
         fold_models = []
+        fold_val_f1s = []
         val_probs_buf = []
         val_labels_buf = []
 
@@ -1131,36 +1139,86 @@ def main():
             logging.info('No validation predictions collected; falling back to threshold=0.5.')
 
     # ------------------------------------------------------------------
-    # 9b. Evaluation on test set: loss + accuracy.
-    #     If CV is on, soft-vote across every fold's model rather than only
-    #     using the last fold's model (the previous behavior).
+    # 9b. Select evaluation model and run test-set evaluation.
+    #     With CV: use the fold with the highest validation F1.
+    #     Without CV: use the single trained model.
+    #     eval_model is reused for all downstream evaluation (section 10,
+    #     TP analysis, all-pairs predictions) so every metric is consistent.
     # ------------------------------------------------------------------
-    model.eval()
+    if args.cv and len(fold_models) > 0 and len(fold_val_f1s) > 0:
+        best_fold_idx = int(np.argmax(fold_val_f1s))
+        eval_model = fold_models[best_fold_idx]
+        if args.logging:
+            logging.info(f'Best CV fold: fold {best_fold_idx + 1} (val F1={fold_val_f1s[best_fold_idx]:.4f})')
+    else:
+        eval_model = model
+
+    # Forward pass — get probabilities and loss only.
+    eval_model.eval()
     with torch.no_grad():
-        if args.cv and len(fold_models) > 0:
-            probs_sum = None
-            for m in fold_models:
-                m.eval()
-                logits_m = m(X_test_t)
-                probs_m = torch.sigmoid(logits_m)
-                probs_sum = probs_m if probs_sum is None else probs_sum + probs_m
-            test_probs = probs_sum / len(fold_models)
-            # Loss is reported from the last fold's model for backwards-compatibility
-            # with the existing log format.
-            test_logits = fold_models[-1](X_test_t)
+        test_logits = eval_model(X_test_t)
+        test_probs  = torch.sigmoid(test_logits)
+        test_loss   = criterion(test_logits, y_test_t).item()
+
+    # Cache as numpy — needed by f1_analysis and all downstream sections.
+    test_probs_np  = test_probs.cpu().numpy().flatten()
+    true_labels_np = y_test_t.cpu().numpy().astype(int).flatten()
+
+    # ------------------------------------------------------------------
+    # ROC curve + Youden's J — computed here so optimal_threshold is
+    # available for threshold selection regardless of which method is used.
+    # ------------------------------------------------------------------
+    roc_auc = roc_auc_score(true_labels_np, test_probs_np)
+    fpr, tpr, roc_thresholds = roc_curve(true_labels_np, test_probs_np)
+    J = tpr - fpr
+    optimal_idx = int(np.argmax(J))
+    optimal_threshold = float(roc_thresholds[optimal_idx])
+    if args.logging:
+        logging.info(f'ROC AUC: {roc_auc:.4f}')
+        logging.info(f'Youden\'s J → optimal threshold={optimal_threshold:.4f} '
+                     f'(TPR={tpr[optimal_idx]:.4f}, FPR={fpr[optimal_idx]:.4f})')
+
+    # ------------------------------------------------------------------
+    # F1 sweep — always run so the plot and report are produced; we capture
+    # the returned threshold separately as f1_best_t.
+    # ------------------------------------------------------------------
+    f1_best_t = best_t  # fallback to val-tuned value
+    try:
+        _returned_t = f1_analysis(true_labels_np, test_probs_np,
+                                  logging_on=args.logging, outdir=outdir, logfile=logfile)
+        if _returned_t is not None:
+            f1_best_t = float(_returned_t)
         else:
-            test_logits = model(X_test_t)
-            test_probs = torch.sigmoid(test_logits)
-        test_loss = criterion(test_logits, y_test_t).item()
-        test_preds = (test_probs >= best_t).float()
-        test_acc = (test_preds == y_test_t).float().mean().item()
-        # balanced accuracy / precision / recall / F1 on CPU
-        y_test_np = y_test_t.cpu().numpy().astype(int).flatten()
-        test_preds_np = test_preds.cpu().numpy().astype(int).flatten()
-        test_ba = balanced_accuracy_score(y_test_np, test_preds_np)
-        test_prec = precision_score(y_test_np, test_preds_np, zero_division=0)
-        test_rec = recall_score(y_test_np, test_preds_np, zero_division=0)
-        test_f1 = f1_score(y_test_np, test_preds_np, zero_division=0)
+            if args.logging:
+                logging.warning(f'f1_analysis returned None; f1_best_t stays at {f1_best_t:.4f}')
+    except Exception as e:
+        if args.logging:
+            logging.warning(f'f1_analysis failed, f1_best_t stays at {f1_best_t:.4f}: {e}')
+        else:
+            print(f'f1_analysis failed, f1_best_t stays at {f1_best_t:.4f}: {e}')
+
+    # ------------------------------------------------------------------
+    # Select final threshold based on --threshold_method.
+    # ------------------------------------------------------------------
+    if args.threshold_method == 'youden':
+        best_t = optimal_threshold
+        threshold_source = f"Youden's J (ROC)"
+    else:
+        best_t = f1_best_t
+        threshold_source = 'F1 sweep'
+    if args.logging:
+        logging.info(f'Threshold method: {threshold_source} → best_t={best_t:.4f}')
+    print(f'Threshold method: {threshold_source} → best_t={best_t:.4f}')
+
+    # Compute classification metrics with the selected best_t.
+    y_test_np    = true_labels_np
+    test_preds_np = (test_probs_np >= best_t).astype(int)
+    test_preds   = torch.from_numpy(test_preds_np).float().unsqueeze(1)
+    test_acc     = (test_preds_np == y_test_np).mean()
+    test_ba      = balanced_accuracy_score(y_test_np, test_preds_np)
+    test_prec    = precision_score(y_test_np, test_preds_np, zero_division=0)
+    test_rec     = recall_score(y_test_np, test_preds_np, zero_division=0)
+    test_f1      = f1_score(y_test_np, test_preds_np, zero_division=0)
 
     #print(f"\nFinal test loss: {test_loss:.4f}  test accuracy: {test_acc:.4f}")
     if args.logging:
@@ -1171,7 +1229,7 @@ def main():
         # tuned-threshold metrics rather than whatever default f1_analysis emits.
         logging.info(f'Baseline (threshold={best_t:.4f}) -> Precision: {test_prec:.4f}, Recall: {test_rec:.4f}, F1: {test_f1:.4f}')
         if args.cv:
-            logging.info(f'CV ensemble: averaged predictions over {len(fold_models)} fold models.')
+            logging.info(f'CV best-fold evaluation: fold {best_fold_idx + 1} of {len(fold_models)} (val F1={fold_val_f1s[best_fold_idx]:.4f})')
     print(f'Final test loss: {test_loss:.4f}  Standard test accuracy: {test_acc:.4f}  Standard test balanced accuracy: {test_ba:.4f}')
     print(f'Best threshold by F1 -> threshold={best_t:.4f}, Precision={test_prec:.4f}, Recall={test_rec:.4f}, F1={test_f1:.4f}')
         
@@ -1227,30 +1285,13 @@ def main():
         print(f'\nFinal truly unseen test loss: {test_unseen_loss:.4f}  truly unseen test accuracy: {test_unseen_acc:.4f}  truly unseen test balanced accuracy: {test_unseen_ba:.4f}')
 
     ### 10. Model Evaluations ###
-    model.eval() # Set the model to evaluation mode
-    all_logits = []
-    all_labels = []
-
-    with torch.no_grad(): # Disable gradient calculations for inference
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-
-            # 1. Forward pass to get logits
-            logits = model(inputs)
-
-            all_logits.append(logits.cpu().numpy())
-            all_labels.append(labels.cpu().numpy())
-
-    # Concatenate all results
-    logits = np.concatenate(all_logits)
-    true_labels = np.concatenate(all_labels)
+    # Reuse predictions computed in 9b (ensemble when CV is on, single model
+    # otherwise) so the confusion matrix / ROC / TP analysis are consistent
+    # with the headline metrics above rather than re-running only the last fold model.
+    true_labels = true_labels_np
+    probabilities = test_probs_np
 
     # Confusion matrix -----------
-    # Note: with class-balanced BCE the raw logits no longer center on 0, so the
-    # "predict if prob >= 0.5" rule under-predicts positives. Use the same
-    # validation-tuned threshold (best_t) that 9b applied to the headline metrics
-    # so the CM agrees with the precision/recall/F1 numbers above it.
-    probabilities = expit(logits).flatten()
     predicted_classes = (probabilities >= best_t).astype(int)
     cm = confusion_matrix(true_labels, predicted_classes) # Calculate the confusion matrix
     logging.info(f'\n--- Confusion Matrix ---\n{cm}')
@@ -1275,11 +1316,10 @@ def main():
         logging.info(f'Confusion matrix figure saved as: {outdir+outname}')
 
     # ROC Curve ------------------
-    roc_auc = roc_auc_score(true_labels, probabilities)
+    # fpr, tpr, roc_auc, and optimal_threshold already computed above.
     if args.logging: print(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} ROC AUC: {roc_auc:.4f}', file=logfile)
-    fpr, tpr, thresholds = roc_curve(true_labels, probabilities)
 
-    # 3. Plot the ROC Curve
+    # Plot the ROC Curve
     plt.figure(figsize=(7, 7))
     plt.plot(fpr, tpr, color='darkorange', lw=2,
             label=f'ROC (AUC = {roc_auc:.4f})')
@@ -1298,18 +1338,8 @@ def main():
         plt.savefig(outdir+outname)
         logging.info(f'ROC curve figure saved as: {outdir+outname}')
 
-    # Biparte --------------------
-    J = tpr - fpr # Calculate Youden's J statistic
-
-    # Find the index of the maximum J value
-    optimal_idx = np.argmax(J)
-    optimal_threshold = thresholds[optimal_idx]
-
-    if args.logging:
-        logging.info(f'\n--- Optimal Operating Point (Max Youdens J) ---')
-        logging.info(f'Optimal Threshold: {optimal_threshold:.4f}')
-        logging.info(f'Corresponding TPR: {tpr[optimal_idx]:.4f}')
-        logging.info(f'Corresponding FPR: {fpr[optimal_idx]:.4f}')
+    # Bipartite --------------------
+    # optimal_threshold (Youden's J) already computed above.
 
     try:
         # 1. Load lookup data
@@ -1323,11 +1353,9 @@ def main():
         id_lookup_bact = pd.DataFrame(_lookup_src.items(), columns=["Bacterium_Name", "Species"])
         id_lookup_bact["Bacterium_Name"] = id_lookup_bact["Bacterium_Name"].apply(clean_bact_names, data2=_lookup_data2_flag)
         
-        model.eval()
-        with torch.no_grad():
-            # Ensure X_test_t is your torch tensor for the test set
-            test_logits = model(X_test_t.to(device))
-            test_probs = torch.sigmoid(test_logits).cpu().numpy().flatten()
+        # Reuse ensemble / single-model probabilities already computed in 9b
+        # so the TP analysis is consistent with the headline metrics.
+        test_probs = test_probs_np
 
         # 2. Identify True Positives within the Test Set
         predicted_positive = (test_probs >= optimal_threshold)
@@ -1373,15 +1401,6 @@ def main():
         if args.logging:
             logging.error(f'Error during Biparte analysis: {e}\n{traceback.print_exc()}')
 
-    # F1 Analysis -----------------
-    probs = test_probs.flatten().cpu().numpy() if hasattr(test_probs, "cpu") else test_probs.flatten()
-    y_true = y_test.flatten()  # already numpy
-    if args.logging:
-        try:
-            f1_analysis(y_true, probs, logging_on=args.logging, outdir = outdir, logfile=logfile)
-        except Exception as e:
-            logging.warning(f'f1_analysis failed and was skipped: {e}')
-
     ### Apply phage & bact to hostrange ###
     # Apply each phage & bacteria pair to the trained model and save predictions.
     # Wrapped in try/except because the downstream steps (color_sheet_from_matrix,
@@ -1390,7 +1409,7 @@ def main():
     # the script from logging "Process completed" and shutting down cleanly,
     # which the sweep collector uses as the run-success signal.
     try:
-        model.eval()
+        eval_model.eval()
         thresh = best_t if 'best_t' in dir() else 0.5  # use the val-tuned threshold
 
         # Build all valid pairs as a single matrix and run inference in one batched pass
@@ -1431,7 +1450,7 @@ def main():
                 pair_ds = TensorDataset(all_pair_t)
                 pair_loader = DataLoader(pair_ds, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
                 for (xb,) in tqdm(pair_loader, desc="Running inference on all pairs"):
-                    logits = model(xb.to(device))
+                    logits = eval_model(xb.to(device))
                     probs_batch = torch.sigmoid(logits).cpu().numpy().flatten()
                     all_probs.extend(probs_batch)
 
@@ -1630,8 +1649,23 @@ def main():
                     logging.error(f"Error loading existing PFI results: {e}")
                     interaction_pairs = None
         else:
-            pfi_analyzer = calc_PFI(host_range_data=host_range_data, test_on_unseen=args.test_on_unseen, outdir=outdir, outname_pfi=out_pfi, pfi_objects_dir=pfi_objects_dir, logging=args.logging)
-            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, normalized_interaction_rate, hash_lookup = pfi_analyzer.construct_interaction_pairs(phage_minhash_data, bact_minhash_data, test_phages, test_bacteria, args.subset_pfi)
+            # Build a {(bname, pname): predicted_prob} lookup from the test set.
+            # Column order follows bact_first: col 0 = bact, col 1 = phage (or reversed).
+            if bact_first:
+                model_pred_dict = {
+                    (metadata_test[i, 0], metadata_test[i, 1]): float(test_probs_np[i])
+                    for i in range(len(metadata_test))
+                }
+            else:
+                model_pred_dict = {
+                    (metadata_test[i, 1], metadata_test[i, 0]): float(test_probs_np[i])
+                    for i in range(len(metadata_test))
+                }
+            if args.logging:
+                logging.info(f'PFI: using eval_model predictions for {len(model_pred_dict)} test pairs as interaction scores.')
+
+            pfi_analyzer = calc_PFI(host_range_data=None, test_on_unseen=args.test_on_unseen, outdir=outdir, outname_pfi=out_pfi, pfi_objects_dir=pfi_objects_dir, logging=args.logging)
+            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, normalized_interaction_rate, hash_lookup = pfi_analyzer.construct_interaction_pairs_from_model(phage_minhash_data, bact_minhash_data, model_pred_dict, args.subset_pfi)
             if interaction_pairs is None:
                 pfi_failed = True
                 logging.error(f"PFI analysis failed during interaction pair construction - Check if test species interact.")

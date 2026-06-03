@@ -347,8 +347,7 @@ def f1_analysis(y_true, y_probs, logging_on : bool, outdir = None, logfile = Non
         plt.savefig(outdir + outname, bbox_inches='tight')
         logging.info(f'F1 analysis figure saved as: {outdir+outname}')
 
-    # if silent is False:
-    #     plt.show()
+    return best_t
 
 def plot_entity_counts(df: pd.DataFrame, entity_column: str, logging_on : bool, outdir: str = None,):
     """

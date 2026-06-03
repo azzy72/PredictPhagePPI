@@ -19,10 +19,10 @@ set -euo pipefail
 ROOT_DIR=$(git rev-parse --show-toplevel)
 
 # ---- Hyperparameter grid ----------------------------------------------------
-KF_SPLITS=(3 6)
-EPOCHS=(50 100)
-LRS=(1e-3 5e-4 1e-4)
-WEIGHT_DECAYS=(0 1e-4 1e-2)
+KF_SPLITS=(4 6 8)
+EPOCHS=(100 150 200)
+LRS=(1e-3 5e-3 1e-2)
+WEIGHT_DECAYS=(1e-5 1e-3 1e-2)
  
 # Flatten the 3-D grid into a 1-D list of "kf ep lr" triples.
 COMBOS=()
@@ -46,8 +46,8 @@ fi
  
 read -r KF EP LR WD <<< "${COMBOS[$IDX]}"
 TAG="kf${KF}_ep${EP}_lr${LR}_wd${WD}"
-OUT_DIR="$ROOT_DIR/nn_runs/FFNN_D1_on_D2_optim/${TAG}/"
-mkdir -p "${OUT_DIR}" "$ROOT_DIR/nn_runs/FFNN_D1_on_D2_optim/sweep_logs"
+OUT_DIR="$ROOT_DIR/nn_runs/FFNN_D1_on_D2_optim_youden/${TAG}/"
+mkdir -p "${OUT_DIR}" "$ROOT_DIR/nn_runs/FFNN_D1_on_D2_optim_youden/sweep_logs"
  
 echo "[${IDX}/${TOTAL}] ${TAG} on $(hostname)  $(date -Is)"
 nvidia-smi -L || true
@@ -64,12 +64,13 @@ python3 "${ROOT_DIR}/scripts/FFNN_inner2.py" \
   --train_d1_test_d2 \
   --cv \
   --force_presmat \
-  --patience 30 \
+  --patience 20 \
   --kf_n_splits "${KF}" \
   --n_epochs "${EP}" \
   --learning_rate "${LR}" \
   --weight_decay "${WD}" \
   --logging \
+  --threshold_method youden \
   --out "${OUT_DIR}"
 
  
