@@ -18,3 +18,5 @@ logs/
 tmp*
 FFNN_collect/
 annotation_and_composition_plots/
+slurm*
+hash_*
