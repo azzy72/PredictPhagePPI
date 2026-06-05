@@ -88,7 +88,7 @@ def parse_arguments():
     parser.add_argument("--save_model", action="store_true", help="Save the trained model to the output directory for future use")
     parser.add_argument("--pretrain_epochs", type=int, default=0, help="Number of epochs to pretrain an autoencoder on X_train before classification training (0 = disabled)")
     parser.add_argument("--pretrain_lr", type=float, default=1e-3, help="Learning rate for autoencoder pretraining")
-    parser.add_argument("--threshold_method", choices=["f1", "youden"], default="youden",
+    parser.add_argument("--threshold_method", choices=["f1", "youden", "0.5"], default="f1",
                         help="Method to select the classification threshold: 'f1' sweeps thresholds to maximise F1 on the test set; 'youden' uses the Youden J statistic (max TPR-FPR) from the ROC curve.")
 
     # Hyperparameters
@@ -1203,9 +1203,15 @@ def main():
     if args.threshold_method == 'youden':
         best_t = optimal_threshold
         threshold_source = f"Youden's J (ROC)"
-    else:
+    elif args.threshold_method == 'f1':
         best_t = f1_best_t
         threshold_source = 'F1 sweep'
+    elif args.threshold_method == '0.5':
+        best_t = 0.5
+        threshold_source = 'Fixed threshold (0.5)'
+    if best_t <= 0.05 or best_t >= 0.95:
+        best_t = 0.5 # sanity check to prevent really crazy thresholds when something goes wrong with the tuning methods
+        logging.warning(f"Selected threshold {best_t:.4f} from {threshold_source} is outside sanity bounds; resetting to 0.5")
     if args.logging:
         logging.info(f'Threshold method: {threshold_source} → best_t={best_t:.4f}')
     print(f'Threshold method: {threshold_source} → best_t={best_t:.4f}')
@@ -1395,7 +1401,7 @@ def main():
         
             plot_entity_counts(best_tp_df, 'Phage_Name', outdir = outdir, logging_on = args.logging)
             plot_entity_counts(best_tp_df, 'Bacterium_Name', outdir = outdir, logging_on = args.logging)
-            plot_bipartite_network(best_tp_df, id_lookup_bact, outdir = outdir, logging_on = args.logging, limit=50, conf_threshold=0.5)
+            plot_bipartite_network(best_tp_df, id_lookup_bact, outdir = outdir, logging_on = args.logging, limit=50, conf_threshold=0)
 
     except Exception as e:
         if args.logging:
@@ -1410,7 +1416,7 @@ def main():
     # which the sweep collector uses as the run-success signal.
     try:
         eval_model.eval()
-        thresh = best_t if 'best_t' in dir() else 0.5  # use the val-tuned threshold
+        thresh = best_t if 'best_t' in dir() else 0.05  # use the val-tuned threshold
 
         # Build all valid pairs as a single matrix and run inference in one batched pass
         # This is far faster than calling scaler.transform(single_row) in a tight inner loop.
@@ -1665,7 +1671,7 @@ def main():
                 logging.info(f'PFI: using eval_model predictions for {len(model_pred_dict)} test pairs as interaction scores.')
 
             pfi_analyzer = calc_PFI(host_range_data=None, test_on_unseen=args.test_on_unseen, outdir=outdir, outname_pfi=out_pfi, pfi_objects_dir=pfi_objects_dir, logging=args.logging)
-            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, normalized_interaction_rate, hash_lookup = pfi_analyzer.construct_interaction_pairs_from_model(phage_minhash_data, bact_minhash_data, model_pred_dict, args.subset_pfi)
+            interaction_pairs, occurence_pairs, interaction_freq_pairs, occurence_freq_pairs, expected_interactions, normalized_interaction_rate, hash_lookup = pfi_analyzer.construct_interaction_pairs_from_model(phage_minhash_data, bact_minhash_data, model_pred_dict, args.subset_pfi, write=False)
             if interaction_pairs is None:
                 pfi_failed = True
                 logging.error(f"PFI analysis failed during interaction pair construction - Check if test species interact.")
@@ -1690,8 +1696,7 @@ def main():
                 # for line in interaction_pairs[:10]:
 
         if args.use_encoded and hash_lookup is not None and pfi_failed == False: #can only regain string kmers from hash, if lookup dict has been made
-            #plot_interaction_pairs(interaction_pairs, occurence_pairs, hash_lookup, logging=args.logging, outdir=outdir, bact_clusters=bact_clusters)
-            plot_interaction_pairs(interaction_pairs, occurence_pairs, normalized_interaction_rate, hash_lookup, hk_translation_dict, sort_by_ratio=True, logging_on=args.logging, outdir=outdir, bact_clusters=bact_clusters)
+            #plot_interaction_pairs(interaction_pairs, occurence_pairs, normalized_interaction_rate, hash_lookup, hk_translation_dict, sort_by_ratio=True, logging_on=args.logging, outdir=outdir, bact_clusters=bact_clusters)
 
             # Filter idx_to_minhash to only include the top X interaction pairs
             top_pairs = sorted(interaction_pairs.items(), key=lambda x: normalized_interaction_rate.get(x[0], 0), reverse=True)[:args.top_kmers_num] # Get top {args.top_kmers_num} pairs by expected interactions score

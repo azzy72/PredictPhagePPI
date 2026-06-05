@@ -789,6 +789,7 @@ class calc_PFI:
         bact_minhash_data: dict,
         model_pred_dict: dict,
         subset: int = None,
+        write: bool = True
     ):
         """
         Same output format as construct_interaction_pairs, but uses model-predicted
@@ -824,7 +825,7 @@ class calc_PFI:
             for bkmer in bkmer_list:
                 hash_lookup[bkmer].add(bname)
 
-            pairs = list(product(pkmer_list, bkmer_list))
+            pairs = list(product(bkmer_list, pkmer_list))
             occurence_pairs.update(pairs)
             for pair in pairs:
                 interaction_pairs[pair] += interaction_score
@@ -868,10 +869,10 @@ class calc_PFI:
             for pair in interaction_pairs
         }
 
-        if self.outdir is not None:
+        if self.outdir is not None and write:
             try:
                 with open(self.outfile_pfi, "w") as f:
-                    f.write("phage_hash\tbact_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
+                    f.write("bact_hash\tphage_hash\tinteraction_score\toccurrence_count\tinteraction_freq\toccurrence_freq\texpected_interaction\n")
                     for pair in (keys_in_subset if subset is not None else interaction_pairs.keys()):
                         f.write(f"{pair[0]}\t{pair[1]}\t{interaction_pairs[pair]}\t{occurence_pairs[pair]}\t"
                                 f"{interaction_freq_pairs[pair]}\t{occurence_freq_pairs[pair]}\t{expected_interactions[pair]}\n")

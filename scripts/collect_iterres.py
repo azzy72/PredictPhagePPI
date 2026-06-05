@@ -843,13 +843,18 @@ class GAPlottingUtils:
                                     kmer_col: str = 'decoded_kmer',
                                     top_n: int = 30,
                                     figsize=(16, 10),
-                                    filename_suffix: str = ''):
+                                    filename_suffix: str = '',
+                                    organism: str = None):
         """
         Heatmap of `value_col` (e.g. 'decoded_kmer' or 'entity_label') against `species`.
 
         Cell value = number of rows in `collected_df` where that species and that
         k-mer/gene co-occur. `top_n` caps the column count to the most frequent
         values overall, so the grid stays readable.
+
+        If `organism` is provided (e.g. 'bacterium' or 'phage'), the plot is
+        restricted to that organism and saved with an organism-specific filename.
+        Call this method separately for each organism to get two distinct plots.
         """
         if collected_df.empty or value_col not in collected_df.columns \
                 or 'species' not in collected_df.columns:
@@ -860,6 +865,16 @@ class GAPlottingUtils:
         if df.empty:
             return
 
+        # Filter to the requested organism when specified
+        if organism is not None:
+            df = df[df['organism'] == organism]
+            if df.empty:
+                logger.log(f"plot_species_distribution_grid: no rows for organism='{organism}'.")
+                return
+            org_suffix = f'_{organism}'
+        else:
+            org_suffix = ''
+
         # Keep only the top_n most frequent values overall, so the grid is readable
         top_values = df[value_col].value_counts().head(top_n).index
         df = df[df[value_col].isin(top_values)]
@@ -868,17 +883,12 @@ class GAPlottingUtils:
                 .unstack(fill_value=0)
                 .reindex(columns=top_values))     # preserve frequency order
 
-        # Sort species rows by total count desc; group by organism if both present
-        if 'organism' in collected_df.columns:
-            species_organism = (collected_df[['species', 'organism']]
-                                .dropna().drop_duplicates()
-                                .set_index('species')['organism'])
-            pivot = pivot.assign(_organism=species_organism.reindex(pivot.index),
-                                _total=pivot.sum(axis=1))
-            pivot = pivot.sort_values(['_organism', '_total'],
-                                    ascending=[True, False])
-            pivot = pivot.drop(columns=['_organism', '_total'])
+        # Sort species rows by total count desc
+        pivot = pivot.assign(_total=pivot.sum(axis=1))
+        pivot = pivot.sort_values('_total', ascending=False)
+        pivot = pivot.drop(columns=['_total'])
 
+        org_label = organism.capitalize() if organism else 'All organisms'
         fig, ax = plt.subplots(figsize=figsize)
         sns.heatmap(
             pivot, ax=ax,
@@ -887,13 +897,14 @@ class GAPlottingUtils:
             annot=pivot.values if pivot.size <= 400 else False,  # annotate only if small
             fmt='d',
         )
-        ax.set_title(f'Distribution of top {len(top_values)} {value_col} across species',
-                    fontsize=13, fontweight='bold')
+        ax.set_title(
+            f'{org_label} — Distribution of top {len(top_values)} {value_col} across species',
+            fontsize=13, fontweight='bold')
         ax.set_xlabel(value_col)
         ax.set_ylabel('Species')
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        plt.savefig(self.outdir + f'species_distribution_{value_col}{filename_suffix}.png',
+        plt.savefig(self.outdir + f'species_distribution_{value_col}{org_suffix}{filename_suffix}.png',
                     dpi=150, bbox_inches='tight')
         plt.close()
 
@@ -966,6 +977,250 @@ class GAPlottingUtils:
                     dpi=150, bbox_inches='tight')
         plt.close()
         logger.log("Saved: kmer_occurrence_per_partition.png")
+
+    # ------------------------------------------------------------------
+    # Pair bipartite helpers
+    # ------------------------------------------------------------------
+
+    def _bipartite_draw(self, G, left_nodes, right_nodes,
+                        left_label: str, right_label: str,
+                        left_color: str, right_color: str,
+                        left_edge_color: str, right_edge_color: str,
+                        score_col: str, title: str, outpath: str):
+        """
+        Shared drawing logic for pair bipartite plots.
+        Nodes are sized by their total edge-weight (sum of PFI scores).
+        Edge width/colour encodes edge weight.
+        """
+        if not left_nodes or not right_nodes:
+            logger.log(f"Bipartite plot aborted: no nodes on one side. {outpath}")
+            return
+
+        # Node weight = sum of incident edge weights
+        node_weights = {n: 0.0 for n in list(left_nodes) + list(right_nodes)}
+        for u, v, d in G.edges(data='weight', default=0):
+            node_weights[u] = node_weights.get(u, 0) + d
+            node_weights[v] = node_weights.get(v, 0) + d
+
+        def _scale(values, lo=600, hi=3000):
+            arr = np.array(values, dtype=float)
+            mn, mx = arr.min(), arr.max()
+            if mx > mn:
+                return lo + (arr - mn) / (mx - mn) * (hi - lo)
+            return np.full(len(arr), (lo + hi) / 2)
+
+        l_sizes = _scale([node_weights[n] for n in left_nodes])
+        r_sizes = _scale([node_weights[n] for n in right_nodes])
+
+        edges = list(G.edges(data='weight', default=1))
+        edge_list = [(u, v) for u, v, _ in edges]
+        ew = np.array([w for _, _, w in edges], dtype=float)
+        ew_min, ew_max = ew.min(), ew.max()
+        if ew_max > ew_min:
+            widths = 1.0 + (ew - ew_min) / (ew_max - ew_min) * 3.0
+            c_vmin, c_vmax = ew_min, ew_max
+        else:
+            widths = np.full(len(ew), 1.5)
+            c_vmin, c_vmax = ew_min - 1e-6, ew_min + 1e-6
+
+        pos = nx.bipartite_layout(G, left_nodes, align='vertical',
+                                  scale=2.0, aspect_ratio=0.5)
+
+        scale_f = np.clip(np.sqrt(len(edges) / 40.0), 1.0, 1.4)
+        fig, ax = plt.subplots(figsize=(13 * scale_f, 16 * scale_f))
+        ax.set_title(title, fontsize=14, fontweight='bold', pad=15)
+
+        nx.draw_networkx_edges(G, pos, edgelist=edge_list,
+                               width=widths, edge_color=ew,
+                               edge_cmap=plt.cm.viridis_r,
+                               edge_vmin=c_vmin, edge_vmax=c_vmax,
+                               alpha=0.9, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=list(left_nodes),
+                               node_color=left_color, node_size=l_sizes,
+                               alpha=0.88, linewidths=0.8,
+                               edgecolors=left_edge_color, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=list(right_nodes),
+                               node_color=right_color, node_size=r_sizes,
+                               alpha=0.90, linewidths=0.8,
+                               edgecolors=right_edge_color, ax=ax)
+
+        labels = {n: G.nodes[n].get('display', n) for n in G.nodes()}
+        nx.draw_networkx_labels(G, pos, labels=labels,
+                                font_size=11, font_color='#111111',
+                                bbox=dict(boxstyle='round,pad=0.2', fc='white',
+                                          alpha=0.72, lw=0),
+                                ax=ax)
+
+        legend_handles = [
+            mpatches.Patch(facecolor=left_color,  edgecolor=left_edge_color,
+                           linewidth=1.2, label=left_label),
+            mpatches.Patch(facecolor=right_color, edgecolor=right_edge_color,
+                           linewidth=1.2, label=right_label),
+        ]
+        ax.legend(handles=legend_handles, loc='upper left', fontsize=12,
+                  frameon=True, framealpha=0.9, edgecolor='#cccccc')
+
+        sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis_r,
+                                   norm=plt.Normalize(vmin=c_vmin, vmax=c_vmax))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.45, pad=0.01)
+        cbar.set_label(f'Edge weight (sum of {score_col})', fontsize=10)
+
+        ax.axis('off')
+        plt.tight_layout()
+        plt.savefig(outpath, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.log(f"Saved: {os.path.basename(outpath)}")
+
+    def plot_pair_bipartite_kmer(self, pair_df: pd.DataFrame,
+                                  score_col: str = 'PFI',
+                                  top_n: int = 50):
+        """
+        Bipartite network: bacteria k-mers (left) ↔ phage k-mers (right).
+
+        Each edge represents a high-scoring PFI pair; edge weight is the sum of
+        `score_col` across all runs that produced that (bact_kmer, phage_kmer)
+        combination. Only the `top_n` pairs by total score are shown.
+        """
+        bk_col = 'bact_decoded_kmer'
+        pk_col = 'phage_decoded_kmer'
+        if pair_df.empty or bk_col not in pair_df.columns or pk_col not in pair_df.columns:
+            logger.log("plot_pair_bipartite_kmer: required columns missing, skipping.")
+            return
+        if score_col not in pair_df.columns:
+            logger.log(f"plot_pair_bipartite_kmer: score column '{score_col}' not found, skipping.")
+            return
+
+        # Aggregate score per unique (bact_kmer, phage_kmer) combination
+        edge_df = (pair_df[[bk_col, pk_col, score_col]]
+                   .dropna(subset=[bk_col, pk_col])
+                   .groupby([bk_col, pk_col], as_index=False)[score_col]
+                   .sum()
+                   .sort_values(score_col, ascending=False)
+                   .head(top_n))
+
+        if edge_df.empty:
+            logger.log("plot_pair_bipartite_kmer: no valid pairs after aggregation, skipping.")
+            return
+
+        G = nx.Graph()
+        left_nodes, right_nodes = set(), set()
+        for _, row in edge_df.iterrows():
+            bk = f'b:{row[bk_col]}'
+            pk = f'p:{row[pk_col]}'
+            G.add_node(bk, bipartite=0, display=str(row[bk_col]))
+            G.add_node(pk, bipartite=1, display=str(row[pk_col]))
+            G.add_edge(bk, pk, weight=float(row[score_col]))
+            left_nodes.add(bk)
+            right_nodes.add(pk)
+
+        self._bipartite_draw(
+            G=G,
+            left_nodes=left_nodes, right_nodes=right_nodes,
+            left_label='bacteria k-mers', right_label='phage k-mers',
+            left_color='#2ecc71', right_color='#e74c3c',
+            left_edge_color='#1a8a4a', right_edge_color='#9b1c1c',
+            score_col=score_col,
+            title=(f'Pair Bipartite Network — Bacteria k-mers ↔ Phage k-mers\n'
+                   f'(top {len(edge_df)} pairs by {score_col})'),
+            outpath=self.outdir + f'pair_bipartite_kmer_{score_col.lower()}.png',
+        )
+
+    def plot_pair_bipartite_gene(self, pair_df: pd.DataFrame,
+                                  bact_annot_df: pd.DataFrame,
+                                  phage_annot_df: pd.DataFrame,
+                                  score_col: str = 'PFI',
+                                  top_n: int = 50):
+        """
+        Bipartite network: bacteria genes (left) ↔ phage products (right).
+
+        Each pair's k-mers are mapped to their annotated genes/products via
+        `bact_annot_df` and `phage_annot_df`. Edge weight = sum of `score_col`
+        for all pairs whose k-mers resolve to that (gene, product) combination.
+        Only the `top_n` gene–product edges by total score are shown.
+        """
+        bk_col = 'bact_decoded_kmer'
+        pk_col = 'phage_decoded_kmer'
+        if pair_df.empty or bk_col not in pair_df.columns or pk_col not in pair_df.columns:
+            logger.log("plot_pair_bipartite_gene: required pair columns missing, skipping.")
+            return
+        if score_col not in pair_df.columns:
+            logger.log(f"plot_pair_bipartite_gene: score column '{score_col}' not found, skipping.")
+            return
+        # Detect kmer column name — annotation may call it 'kmer_in_seq' instead of 'decoded_kmer'
+        def _kmer_col(df):
+            for c in ('decoded_kmer', 'kmer_in_seq'):
+                if c in df.columns:
+                    return c
+            return None
+
+        bact_kmer_col  = _kmer_col(bact_annot_df)
+        phage_kmer_col = _kmer_col(phage_annot_df)
+
+        if bact_annot_df.empty or bact_kmer_col is None or 'gene' not in bact_annot_df.columns:
+            logger.log(f"plot_pair_bipartite_gene: bact_annot_df missing required columns "
+                       f"(found: {list(bact_annot_df.columns) if not bact_annot_df.empty else '[]'}), skipping.")
+            return
+        if phage_annot_df.empty or phage_kmer_col is None or 'product' not in phage_annot_df.columns:
+            logger.log(f"plot_pair_bipartite_gene: phage_annot_df missing required columns "
+                       f"(found: {list(phage_annot_df.columns) if not phage_annot_df.empty else '[]'}), skipping.")
+            return
+
+        # Build kmer → set-of-genes lookups
+        bact_gene_map = (bact_annot_df[[bact_kmer_col, 'gene']]
+                         .dropna()
+                         .groupby(bact_kmer_col)['gene']
+                         .apply(set).to_dict())
+        phage_prod_map = (phage_annot_df[[phage_kmer_col, 'product']]
+                          .dropna()
+                          .groupby(phage_kmer_col)['product']
+                          .apply(set).to_dict())
+
+        # Expand each pair row into (gene, product, score) tuples
+        records = []
+        for _, row in pair_df[[bk_col, pk_col, score_col]].dropna(subset=[bk_col, pk_col]).iterrows():
+            bk, pk = row[bk_col], row[pk_col]
+            score = float(row[score_col])
+            genes = bact_gene_map.get(bk, set())
+            prods = phage_prod_map.get(pk, set())
+            if not genes or not prods:
+                continue
+            for g in genes:
+                for p in prods:
+                    records.append({'gene': g, 'product': p, 'score': score})
+
+        if not records:
+            logger.log("plot_pair_bipartite_gene: no gene–product pairs resolved, skipping.")
+            return
+
+        edge_df = (pd.DataFrame(records)
+                   .groupby(['gene', 'product'], as_index=False)['score']
+                   .sum()
+                   .sort_values('score', ascending=False)
+                   .head(top_n))
+
+        G = nx.Graph()
+        left_nodes, right_nodes = set(), set()
+        for _, row in edge_df.iterrows():
+            gn = f'g:{row["gene"]}'
+            pn = f'p:{row["product"]}'
+            G.add_node(gn, bipartite=0, display=str(row['gene']))
+            G.add_node(pn, bipartite=1, display=str(row['product']))
+            G.add_edge(gn, pn, weight=float(row['score']))
+            left_nodes.add(gn)
+            right_nodes.add(pn)
+
+        self._bipartite_draw(
+            G=G,
+            left_nodes=left_nodes, right_nodes=right_nodes,
+            left_label='bacteria genes', right_label='phage products',
+            left_color='#3498db', right_color='#e67e22',
+            left_edge_color='#1a5276', right_edge_color='#873600',
+            score_col=score_col,
+            title=(f'Pair Bipartite Network — Bacteria genes ↔ Phage products\n'
+                   f'(top {len(edge_df)} gene–product edges by {score_col})'),
+            outpath=self.outdir + f'pair_bipartite_gene_{score_col.lower()}.png',
+        )
 
 class MetricPlottingUtils:
     def __init__(self, df, outdir, x_col = None, hue_col = None, x_col_by_cluster = False, x_col_by_phage = False):
@@ -1363,6 +1618,7 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         folder_path = os.path.join(base_dir, folder_name)
         if os.path.isdir(folder_path):
             top_int_kmer_success = False
+            kmer_to_gene = None
             
             # Search for log files in this specific run folder
             for file in os.listdir(folder_path):
@@ -1677,6 +1933,20 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         except Exception as e:
             logger.log(f"Error during k-mer occurrence plotting: {e}")
 
+        # --- Pair bipartite plots (kmer ↔ kmer and gene ↔ product) ---
+        try:
+            plotting_utils.plot_pair_bipartite_kmer(top_kmers_df, score_col=sort_by)
+        except Exception as e:
+            logger.log(f"Error during pair bipartite kmer plot: {e}")
+
+        try:
+            if 'bact_annot_df' in locals() and 'phage_annot_df' in locals() \
+                    and not bact_annot_df.empty and not phage_annot_df.empty:
+                plotting_utils.plot_pair_bipartite_gene(
+                    top_kmers_df, bact_annot_df, phage_annot_df, score_col=sort_by)
+        except Exception as e:
+            logger.log(f"Error during pair bipartite gene plot: {e}")
+
         try:
             title_suffix = f"({sort_by})" if sort_by in top_kmers_df.columns else ""
             plotting_utils = GAPlottingUtils(df=top_kmers_df, outdir=str(outdir), sort_by=sort_by)
@@ -1742,10 +2012,11 @@ def main(base_dir=path_to_nn_runs, outdir=outdir_default, x_col=None, hue_col=No
         
         try:
             if not collected_df.empty:
-                plotting_utils.plot_species_distribution_grid(
-                    collected_df, value_col='decoded_kmer', top_n=30)
-                plotting_utils.plot_species_distribution_grid(
-                    collected_df, value_col='entity_label', top_n=30)
+                for org in ['bacterium', 'phage']:
+                    plotting_utils.plot_species_distribution_grid(
+                        collected_df, value_col='decoded_kmer', top_n=30, organism=org)
+                    plotting_utils.plot_species_distribution_grid(
+                        collected_df, value_col='entity_label', top_n=30, organism=org)
         except Exception as e:
             logger.log(f"Error during combined annotation plotting: {e}")
 
