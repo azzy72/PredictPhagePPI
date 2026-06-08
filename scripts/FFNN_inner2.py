@@ -102,6 +102,9 @@ def parse_arguments():
 
     parser.add_argument("--top_kmers_num", type=int, default=50, help="Number of top k-mers to retrieve from feature importance (pfi)")
 
+    # Reproducibility
+    parser.add_argument("--seed", type=int, default=42, help="Master random seed for full reproducibility (Python random, NumPy, PyTorch, sklearn splits, SMOTE, DataLoader shuffling). Same seed + same inputs => identical results.")
+
     args = parser.parse_args()
 
     # --- VALIDATION LOGIC FOR ARGUMENTS ---
@@ -279,8 +282,48 @@ class helper:
         original_col_idx = feature_indices[idx % num_features_per_entity]
         return idx_to_minhash[original_col_idx]
     
+def set_seed(seed):
+    """Seed every RNG used in this script so that the same inputs + same seed
+    reproduce identical results across runs.
+
+    Covers: PYTHONHASHSEED, Python `random`, NumPy, and PyTorch (CPU + all CUDA
+    devices). Also forces cuDNN into deterministic mode and disables its
+    autotuner, which would otherwise pick non-deterministic kernels.
+    """
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # Best-effort fully-deterministic algorithms (no-op / warns on ops without a
+    # deterministic implementation; wrapped so older torch versions don't crash).
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except Exception:
+        pass
+
+
+def seed_worker(worker_id):
+    """worker_init_fn for DataLoader: gives each worker a deterministic, distinct
+    seed derived from torch's initial seed so multi-worker shuffling is reproducible."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def make_loader_generator(seed):
+    """A torch.Generator with a fixed seed for DataLoader(shuffle=True) so batch
+    order is identical every run."""
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return g
+
+
 def main():
     args = parse_arguments()
+    set_seed(args.seed)
     time_start = time()
     h = helper(args)
     ncbi_blast_res_df = None
@@ -553,13 +596,13 @@ def main():
         args.exclude_bacts = clean_bact_names(args.exclude_bacts, data2=args.data2)
 
     if args.randomize:
-        random.seed(42)
+        random.seed(args.seed)
         random.shuffle(bacteria_names)
         random.shuffle(phage_names)
 
     if args.shuffle:
         feature_indices = list(range(binary_matrix.shape[1]))
-        random.seed(42)
+        random.seed(args.seed)
         random.shuffle(feature_indices)
         binary_matrix = binary_matrix[:, feature_indices]
         if args.train_d1_test_d2 and binary_matrix_d2 is not None:
@@ -671,7 +714,7 @@ def main():
         phage_names_d2 = list(phage_minhash_data_d2.keys())
         bacteria_names_d2 = list(bact_minhash_data_d2.keys())
         if args.randomize:
-            random.seed(43)  # different seed than D1 so the D2 ordering is independent
+            random.seed(args.seed + 1)  # offset from D1 so the D2 ordering is independent but still reproducible
             random.shuffle(bacteria_names_d2)
             random.shuffle(phage_names_d2)
 
@@ -701,8 +744,9 @@ def main():
     X_test_cross = np.array(X_test_cross) if len(X_test_cross) else np.empty((0, X.shape[1] if len(X) else 0))
     y_test_cross = np.array(y_test_cross)
     # Skip the "no positives in excluded test" early-return when running in cross-dataset mode
-    # (the test set comes from D2 and is checked separately below).
-    if not args.train_d1_test_d2 and sum(y_excl) < 1:
+    # (the test set comes from D2 and is checked separately below), or when no exclusion
+    # strategy is active (the test set will be carved out by random split later).
+    if not args.train_d1_test_d2 and (args.exclude_clusters or args.exclude_pairs) and sum(y_excl) < 1:
         if args.logging:
             logging.error(f'No positive values in test\n{traceback.print_exc()}')
         print("No positive values in test")
@@ -737,7 +781,7 @@ def main():
                 train_local_idx, val_local_idx = train_test_split(
                     np.arange(len(y_train_f)),
                     test_size=args.val_split,
-                    random_state=42,
+                    random_state=args.seed,
                     stratify=y_train_f,
                 )
             except ValueError:
@@ -745,7 +789,7 @@ def main():
                 train_local_idx, val_local_idx = train_test_split(
                     np.arange(len(y_train_f)),
                     test_size=args.val_split,
-                    random_state=42,
+                    random_state=args.seed,
                 )
             X_val = X_train_f[val_local_idx]
             y_val = y_train_f[val_local_idx]
@@ -773,7 +817,7 @@ def main():
 
         else:
             # Split data into train and test
-            gss = GroupShuffleSplit(n_splits=1, test_size=args.test_split, random_state=42)
+            gss = GroupShuffleSplit(n_splits=1, test_size=args.test_split, random_state=args.seed)
             train_full_idx, test_idx = next(gss.split(X, y, groups=groups))
 
             X_train_f, X_test = X[train_full_idx], X[test_idx]
@@ -787,7 +831,7 @@ def main():
         elif not args.cv:
             # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
             adj_val_ratio = args.val_split / (1 - args.test_split)
-            gss_val = GroupShuffleSplit(n_splits=1, test_size=adj_val_ratio, random_state=42)
+            gss_val = GroupShuffleSplit(n_splits=1, test_size=adj_val_ratio, random_state=args.seed)
             train_idx, val_idx = next(gss_val.split(X_train_f, y_train_f, groups=groups))
             X_train_f, X_val = X_train_f[train_idx], X_train_f[val_idx]
             y_train_f, y_val = y_train_f[train_idx], y_train_f[val_idx]
@@ -826,18 +870,26 @@ def main():
         
     else:
         if args.test_on_excluded:
-            X_train_f, y_train_f = X, y
-            X_test, y_test = X_excl, y_excl
-            X_test_unseen, y_test_unseen = X_excl[X_excl_true_unseen_idx], y_excl[X_excl_true_unseen_idx]
+            if args.exclude_clusters:
+                X_train_f, y_train_f = X, y
+                X_test, y_test = X_excl, y_excl
+                X_test_unseen, y_test_unseen = X_excl[X_excl_true_unseen_idx], y_excl[X_excl_true_unseen_idx]
+            else:
+                # exclude_clusters is False: no exclusion set exists, so randomly sample 10% as test set
+                train_idx, test_idx = train_test_split(np.arange(len(y)), test_size=0.1, random_state=args.seed, stratify=y)
+                X_train_f, X_test = X[train_idx], X[test_idx]
+                y_train_f, y_test = y[train_idx], y[test_idx]
+                if args.logging:
+                    logging.info(f'--test_on_excluded is set but --exclude_clusters is False: randomly sampled 10% of data as test set ({len(test_idx)} pairs).')
 
         else:
-            train_idx, test_idx = train_test_split(np.arange(len(y)), test_size=args.test_split, random_state=42, stratify=y)
+            train_idx, test_idx = train_test_split(np.arange(len(y)), test_size=args.test_split, random_state=args.seed, stratify=y)
             X_train_f, X_test, y_train_f, y_test = X[train_idx], X[test_idx], y[train_idx], y[test_idx]
         
         # Split train into train and val
         if not args.cv:
             # Split train into train and val - non-cross validation run requires a validation set for epoch-wise evaluation
-            train_idx, val_idx = train_test_split(train_idx, test_size=args.val_split/(1-args.test_split), random_state=42, stratify=y[train_idx])
+            train_idx, val_idx = train_test_split(train_idx, test_size=args.val_split/(1-args.test_split), random_state=args.seed, stratify=y[train_idx])
             X_train_f, X_val = X[train_idx], X[val_idx]
             y_train_f, y_val = y[train_idx], y[val_idx]
         else: 
@@ -859,7 +911,7 @@ def main():
         logging.warning(f"Error occurred while scaling validation data: {e}")
 
     if args.smote:
-        sm = SMOTE(random_state=42)
+        sm = SMOTE(random_state=args.seed)
         X_train_f, y_train_f = sm.fit_resample(X_train_f, y_train_f)
 
     ### 8. Training Logic ###
@@ -877,7 +929,7 @@ def main():
             logging.info(f'Fraction of positive interactions in test: {round(sum(y_test)/len(y_test)*100,2)}%')
 
 
-        kf = KFold(n_splits=args.kf_n_splits, shuffle=True, random_state=42)
+        kf = KFold(n_splits=args.kf_n_splits, shuffle=True, random_state=args.seed)
         fold = 1
 
         if args.logging: logging.info(f'{datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")} Starting cross-validation with {kf.get_n_splits()} folds...')
@@ -905,7 +957,8 @@ def main():
             # Create data loaders
             train_ds = TensorDataset(X_train_t, y_train_t)
             val_ds = TensorDataset(X_val_t, y_val_t)
-            train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+            train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True,
+                                      worker_init_fn=seed_worker, generator=make_loader_generator(args.seed + fold))
             val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
             # Class-balanced BCE: pos_weight = #neg / #pos in THIS fold's training data.
@@ -1021,7 +1074,8 @@ def main():
 
         # Datasets / loaders
         train_ds = TensorDataset(X_train_t, y_train_t)
-        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True,
+                                  worker_init_fn=seed_worker, generator=make_loader_generator(args.seed))
         if args.use_val:
             val_ds = TensorDataset(X_val_t, y_val_t)
             val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
@@ -1209,9 +1263,9 @@ def main():
     elif args.threshold_method == '0.5':
         best_t = 0.5
         threshold_source = 'Fixed threshold (0.5)'
-    if best_t <= 0.05 or best_t >= 0.95:
-        best_t = 0.5 # sanity check to prevent really crazy thresholds when something goes wrong with the tuning methods
-        logging.warning(f"Selected threshold {best_t:.4f} from {threshold_source} is outside sanity bounds; resetting to 0.5")
+    #if best_t <= 0.05 or best_t >= 0.95:
+    #    logging.warning(f"Selected threshold {best_t:.4f} from {threshold_source} is outside sanity bounds; resetting to 0.5")
+    #    best_t = 0.5 # sanity check to prevent really crazy thresholds when something goes wrong with the tuning methods
     if args.logging:
         logging.info(f'Threshold method: {threshold_source} → best_t={best_t:.4f}')
     print(f'Threshold method: {threshold_source} → best_t={best_t:.4f}')
