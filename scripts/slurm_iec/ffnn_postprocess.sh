@@ -4,12 +4,12 @@
 # Submitted by submit_iter_excl.sh with --dependency=afterok:<array_job_id>.
 # Do not run directly until all training tasks have finished.
 
-#SBATCH --job-name=IterExclPostProcess_v4
+#SBATCH --job-name=IterExclPostProcess_v6
 #SBATCH --partition=cpu      # no GPU needed here — adjust to your cluster
 #SBATCH --nodes=1
 #SBATCH --mem=12G
 #SBATCH --cpus-per-task=4
-#SBATCH --time=12:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.out
 #SBATCH --error=/home/projects/s215045/PredictPhagePPI/tmp/%j-%x.err
 #SBATCH --mail-type=ALL
@@ -29,8 +29,8 @@ K="${2:-12}"
 DOWNDIR="${3:-encoded_sketches}" # "SM_sketches", "encoded_sketches", "encoded_sketches_data2", "SM_sketches_data2"
 ROOT_DIR=$(git rev-parse --show-toplevel)
 DATA_DIR="$ROOT_DIR/data_prod"
-DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/IterExcl_${DOWNDIR}_n${N}_k${K}_v4"
-ACC_DIR="$ROOT_DIR/tmp/accuracies_${DOWNDIR}_n${N}_k${K}_v4"
+DIR_IN_NN_RUN="$ROOT_DIR/nn_runs/IterExcl_${DOWNDIR}_n${N}_k${K}_v6"
+ACC_DIR="$ROOT_DIR/tmp/accuracies_${DOWNDIR}_n${N}_k${K}_v6"
 
 # ── 3. Post-Processing: Average Accuracies ────────────────────────────────────
 echo "-------------------------------------------------------"
@@ -69,7 +69,7 @@ echo ""
 echo "📊 Collecting results..."
 python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --base_dir "$DIR_IN_NN_RUN" \
-    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_v4/" \
+    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_v6/" \
     --show_cm_bar_percentage \
     --weight_pfi \
     --highlight_multi \
@@ -80,7 +80,7 @@ echo ""
 echo "📊 Collecting results with harsh filtering..."
 python3 "$ROOT_DIR/scripts/collect_iterres.py" \
     --base_dir "$DIR_IN_NN_RUN" \
-    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_v4_harsh/" \
+    --out_dir "$DATA_DIR/IterExclClus_${DOWNDIR}_n${N}_k${K}_v6_harsh/" \
     --show_cm_bar_percentage \
     --weight_pfi \
     --highlight_multi \

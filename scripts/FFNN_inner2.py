@@ -939,6 +939,7 @@ def main():
         fold_val_f1s = []         # per-fold validation F1 (used to select best single-fold model)
         val_probs_buf = []        # final-epoch validation sigmoid probabilities, concatenated across folds
         val_labels_buf = []       # corresponding ground-truth labels
+        fold_history = []         # per-fold epoch histories for plotting
 
         for train_idx, val_idx in kf.split(X_train_f):
             print(f"Fold {fold}:")
@@ -984,6 +985,10 @@ def main():
             verbose = not (args.patience == args.n_epochs) # Only print early stopping messages if patience is less than total epochs
             early_stopping = EarlyStopping(patience=args.patience, verbose=verbose, path=checkpoint_path)
 
+            fold_train_losses = []
+            fold_val_losses = []
+            fold_val_accuracies = []
+
             # Training loop for this fold
             for epoch in range(1, args.n_epochs + 1):
                 model.train()
@@ -998,6 +1003,7 @@ def main():
                     running_loss += loss.item() * xb.size(0)
                 epoch_loss = running_loss / len(train_loader.dataset)
                 train_losses.append(epoch_loss)
+                fold_train_losses.append(epoch_loss)
 
                 # Evaluate on validation set each epoch
                 model.eval()
@@ -1018,6 +1024,8 @@ def main():
                     val_acc = correct / total if total > 0 else float('nan')
                     val_losses.append(val_loss)
                     val_accuracies.append(val_acc)
+                    fold_val_losses.append(val_loss)
+                    fold_val_accuracies.append(val_acc)
                 #avg_val_loss = val_loss / len(val_loader.dataset)
 
                 print(f"Epoch {epoch:02d} - train_loss: {epoch_loss:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
@@ -1044,6 +1052,12 @@ def main():
             val_probs_buf.append(fold_val_probs)
             val_labels_buf.append(y_val_fold.flatten())
             fold_models.append(model)
+            fold_history.append({
+                "fold": fold,
+                "train_losses": fold_train_losses,
+                "val_losses": fold_val_losses,
+                "val_accuracies": fold_val_accuracies,
+            })
 
             # Track per-fold val F1 (threshold=0.5) for best-model selection.
             _fold_preds = (fold_val_probs >= 0.5).astype(int)
@@ -1296,29 +1310,57 @@ def main():
     
     # Plotting the losses 
     if args.use_val:
-        fig, ax = plt.subplots(1, 1, figsize=(9, 5))
+        if args.cv and args.kf_n_splits == 4 and len(fold_history) == 4:
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=False)
+            axes = axes.flatten()
 
-        # Dynamically find out how many epochs were actually run
-        epochs_run = len(train_losses)
+            for ax, fold_data in zip(axes, fold_history):
+                fold_epochs = range(1, len(fold_data["train_losses"]) + 1)
+                ax.plot(fold_epochs, fold_data["train_losses"], label='Train loss', color='#FF8C00', linewidth=2)
+                ax.plot(fold_epochs, fold_data["val_losses"], label='Val loss', color="#D88682", linewidth=2)
+                ax.set_title(f'Fold {fold_data["fold"]}')
+                ax.set_ylabel('Loss')
 
-        # Use range(epochs_run) for the X-axis instead of range(args.n_epochs * fold)
-        ax.plot(range(epochs_run), train_losses, label='Train loss', color='#FF8C00', linewidth=2)
-        ax.plot(range(epochs_run), val_losses, label='Val loss', color="#D88682", linewidth=2)
-        ax.legend(loc='lower right')
-        ax.set_ylabel('Loss')
+                ax2 = ax.twinx()
+                ax2.plot(fold_epochs, fold_data["val_accuracies"], label='Val accuracy', c='g', linestyle='--')
+                ax2.set_ylabel('Accuracy')
 
-        ax2 = ax.twinx()
-        ax2.plot(range(epochs_run), val_accuracies, label='Val accuracy', c='g', linestyle='--')
-        ax2.set_ylabel('Accuracy')
-        ax2.legend(loc='upper right')
+                lines_1, labels_1 = ax.get_legend_handles_labels()
+                lines_2, labels_2 = ax2.get_legend_handles_labels()
+                ax2.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right', fontsize=8)
+                ax.set_xlabel('Epochs')
 
-        ax.set_xlabel('Epochs')
-        fig.suptitle(f"Torch MLP Train/Val Loss & Val Accuracy for n{n}, k{k}. Test accuracy: {test_acc:.2f}, Test balanced accuracy: {test_ba:.2f}")
+            fig.suptitle(f"Torch MLP Train/Val Loss & Val Accuracy by Fold for n{n}, k{k}. Test accuracy: {test_acc:.2f}, Test balanced accuracy: {test_ba:.2f}")
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
-        outname = 'torchMLP_acc_loss.png'    
-        if args.logging: 
-            plt.savefig(outdir + outname)
-            logging.info(f'Accuracy and train figure saved as: {outdir + outname}')
+            outname = 'torchMLP_acc_loss_by_fold.png'
+            if args.logging:
+                plt.savefig(outdir + outname)
+                logging.info(f'Accuracy and train figure saved as: {outdir + outname}')
+        else:
+            fig, ax = plt.subplots(1, 1, figsize=(9, 5))
+
+            # Dynamically find out how many epochs were actually run
+            epochs_run = len(train_losses)
+
+            # Use range(epochs_run) for the X-axis instead of range(args.n_epochs * fold)
+            ax.plot(range(epochs_run), train_losses, label='Train loss', color='#FF8C00', linewidth=2)
+            ax.plot(range(epochs_run), val_losses, label='Val loss', color="#D88682", linewidth=2)
+            ax.legend(loc='lower right')
+            ax.set_ylabel('Loss')
+
+            ax2 = ax.twinx()
+            ax2.plot(range(epochs_run), val_accuracies, label='Val accuracy', c='g', linestyle='--')
+            ax2.set_ylabel('Accuracy')
+            ax2.legend(loc='upper right')
+
+            ax.set_xlabel('Epochs')
+            fig.suptitle(f"Torch MLP Train/Val Loss & Val Accuracy for n{n}, k{k}. Test accuracy: {test_acc:.2f}, Test balanced accuracy: {test_ba:.2f}")
+
+            outname = 'torchMLP_acc_loss.png'    
+            if args.logging: 
+                plt.savefig(outdir + outname)
+                logging.info(f'Accuracy and train figure saved as: {outdir + outname}')
     else:
         if args.logging: logging.info(f'No validation set used, skipping loss and accuracy plotting.')
 
@@ -1650,8 +1692,7 @@ def main():
             if bact_clusters_d2 is not None:
                 bact_clusters = bact_clusters_d2
             # Use D2's hk lookup when available so decoded k-mers reflect the test-set domain
-            if args.use_encoded and hk_translation_dict_d2 is not None:
-                hk_translation_dict = hk_translation_dict_d2
+            hk_translation_dict_d1 = hk_translation_dict 
             # Use D2 prefix for any path-derived artifacts (regain_kmers reads its hk lookup from this)
             prefix = prefix_d2
             if args.logging:
@@ -1802,7 +1843,8 @@ def main():
             # In cross-dataset mode we hand in both datasets' hk_lookup dicts so any hash from the
             # unified feature space (D1-only, D2-only, or shared) can be decoded without disk access.
             pfi_top_kmers_df = None
-            _hk_dicts = [hk_translation_dict, hk_translation_dict_d2] if args.train_d1_test_d2 else [hk_translation_dict]
+            _hk_dicts = [d for d in (hk_translation_dict_d1, hk_translation_dict_d2) if d is not None] \
+                if args.train_d1_test_d2 else [hk_translation_dict]
             try:
                 regain_kmers_out = regain_kmers(k=k, n=n, prefix=prefix, sourmash=sourmash_used, top_n=args.top_kmers_num,
                                                 idx_to_minhash=filtered_idx_to_minhash,
